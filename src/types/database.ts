@@ -102,16 +102,25 @@ export interface Scraper {
   created_at: string
 }
 
+// Insert types (required fields only, rest optional)
+export type ProfileInsert = Pick<Profile, 'id' | 'email'> & Partial<Profile>
+export type SellerAccountInsert = Pick<SellerAccount, 'user_id' | 'seller_id'> & Partial<SellerAccount>
+export type ListingCategoryInsert = Pick<ListingCategory, 'user_id' | 'name'> & Partial<ListingCategory>
+export type BulkEditSettingInsert = Pick<BulkEditSetting, 'user_id' | 'name'> & Partial<BulkEditSetting>
+export type ExtractionInsert = Pick<Extraction, 'user_id' | 'source_url' | 'source_site'> & Partial<Extraction>
+export type ProductInsert = Pick<Product, 'user_id' | 'source_url' | 'source_site' | 'original_title'> & Partial<Product>
+export type ScraperInsert = Pick<Scraper, 'name' | 'site_key' | 'url_pattern'> & Partial<Scraper>
+
 export interface Database {
   public: {
     Tables: {
-      profiles: { Row: Profile; Insert: Partial<Profile>; Update: Partial<Profile> }
-      seller_accounts: { Row: SellerAccount; Insert: Partial<SellerAccount>; Update: Partial<SellerAccount> }
-      listing_categories: { Row: ListingCategory; Insert: Partial<ListingCategory>; Update: Partial<ListingCategory> }
-      bulk_edit_settings: { Row: BulkEditSetting; Insert: Partial<BulkEditSetting>; Update: Partial<BulkEditSetting> }
-      extractions: { Row: Extraction; Insert: Partial<Extraction>; Update: Partial<Extraction> }
-      products: { Row: Product; Insert: Partial<Product>; Update: Partial<Product> }
-      scrapers: { Row: Scraper; Insert: Partial<Scraper>; Update: Partial<Scraper> }
+      profiles: { Row: Profile; Insert: ProfileInsert; Update: Partial<Profile> }
+      seller_accounts: { Row: SellerAccount; Insert: SellerAccountInsert; Update: Partial<SellerAccount> }
+      listing_categories: { Row: ListingCategory; Insert: ListingCategoryInsert; Update: Partial<ListingCategory> }
+      bulk_edit_settings: { Row: BulkEditSetting; Insert: BulkEditSettingInsert; Update: Partial<BulkEditSetting> }
+      extractions: { Row: Extraction; Insert: ExtractionInsert; Update: Partial<Extraction> }
+      products: { Row: Product; Insert: ProductInsert; Update: Partial<Product> }
+      scrapers: { Row: Scraper; Insert: ScraperInsert; Update: Partial<Scraper> }
     }
   }
 }
