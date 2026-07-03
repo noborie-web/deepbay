@@ -6,7 +6,7 @@ import { ScraperError } from './types'
 export class MercariScraper extends BaseScraper {
   name = 'メルカリ'
   siteKey = 'mercari'
-  urlPattern = /mercari\.com\/jp\/items\//
+  urlPattern = /mercari\.com\/(jp\/items|item)\//
 
   parse($: cheerio.CheerioAPI, url: string): ScrapedProduct {
     // メルカリはNext.jsのSSRページ — __NEXT_DATA__からJSONで取得
