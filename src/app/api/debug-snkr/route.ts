@@ -8,16 +8,8 @@ const HEADERS = {
   'Origin': 'https://snkrdunk.com',
 }
 
-const BASE = 'https://snkrdunk.com/v3/search'
-const KW = 'ダウンジャケット'
-
-const POST_BODIES = [
-  { keywords: KW, searchCategoryIds: ['2/38'], minPrice: 5000, maxPrice: 50000, isSaleOnly: true, page: 1 },
-  { keyword: KW, searchCategoryIds: ['2/38'], minPrice: 5000, maxPrice: 50000, page: 1 },
-  { keywords: KW, categoryIds: ['2/38'], minPrice: 5000, maxPrice: 50000, page: 1 },
-  { keywords: KW, page: 1 },
-  { keyword: KW, page: 1 },
-]
+// Known listing IDs extracted from image preload URLs in search page HTML
+const KNOWN_IDS = ['8600542', '7691177', '8009016']
 
 export async function GET(req: NextRequest) {
   const single = req.nextUrl.searchParams.get('endpoint')
@@ -28,22 +20,30 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ status: res.status, preview: text.slice(0, 1000) })
   }
 
-  const results: Record<string, { status: number; preview: string }> = {}
+  const results: Record<string, { status: number; hasNextData: boolean; hasNextF: boolean; htmlLength: number; dataPreview: string | null }> = {}
 
   await Promise.all(
-    POST_BODIES.map(async (body) => {
-      const key = JSON.stringify(body)
+    KNOWN_IDS.map(async (id) => {
+      const url = `https://snkrdunk.com/apparel/used/${id}`
       try {
-        const res = await fetch(BASE, {
-          method: 'POST',
-          headers: { ...HEADERS, 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(5000),
-        })
-        const text = await res.text()
-        results[key] = { status: res.status, preview: text.slice(0, 500) }
+        const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) })
+        const html = await res.text()
+        const hasNextData = html.includes('__NEXT_DATA__')
+        const hasNextF = html.includes('self.__next_f')
+
+        // Try to find price/name in HTML
+        const priceMatch = html.match(/"price"\s*:\s*(\d+)/)
+        const nameMatch = html.match(/"name"\s*:\s*"([^"]{5,80})"/)
+
+        results[id] = {
+          status: res.status,
+          hasNextData,
+          hasNextF,
+          htmlLength: html.length,
+          dataPreview: priceMatch ? `price=${priceMatch[1]}, name=${nameMatch?.[1]}` : null,
+        }
       } catch (err) {
-        results[key] = { status: 0, preview: String(err) }
+        results[id] = { status: 0, hasNextData: false, hasNextF: false, htmlLength: 0, dataPreview: String(err) }
       }
     })
   )
