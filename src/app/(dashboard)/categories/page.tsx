@@ -2,8 +2,10 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { EBAY_CATEGORIES, type EbayCategory } from '@/data/ebay-categories'
+import { EBAY_CATEGORIES } from '@/data/ebay-categories'
 import type { ListingCategory } from '@/types/database'
+
+interface EbayCategory { id: string; name: string; level?: number }
 
 export default function CategoriesPage() {
   const [tab, setTab] = useState<'add' | 'manage'>('add')
@@ -31,11 +33,24 @@ export default function CategoriesPage() {
     setCategories(data ?? [])
   }
 
-  function handleSearch() {
-    const q = searchTitle.trim().toLowerCase()
+  async function handleSearch() {
+    const q = searchTitle.trim()
     if (!q) return
+    // DBから検索（インポート済みの場合）、なければ静的データにフォールバック
+    try {
+      const res = await fetch(`/api/ebay-categories?q=${encodeURIComponent(q)}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (Array.isArray(data) && data.length > 0) {
+          setSearchResults(data)
+          return
+        }
+      }
+    } catch { /* fallback */ }
+    // 静的データで検索
+    const ql = q.toLowerCase()
     const results = EBAY_CATEGORIES.filter(
-      (cat) => cat.name.toLowerCase().includes(q) || cat.id.includes(q)
+      (cat) => cat.name.toLowerCase().includes(ql) || cat.id.includes(ql)
     ).slice(0, 50)
     setSearchResults(results)
   }
