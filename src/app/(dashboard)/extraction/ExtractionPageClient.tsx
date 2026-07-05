@@ -59,7 +59,7 @@ export default function ExtractionPageClient({
       return
     }
     // ページをリフレッシュして新しい抽出を表示
-    startTransition(() => router.refresh())
+    window.location.reload()
   }
 
   return (

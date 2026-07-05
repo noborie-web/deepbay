@@ -70,13 +70,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `DB error: ${msg}` }, { status: 500 })
   }
 
-  // バックグラウンドでスクレイピング実行
-  runScrape(user.id, extraction.id, url, bulkEditSettingId, supabase)
+  // スクレイピング実行（Vercelのタイムアウト内で完了させる）
+  await runScrape(user.id, extraction.id, url, bulkEditSettingId, supabase)
 
-  return NextResponse.json({ extractionId: extraction.id }, { status: 202 })
+  return NextResponse.json({ extractionId: extraction.id }, { status: 200 })
 }
 
-async function runScrape(
+async function runScrape(  // eslint-disable-line @typescript-eslint/no-unused-vars
+
   userId: string,
   extractionId: string,
   url: string,
