@@ -26,19 +26,43 @@ export async function POST(req: NextRequest) {
   if (token) headers['Authorization'] = token.startsWith('Bearer ') ? token : `Bearer ${token}`
   if (cookie) headers['Cookie'] = cookie
 
-  const params = new URLSearchParams()
-  if (keyword) params.set('keywords', keyword)
-  if (categoryIds) params.set('searchCategoryIds', categoryIds)
-  if (minPrice) params.set('minPrice', String(minPrice))
-  if (maxPrice) params.set('maxPrice', String(maxPrice))
-  params.set('isSaleOnly', 'true')
-  params.set('page', String(page))
-  params.set('limit', '30')
+  // Try multiple param combinations for /v3/search
+  const paramSets: URLSearchParams[] = []
+
+  const base1 = new URLSearchParams()
+  if (keyword) base1.set('keyword', keyword)
+  base1.set('page', String(page))
+  base1.set('limit', '30')
+  paramSets.push(base1)
+
+  const base2 = new URLSearchParams()
+  if (keyword) base2.set('keywords', keyword)
+  base2.set('page', String(page))
+  base2.set('limit', '30')
+  paramSets.push(base2)
+
+  const base3 = new URLSearchParams()
+  if (keyword) base3.set('keyword', keyword)
+  if (minPrice) base3.set('minPrice', String(minPrice))
+  if (maxPrice) base3.set('maxPrice', String(maxPrice))
+  base3.set('isSaleOnly', 'true')
+  base3.set('page', String(page))
+  base3.set('limit', '30')
+  paramSets.push(base3)
+
+  const base4 = new URLSearchParams()
+  if (keyword) base4.set('keywords', keyword)
+  if (categoryIds) base4.set('categoryId', categoryIds)
+  if (minPrice) base4.set('minPrice', String(minPrice))
+  if (maxPrice) base4.set('maxPrice', String(maxPrice))
+  base4.set('page', String(page))
+  base4.set('limit', '30')
+  paramSets.push(base4)
 
   const results: Array<{ url: string; status: number; preview: string; itemCount?: number }> = []
 
-  for (const endpointFn of ENDPOINTS) {
-    const url = endpointFn(params)
+  for (const params of paramSets) {
+    const url = `https://snkrdunk.com/v3/search?${params}`
     try {
       const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) })
       const text = await res.text()
