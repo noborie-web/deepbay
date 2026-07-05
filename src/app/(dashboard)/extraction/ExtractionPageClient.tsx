@@ -101,7 +101,10 @@ export default function ExtractionPageClient({
       </div>
 
       {/* カテゴリ管理ボタン */}
-      <button className="border border-blue-400 text-blue-500 rounded px-4 py-1.5 text-sm hover:bg-blue-50 transition-colors mb-4">
+      <button
+        onClick={() => router.push('/categories')}
+        className="border border-blue-400 text-blue-500 rounded px-4 py-1.5 text-sm hover:bg-blue-50 transition-colors mb-4"
+      >
         出品カテゴリー管理
       </button>
 
