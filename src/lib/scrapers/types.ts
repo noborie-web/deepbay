@@ -13,13 +13,15 @@ export interface ScrapedProduct {
 export interface ScraperOptions {
   userAgent?: string
   timeoutMs?: number
+  limit?: number  // 取得件数上限
 }
 
 export interface IScraper {
   name: string
   siteKey: string
   urlPattern: RegExp
-  scrape(url: string, options?: ScraperOptions): Promise<ScrapedProduct>
+  // 単品 or 複数を統一してリストで返す
+  scrape(url: string, options?: ScraperOptions): Promise<ScrapedProduct[]>
 }
 
 export class ScraperError extends Error {

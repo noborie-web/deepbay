@@ -4,9 +4,8 @@ import { MercariScraper } from './mercari'
 import { YahooAuctionScraper } from './yahoo_auction'
 import { RakumaScraper } from './rakuma'
 
-// 新サイトを追加する場合はここにimportして追加するだけ
 const SCRAPERS: IScraper[] = [
-  new MercariScraper(),
+  new MercariScraper() as unknown as IScraper,
   new YahooAuctionScraper(),
   new RakumaScraper(),
 ]
@@ -23,12 +22,12 @@ export function getSupportedSites(): { name: string; siteKey: string; urlPattern
   }))
 }
 
-export async function scrapeUrl(url: string, options?: ScraperOptions): Promise<ScrapedProduct> {
+export async function scrapeUrl(url: string, options?: ScraperOptions): Promise<ScrapedProduct[]> {
   const scraper = findScraper(url)
   if (!scraper) {
     throw new ScraperError('このURLに対応するスクレイパーが見つかりません', 'unknown', url)
   }
-  return scraper.scrape(url, options as ScraperOptions)
+  return scraper.scrape(url, options)
 }
 
 export type { IScraper, ScrapedProduct, ScraperOptions }

@@ -19,7 +19,7 @@ export abstract class BaseScraper implements IScraper {
 
   abstract parse($: cheerio.CheerioAPI, url: string): ScrapedProduct
 
-  async scrape(url: string, options: ScraperOptions = {}): Promise<ScrapedProduct> {
+  async scrape(url: string, options: ScraperOptions = {}): Promise<ScrapedProduct[]> {
     const { userAgent = DEFAULT_UA, timeoutMs = 15000 } = options
 
     const controller = new AbortController()
@@ -41,7 +41,7 @@ export abstract class BaseScraper implements IScraper {
 
       const html = await res.text()
       const $ = cheerio.load(html)
-      return this.parse($, url)
+      return [this.parse($, url)]
     } catch (err) {
       if (err instanceof ScraperError) throw err
       throw new ScraperError(

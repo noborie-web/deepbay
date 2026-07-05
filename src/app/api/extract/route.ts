@@ -82,42 +82,46 @@ async function runScrape(
   supabase: SupabaseClient,
 ) {
   try {
-    const scraped = await scrapeUrl(url)
+    const scrapedList = await scrapeUrl(url)
 
-    let ebayTitle = scraped.title
-    let ebayPrice: number | null = scraped.price
-
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let setting: any = null
     if (bulkEditSettingId) {
-      const { data: setting } = await supabase
+      const { data } = await supabase
         .from('bulk_edit_settings')
         .select('*')
         .eq('id', bulkEditSettingId)
         .single()
-      if (setting) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const s = setting as any
-        ebayTitle = `${s.title_prefix}${scraped.title}${s.title_suffix}`.slice(0, 80)
-        ebayPrice = scraped.price ? Math.ceil(scraped.price * s.price_rate) : null
-      }
+      setting = data
     }
 
-    await supabase.from('products').insert({
-      user_id: userId,
-      extraction_id: extractionId,
-      source_url: url,
-      source_site: scraped.sourceSite,
-      source_item_id: scraped.sourceItemId,
-      original_title: scraped.title,
-      original_price: scraped.price,
-      original_description: scraped.description,
-      original_images: scraped.images,
-      original_condition: scraped.condition,
-      ebay_title: ebayTitle,
-      ebay_price: ebayPrice,
-      ebay_description: scraped.description,
-      ebay_images: scraped.images,
-      listing_status: 'draft' as const,
+    const rows = scrapedList.map((scraped) => {
+      let ebayTitle = scraped.title
+      let ebayPrice: number | null = scraped.price
+      if (setting) {
+        ebayTitle = `${setting.title_prefix}${scraped.title}${setting.title_suffix}`.slice(0, 80)
+        ebayPrice = scraped.price ? Math.ceil(scraped.price * setting.price_rate) : null
+      }
+      return {
+        user_id: userId,
+        extraction_id: extractionId,
+        source_url: scraped.sourceUrl,
+        source_site: scraped.sourceSite,
+        source_item_id: scraped.sourceItemId,
+        original_title: scraped.title,
+        original_price: scraped.price,
+        original_description: scraped.description,
+        original_images: scraped.images,
+        original_condition: scraped.condition,
+        ebay_title: ebayTitle,
+        ebay_price: ebayPrice,
+        ebay_description: scraped.description,
+        ebay_images: scraped.images,
+        listing_status: 'draft' as const,
+      }
     })
+
+    await supabase.from('products').insert(rows)
 
     await Promise.all([
       supabase

@@ -8,8 +8,8 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const product = await scrapeUrl(url)
-    return NextResponse.json({ success: true, product })
+    const products = await scrapeUrl(url, { limit: 50 })
+    return NextResponse.json({ success: true, count: products.length, products })
   } catch (err) {
     return NextResponse.json(
       { success: false, error: err instanceof Error ? err.message : String(err) },
