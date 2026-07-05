@@ -110,10 +110,10 @@ export default function DebugSearchPage() {
             {Object.keys(htmlResult.foundKeysInRsc as Record<string, unknown>).length > 0 && (
               <div className="mb-3">
                 <p className="font-bold text-green-700">見つかったキー: {Object.keys(htmlResult.foundKeysInRsc as Record<string, unknown>).join(', ')}</p>
-                <pre className="text-xs bg-green-50 p-2 rounded mt-1 overflow-x-auto whitespace-pre-wrap">{JSON.stringify(htmlResult.foundKeysInRsc, null, 2)}</pre>
+                <pre className="text-xs bg-green-50 p-2 rounded mt-1 overflow-x-auto whitespace-pre-wrap">{JSON.stringify(htmlResult.foundKeysInRsc as Record<string, string>, null, 2)}</pre>
               </div>
             )}
-            {htmlResult.idContext && (
+            {!!htmlResult.idContext && (
               <div className="mb-3">
                 <p className="font-bold">商品IDのコンテキスト:</p>
                 <pre className="text-xs bg-yellow-50 p-2 rounded mt-1 overflow-x-auto whitespace-pre-wrap">{String(htmlResult.idContext)}</pre>
