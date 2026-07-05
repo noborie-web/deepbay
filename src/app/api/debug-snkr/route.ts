@@ -8,17 +8,19 @@ const HEADERS = {
   'Origin': 'https://snkrdunk.com',
 }
 
-const SEARCH_PARAMS = 'keywords=%E3%83%80%E3%82%A6%E3%83%B3%E3%82%B8%E3%83%A3%E3%82%B1%E3%83%83%E3%83%88&searchCategoryIds=2%2F38&minPrice=5000&maxPrice=50000&isSaleOnly=true&page=1&limit=30'
+// v3/search exists (400 bad_request) - try different param combos
+const BASE = 'https://snkrdunk.com/v3/search'
+const KW = encodeURIComponent('ダウンジャケット')
 
 const ENDPOINTS = [
-  `https://snkrdunk.com/v3/search/apparel/used?${SEARCH_PARAMS}`,
-  `https://snkrdunk.com/v3/apparel/used/search?${SEARCH_PARAMS}`,
-  `https://snkrdunk.com/v3/search?${SEARCH_PARAMS}`,
-  `https://snkrdunk.com/v3/apparel/used?${SEARCH_PARAMS}`,
-  `https://snkrdunk.com/api/v3/search?${SEARCH_PARAMS}`,
-  `https://snkrdunk.com/api/search?${SEARCH_PARAMS}`,
-  `https://snkrdunk.com/v3/search/used?${SEARCH_PARAMS}`,
-  `https://api.snkrdunk.com/v3/search?${SEARCH_PARAMS}`,
+  `${BASE}?keyword=${KW}&categoryId=2%2F38&minPrice=5000&maxPrice=50000&page=1`,
+  `${BASE}?keyword=${KW}&searchCategoryId=2%2F38&minPrice=5000&maxPrice=50000&page=1`,
+  `${BASE}?q=${KW}&searchCategoryIds=2%2F38&minPrice=5000&maxPrice=50000&page=1`,
+  `${BASE}?keywords=${KW}&page=1`,
+  `${BASE}?keyword=${KW}&page=1`,
+  `${BASE}?keyword=${KW}&type=apparel&page=1`,
+  `${BASE}?keyword=${KW}&searchCategoryIds=2%2F38&page=1`,
+  `${BASE}?keywords=${KW}&searchCategoryIds=2%2F38&minPrice=5000&maxPrice=50000&page=1`,
 ]
 
 export async function GET(req: NextRequest) {
