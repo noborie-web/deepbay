@@ -152,6 +152,7 @@ export default function ExtractionPageClient({
               key={extraction.id}
               extraction={extraction}
               onViewResult={(id) => router.push(`/extraction/${id}`)}
+              onDelete={(id) => setExtractions((prev) => prev.filter((e) => e.id !== id))}
             />
           ))
         )}
