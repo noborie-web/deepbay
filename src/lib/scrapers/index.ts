@@ -28,7 +28,7 @@ export async function scrapeUrl(url: string, options?: ScraperOptions): Promise<
   if (!scraper) {
     throw new ScraperError('このURLに対応するスクレイパーが見つかりません', 'unknown', url)
   }
-  return scraper.scrape(url, options)
+  return scraper.scrape(url, options as ScraperOptions)
 }
 
 export type { IScraper, ScrapedProduct, ScraperOptions }
