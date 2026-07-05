@@ -145,79 +145,77 @@ export class SnkrDunkScraper {
     return this.urlPattern.test(url)
   }
 
-  async scrape(url: string, options: ScraperOptions = {}): Promise<ScrapedProduct[]> {
-    const { timeoutMs = 20000 } = options
-
+  private async scrapePage(url: string, timeoutMs: number): Promise<ScrapedProduct[]> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
-
     try {
-      const res = await fetch(url, {
-        headers: HEADERS,
-        signal: controller.signal,
-      })
-
-      if (!res.ok) {
-        throw new ScraperError(`HTTP ${res.status}`, this.siteKey, url)
-      }
-
+      const res = await fetch(url, { headers: HEADERS, signal: controller.signal })
+      if (!res.ok) throw new ScraperError(`HTTP ${res.status}`, this.siteKey, url)
       const html = await res.text()
       const $ = cheerio.load(html)
-
-      // Try __NEXT_DATA__ first (older Next.js pages)
       const nextDataText = $('#__NEXT_DATA__').text()
       if (nextDataText) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const nextData: any = JSON.parse(nextDataText)
         const pageProps = nextData?.props?.pageProps ?? {}
-        const candidates = [
-          pageProps.listings,
-          pageProps.items,
-          pageProps.products,
-          pageProps.searchResults,
-          pageProps.apparelUsedListings,
-          pageProps.data?.listings,
-          pageProps.data?.items,
-          pageProps.initialData?.listings,
-          pageProps.initialData?.items,
-        ]
+        const candidates = [pageProps.listings, pageProps.items, pageProps.products, pageProps.searchResults, pageProps.apparelUsedListings, pageProps.data?.listings, pageProps.data?.items]
         for (const candidate of candidates) {
           if (Array.isArray(candidate) && candidate.length > 0) {
-            const products = candidate
-              .map((item) => legacyItemToProduct(item))
-              .filter((p): p is ScrapedProduct => p !== null && p.title !== '')
+            const products = candidate.map(legacyItemToProduct).filter((p): p is ScrapedProduct => p !== null && p.title !== '')
             if (products.length > 0) return products
           }
         }
       }
-
-      // Try RSC flight data (Next.js App Router)
       const { items, source } = extractFromRscData(html)
-
-      if (items.length === 0) {
-        const hasNextF = html.includes('self.__next_f')
-        throw new ScraperError(
-          `No items found. hasNextData=${!!nextDataText}, hasNextF=${hasNextF}, htmlLength=${html.length}`,
-          this.siteKey,
-          url
-        )
-      }
-
       const mapper = source === 'serverSearchData' ? serverSearchItemToProduct : legacyItemToProduct
-      const products = items
-        .map((item) => mapper(item))
-        .filter((p): p is ScrapedProduct => p !== null && p.title !== '')
-
-      return products
-    } catch (err) {
-      if (err instanceof ScraperError) throw err
-      throw new ScraperError(
-        err instanceof Error ? err.message : 'Unknown error',
-        this.siteKey,
-        url,
-      )
+      return items.map(mapper).filter((p): p is ScrapedProduct => p !== null && p.title !== '')
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  async scrape(url: string, options: ScraperOptions = {}): Promise<ScrapedProduct[]> {
+    const { timeoutMs = 20000, limit = 600 } = options
+
+    // For search URLs, scrape multiple pages
+    const isSearchUrl = url.includes('/search') || url.includes('keywords=')
+    if (!isSearchUrl) {
+      try {
+        const products = await this.scrapePage(url, timeoutMs)
+        if (products.length === 0) throw new ScraperError('No items found', this.siteKey, url)
+        return products
+      } catch (err) {
+        if (err instanceof ScraperError) throw err
+        throw new ScraperError(err instanceof Error ? err.message : 'Unknown error', this.siteKey, url)
+      }
+    }
+
+    // Multi-page scraping for search URLs
+    const allProducts: ScrapedProduct[] = []
+    const seenIds = new Set<string>()
+    const maxPages = Math.ceil(limit / 30)
+    const baseUrl = new URL(url)
+
+    for (let page = 1; page <= maxPages && allProducts.length < limit; page++) {
+      baseUrl.searchParams.set('page', String(page))
+      const pageUrl = baseUrl.toString()
+      try {
+        const products = await this.scrapePage(pageUrl, timeoutMs)
+        if (products.length === 0) break
+        for (const p of products) {
+          const id = p.sourceItemId ?? p.sourceUrl
+          if (!seenIds.has(id)) { seenIds.add(id); allProducts.push(p) }
+        }
+        if (products.length < 20) break // last page
+        // small delay between pages
+        if (page < maxPages) await new Promise(r => setTimeout(r, 500))
+      } catch {
+        if (page === 1) throw new ScraperError('No items found on page 1', this.siteKey, url)
+        break
+      }
+    }
+
+    if (allProducts.length === 0) throw new ScraperError('No items found', this.siteKey, url)
+    return allProducts.slice(0, limit)
   }
 }
