@@ -65,7 +65,9 @@ export async function POST(req: NextRequest) {
     .single() as { data: Extraction | null; error: unknown }
 
   if (insertError || !extraction) {
-    return NextResponse.json({ error: 'DB error' }, { status: 500 })
+    const msg = insertError instanceof Error ? insertError.message : JSON.stringify(insertError)
+    console.error('Extract insert error:', msg)
+    return NextResponse.json({ error: `DB error: ${msg}` }, { status: 500 })
   }
 
   // バックグラウンドでスクレイピング実行
