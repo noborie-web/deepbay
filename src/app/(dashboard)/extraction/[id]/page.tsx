@@ -1,6 +1,7 @@
 import { redirect, notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import Link from 'next/link'
+import type { Extraction, Product } from '@/types/database'
 
 export default async function ExtractionDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -8,20 +9,22 @@ export default async function ExtractionDetailPage({ params }: { params: Promise
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const { data: extraction } = await supabase
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: extraction } = await (supabase as any)
     .from('extractions')
     .select('*')
     .eq('id', id)
     .eq('user_id', user.id)
-    .single()
+    .single() as { data: Extraction | null }
 
   if (!extraction) notFound()
 
-  const { data: products } = await supabase
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: products } = await (supabase as any)
     .from('products')
     .select('*')
     .eq('extraction_id', id)
-    .order('created_at', { ascending: true })
+    .order('created_at', { ascending: true }) as { data: Product[] | null }
 
   const items = products ?? []
 
