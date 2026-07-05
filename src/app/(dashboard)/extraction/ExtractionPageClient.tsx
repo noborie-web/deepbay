@@ -58,8 +58,8 @@ export default function ExtractionPageClient({
       setError(json.error ?? 'エラーが発生しました')
       return
     }
-    // ページをリフレッシュして新しい抽出を表示
-    window.location.reload()
+    // 抽出詳細ページへ即時遷移（進捗をリアルタイム表示）
+    router.push(`/extraction/${json.extractionId}`)
   }
 
   return (

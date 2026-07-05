@@ -1,13 +1,12 @@
-import { redirect } from 'next/navigation'
+import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import ExtractionDetailClient from './ExtractionDetailClient'
 import type { Extraction, Product } from '@/types/database'
 
-export default async function ExtractionDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/login')
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data: extraction } = await (supabase as any)
@@ -17,9 +16,7 @@ export default async function ExtractionDetailPage({ params }: { params: Promise
     .eq('user_id', user.id)
     .single() as { data: Extraction | null }
 
-  if (!extraction) {
-    return <div className="p-6 text-red-500">抽出が見つかりません</div>
-  }
+  if (!extraction) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data: products } = await (supabase as any)
@@ -28,10 +25,5 @@ export default async function ExtractionDetailPage({ params }: { params: Promise
     .eq('extraction_id', id)
     .order('created_at', { ascending: true }) as { data: Product[] | null }
 
-  return (
-    <ExtractionDetailClient
-      extraction={extraction}
-      initialProducts={products ?? []}
-    />
-  )
+  return NextResponse.json({ extraction, products: products ?? [] })
 }

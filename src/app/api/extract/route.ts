@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { scrapeUrl, findScraper, ScraperError } from '@/lib/scrapers'
+import { createClient as createServiceClient } from '@supabase/supabase-js'
 import type { Extraction, Profile } from '@/types/database'
-import type { SupabaseClient } from '@supabase/supabase-js'
 
 export const maxDuration = 300
 
@@ -42,7 +43,7 @@ export async function POST(req: NextRequest) {
   const scraper = findScraper(url)
   if (!scraper) {
     return NextResponse.json(
-      { error: 'このURLには対応していません。対応サイト: メルカリ、ヤフオク、ラクマ' },
+      { error: 'このURLには対応していません。対応サイト: メルカリ、ヤフオク、ラクマ、スニーカーダンク' },
       { status: 400 },
     )
   }
@@ -72,22 +73,43 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `DB error: ${msg}` }, { status: 500 })
   }
 
-  // スクレイピング実行（Vercelのタイムアウト内で完了させる）
-  await runScrape(user.id, extraction.id, url, bulkEditSettingId, supabase)
+  const extractionId = extraction.id
+  const userId = user.id
 
-  return NextResponse.json({ extractionId: extraction.id }, { status: 200 })
+  // レスポンス返却後にバックグラウンドでスクレイピング実行
+  after(async () => {
+    // service role clientで認証不要のDB操作
+    const bg = createServiceClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    )
+    await runScrape(userId, extractionId, url, bulkEditSettingId || null, bg)
+  })
+
+  return NextResponse.json({ extractionId }, { status: 200 })
 }
 
-async function runScrape(  // eslint-disable-line @typescript-eslint/no-unused-vars
-
+async function runScrape(
   userId: string,
   extractionId: string,
   url: string,
   bulkEditSettingId: string | null,
-  supabase: SupabaseClient,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
 ) {
   try {
-    const scrapedList = await scrapeUrl(url)
+    const limit = 600
+
+    const scrapedList = await scrapeUrl(url, {
+      limit,
+      onPage: async (fetched, total) => {
+        const pct = Math.min(Math.round((fetched / total) * 90), 90)
+        await supabase
+          .from('extractions')
+          .update({ progress: pct })
+          .eq('id', extractionId)
+      },
+    })
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let setting: any = null
@@ -100,7 +122,11 @@ async function runScrape(  // eslint-disable-line @typescript-eslint/no-unused-v
       setting = data
     }
 
-    const rows = scrapedList.map((scraped) => {
+    const rows = scrapedList.map((scraped: {
+      sourceUrl: string; sourceSite: string; sourceItemId: string | null
+      title: string; price: number | null; description: string
+      images: string[]; condition: string | null
+    }) => {
       let ebayTitle = scraped.title
       let ebayPrice: number | null = scraped.price
       if (setting) {
@@ -126,7 +152,7 @@ async function runScrape(  // eslint-disable-line @typescript-eslint/no-unused-v
       }
     })
 
-    // 大量データを100件ずつに分割してinsert
+    // 100件ずつ分割してinsert
     const chunkSize = 100
     for (let i = 0; i < rows.length; i += chunkSize) {
       await supabase.from('products').insert(rows.slice(i, i + chunkSize))
@@ -135,7 +161,7 @@ async function runScrape(  // eslint-disable-line @typescript-eslint/no-unused-v
     await Promise.all([
       supabase
         .from('extractions')
-        .update({ status: 'completed' as const, progress: 100, extracted_at: new Date().toISOString() })
+        .update({ status: 'completed', progress: 100, extracted_at: new Date().toISOString() })
         .eq('id', extractionId),
       supabase.rpc('increment_extraction_used', { user_id: userId }),
     ])
@@ -144,7 +170,7 @@ async function runScrape(  // eslint-disable-line @typescript-eslint/no-unused-v
     console.error('Scrape failed:', message)
     await supabase
       .from('extractions')
-      .update({ status: 'failed' as const })
+      .update({ status: 'failed', progress: 0 })
       .eq('id', extractionId)
   }
 }

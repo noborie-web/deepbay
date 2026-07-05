@@ -175,7 +175,7 @@ export class SnkrDunkScraper {
   }
 
   async scrape(url: string, options: ScraperOptions = {}): Promise<ScrapedProduct[]> {
-    const { timeoutMs = 20000, limit = 600 } = options
+    const { timeoutMs = 20000, limit = 600, onPage } = options
 
     // For search URLs, scrape multiple pages
     const isSearchUrl = url.includes('/search') || url.includes('keywords=')
@@ -206,6 +206,7 @@ export class SnkrDunkScraper {
           const id = p.sourceItemId ?? p.sourceUrl
           if (!seenIds.has(id)) { seenIds.add(id); allProducts.push(p) }
         }
+        onPage?.(allProducts.length, limit)
         if (products.length < 20) break // last page
         if (page < maxPages) await new Promise(r => setTimeout(r, 200))
       } catch {

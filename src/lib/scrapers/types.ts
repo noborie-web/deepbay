@@ -14,6 +14,7 @@ export interface ScraperOptions {
   userAgent?: string
   timeoutMs?: number
   limit?: number  // 取得件数上限
+  onPage?: (fetched: number, total: number) => void  // ページ取得後コールバック
 }
 
 export interface IScraper {
