@@ -77,50 +77,41 @@ function legacyItemToProduct(item: any): ScrapedProduct | null {
 
 function extractFromRscData(html: string): { items: unknown[]; source: 'serverSearchData' | 'legacy' } {
   const pushMatches = [...html.matchAll(/self\.__next_f\.push\(\[(\d+),([\s\S]*?)\]\)/g)]
-  const combined = pushMatches.map(m => m[2]).join('\n')
 
-  // Primary: look for serverSearchData.products (confirmed format)
-  for (const source of [combined, html]) {
-    const idx = source.indexOf('"serverSearchData"')
-    if (idx !== -1) {
-      // Find the products array within serverSearchData
-      const chunk = source.slice(idx, idx + 500000)
-      const productsIdx = chunk.indexOf('"products"')
-      if (productsIdx !== -1) {
-        const afterProducts = chunk.slice(productsIdx + '"products"'.length)
-        const colonIdx = afterProducts.indexOf('[')
-        if (colonIdx !== -1 && colonIdx < 10) {
-          // Find matching closing bracket
-          let depth = 0
-          let end = -1
-          const arr = afterProducts.slice(colonIdx)
-          for (let i = 0; i < arr.length; i++) {
-            if (arr[i] === '[') depth++
-            else if (arr[i] === ']') { depth--; if (depth === 0) { end = i; break } }
-          }
-          if (end !== -1) {
-            try {
-              const parsed = JSON.parse(arr.slice(0, end + 1))
-              if (Array.isArray(parsed) && parsed.length > 0) {
-                return { items: parsed, source: 'serverSearchData' }
-              }
-            } catch {
-              // try unescaping
-              try {
-                const unescaped = arr.slice(0, end + 1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
-                const parsed = JSON.parse(unescaped)
-                if (Array.isArray(parsed) && parsed.length > 0) {
-                  return { items: parsed, source: 'serverSearchData' }
-                }
-              } catch { /* continue */ }
-            }
-          }
-        }
-      }
+  // Primary: parse each RSC push string and look for serverSearchData
+  for (const match of pushMatches) {
+    const dataStr = match[2].trim()
+    if (!dataStr.startsWith('"')) continue
+    let parsed: string
+    try {
+      parsed = JSON.parse(dataStr) as string
+    } catch { continue }
+    if (typeof parsed !== 'string' || !parsed.includes('serverSearchData')) continue
+
+    const sdIdx = parsed.indexOf('"serverSearchData"')
+    if (sdIdx === -1) continue
+    const afterKey = parsed.slice(sdIdx + '"serverSearchData"'.length).trimStart()
+    if (!afterKey.startsWith(':')) continue
+    const objStart = afterKey.indexOf('{')
+    if (objStart === -1 || objStart > 5) continue
+    const jsonStr = afterKey.slice(objStart)
+    let depth = 0, end = -1
+    for (let i = 0; i < jsonStr.length; i++) {
+      if (jsonStr[i] === '{') depth++
+      else if (jsonStr[i] === '}') { depth--; if (depth === 0) { end = i; break } }
     }
+    if (end === -1) continue
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const obj: any = JSON.parse(jsonStr.slice(0, end + 1))
+      if (obj?.products && Array.isArray(obj.products) && obj.products.length > 0) {
+        return { items: obj.products, source: 'serverSearchData' }
+      }
+    } catch { /* continue */ }
   }
 
-  // Fallback: legacy patterns
+  // Fallback: legacy patterns on raw HTML
+  const combined = pushMatches.map(m => m[2]).join('\n')
   const patterns = [
     /"apparelUsedListings"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
     /"listings"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
@@ -128,7 +119,6 @@ function extractFromRscData(html: string): { items: unknown[]; source: 'serverSe
     /"products"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
     /"searchResults"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
   ]
-
   for (const source of [combined, html]) {
     for (const pattern of patterns) {
       const match = source.match(pattern)
