@@ -19,15 +19,21 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
 
   if (!extraction) return NextResponse.json({ error: '抽出が見つかりません' }, { status: 404 })
 
-  // service roleでRLSをバイパスして削除
   const admin = createServiceClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   )
 
-  await admin.from('products').delete().eq('extraction_id', id)
-  const { error } = await admin.from('extractions').delete().eq('id', id)
+  // productsを先に削除（エラーは無視してもよい）
+  const { error: prodErr } = await admin.from('products').delete().eq('extraction_id', id)
+  if (prodErr) console.warn('products delete warn:', prodErr.message)
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  // extractionを削除
+  const { error: extErr } = await admin.from('extractions').delete().eq('id', id)
+  if (extErr) {
+    console.error('extractions delete error:', extErr.message, extErr)
+    return NextResponse.json({ error: extErr.message }, { status: 500 })
+  }
+
   return NextResponse.json({ ok: true })
 }
