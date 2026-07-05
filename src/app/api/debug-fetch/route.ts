@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
     const hasNextF = html.includes('self.__next_f')
 
     // Extract RSC push data
-    const pushMatches = [...html.matchAll(/self\.__next_f\.push\(\[(\d+),(.*?)\]\)/gs)]
+    const pushMatches = [...html.matchAll(/self\.__next_f\.push\(\[(\d+),([\s\S]*?)\]\)/g)]
     const rscCombined = pushMatches.map(m => m[2]).join('\n')
 
     // Search for product-like keys

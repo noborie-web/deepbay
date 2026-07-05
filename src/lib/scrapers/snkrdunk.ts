@@ -47,7 +47,7 @@ function itemToProduct(item: any): ScrapedProduct | null {
 
 function extractFromRscData(html: string): unknown[] {
   // Collect all RSC push data strings
-  const pushMatches = [...html.matchAll(/self\.__next_f\.push\(\[(\d+),(.*?)\]\)/gs)]
+  const pushMatches = [...html.matchAll(/self\.__next_f\.push\(\[(\d+),([\s\S]*?)\]\)/g)]
   const combined = pushMatches.map(m => m[2]).join('\n')
 
   const patterns = [
