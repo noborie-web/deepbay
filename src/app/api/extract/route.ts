@@ -4,6 +4,8 @@ import { scrapeUrl, findScraper, ScraperError } from '@/lib/scrapers'
 import type { Extraction, Profile } from '@/types/database'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
+export const maxDuration = 300
+
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
 
@@ -124,7 +126,11 @@ async function runScrape(  // eslint-disable-line @typescript-eslint/no-unused-v
       }
     })
 
-    await supabase.from('products').insert(rows)
+    // 大量データを100件ずつに分割してinsert
+    const chunkSize = 100
+    for (let i = 0; i < rows.length; i += chunkSize) {
+      await supabase.from('products').insert(rows.slice(i, i + chunkSize))
+    }
 
     await Promise.all([
       supabase

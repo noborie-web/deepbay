@@ -207,8 +207,7 @@ export class SnkrDunkScraper {
           if (!seenIds.has(id)) { seenIds.add(id); allProducts.push(p) }
         }
         if (products.length < 20) break // last page
-        // small delay between pages
-        if (page < maxPages) await new Promise(r => setTimeout(r, 500))
+        if (page < maxPages) await new Promise(r => setTimeout(r, 200))
       } catch {
         if (page === 1) throw new ScraperError('No items found on page 1', this.siteKey, url)
         break
