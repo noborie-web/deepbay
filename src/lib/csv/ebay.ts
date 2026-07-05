@@ -1,150 +1,121 @@
-import type { Product } from '@/types/database'
-import type { BulkEditSetting } from '@/types/database'
+import type { ScrapedProduct } from '@/lib/scrapers/types'
 
-// 日本語の商品状態 → eBay Condition ID マッピング
-const CONDITION_MAP: Record<string, { id: string; label: string }> = {
-  '新品、未使用': { id: '1000', label: 'New' },
-  '未使用に近い': { id: '1500', label: 'Open box' },
-  '目立った傷や汚れなし': { id: '3000', label: 'Used' },
-  'やや傷や汚れあり': { id: '3000', label: 'Used' },
-  '傷や汚れあり': { id: '5000', label: 'For parts or not working' },
-  '全体的に状態が悪い': { id: '7000', label: 'For parts or not working' },
-  // ヤフオク
-  '未使用': { id: '1000', label: 'New' },
-  '良い': { id: '3000', label: 'Used' },
-  '可': { id: '5000', label: 'For parts or not working' },
-  '悪い': { id: '7000', label: 'For parts or not working' },
+const JPY_TO_USD = 0.0067  // 約149円/ドル
+
+const CONDITION_ID_MAP: Record<string, string> = {
+  '新品、未使用': '1000',
+  '未使用に近い': '1500',
+  '目立った傷や汚れなし': '2500',
+  'やや傷や汚れあり': '3000',
+  '傷や汚れあり': '4000',
+  '全体的に状態が悪い': '7000',
 }
 
-// eBay Flat File (カテゴリ別出品) のカラム定義
-const EBAY_CSV_COLUMNS = [
-  'Action(SiteID=Japan|Country=JP|Currency=JPY|Version=1193|CC=UTF-8)',
-  'Category',
-  'Title',
-  'ConditionID',
-  'Description',
-  'Format',
-  'Duration',
-  'StartPrice',
-  'BuyItNowPrice',
-  'Quantity',
-  'PicURL',
-  'ShippingType',
-  'ShippingService',
-  'ShippingServiceCost',
-  'DispatchTimeMax',
-  'Location',
-  'Country',
-  'PaymentProfileName',
-  'ReturnProfileName',
-  'ShippingProfileName',
+function toConditionId(condition: string | null): string {
+  if (!condition) return '3000'
+  return CONDITION_ID_MAP[condition] ?? '3000'
+}
+
+function customLabel(): string {
+  const now = new Date()
+  const date = now.toISOString().slice(0, 10).replace(/-/g, '')
+  const uuid = crypto.randomUUID().replace(/-/g, '_')
+  return `ele_${date}_${uuid}`
+}
+
+function buildDescription(product: ScrapedProduct): string {
+  const conditionText = product.condition ?? 'Pre-owned / Used'
+  const descText = product.description
+    ? `<li><p style="margin-bottom: 2em; padding: 0.5em 2em;">${product.description.replace(/\n/g, '<br>').slice(0, 2000)}</p></li>`
+    : ''
+
+  const html = `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>.tmpl{word-break:break-word;width:100%;background:#fff;border:1px solid #000;padding:0 20px 30px;box-sizing:border-box}.tmpl h1{font-family:Verdana,sans-serif;font-weight:700;font-size:22px;margin:30px 0;text-align:center;color:#111}.tmpl h2{font-family:Verdana,sans-serif;margin:0 0 15px;font-size:18px;background:#1c1c1c;color:#fff;padding:10px}.tmpl p{word-break:break-word;font-family:Verdana,sans-serif;margin:0;padding:0 10px 20px;color:#111;text-align:left;line-height:24px;font-size:14px}</style><div class="tmpl"><h1><br></h1><section><h2>Description</h2><ol><li><p style="margin-bottom:2em;padding:.5em 2em;color:#333">Condition: <font color="red"><b>${conditionText}</b></font></p></li>${descText}<li><p style="margin-bottom:2em;padding:.5em 2em"><font color="#ff0000"><b>Please feel free to contact us. We will reply within 2 days.</b></font></p></li></ol></section><aside><h2>Shipping</h2><p>Shipping from Monday to Friday. We do not mark merchandise values below value or mark items as gifts.</p><h2>About Importer's Obligation</h2><p>Import duties, taxes, and charges are the buyer's responsibility.</p></aside></div>`
+
+  return `<![CDATA[${html}]]>`
+}
+
+export interface EbayCsvOptions {
+  category: string
+  paymentProfileName: string
+  returnProfileName: string
+  shippingProfileName: string
+  sellerEmail?: string
+  exchangeRate?: number
+}
+
+const CSV_HEADERS = [
+  'Action(CC=Cp1252)', 'CustomLabel', 'StartPrice', 'ConditionID', 'Title', 'Description',
+  'C:Brand', 'PicURL', 'UPC', 'Category', 'PayPalAccepted', 'PayPalEmailAddress',
+  'PaymentProfileName', 'ReturnProfileName', 'ShippingProfileName',
+  'Country', 'Location', 'Apply Profile Domestic', 'Apply Profile International',
+  'BuyerRequirements:LinkedPayPalAccount', 'Duration', 'Format', 'Quantity',
+  'Currency', 'SiteID', 'C:Country', 'C:Accents', 'C:California Prop 65 Warning',
+  'C:Chest Size', 'C:Closure', 'C:Collar Style', 'C:Color', 'C:Country/Region of Manufacture',
+  'C:Department', 'C:Fabric Type', 'C:Features', 'C:Fit', 'C:Garment Care',
+  'C:Handmade', 'C:Insulation Material', 'C:Jacket/Coat Length', 'C:Lining Material',
+  'C:MPN', 'C:Model', 'C:Occasion', 'C:Outer Shell Material', 'C:Pattern',
+  'C:Performance/Activity', 'C:Personalization Instructions', 'C:Personalize',
+  'C:Product Line', 'C:Season', 'C:Size', 'C:Size Type', 'C:Style', 'C:Theme',
+  'C:Type', 'C:Unit Quantity', 'C:Unit Type', 'C:Vintage', 'C:Warmth Weight',
 ]
 
-export interface EbayRow {
-  action: string
-  categoryId: string
-  title: string
-  conditionId: string
-  description: string
-  startPrice: number
-  buyItNowPrice?: number
-  images: string[]
-  quantity: number
-  location: string
-}
-
-function applyBulkSettings(product: Product, settings?: BulkEditSetting | null): EbayRow {
-  const rate = settings?.price_rate ?? 1.0
-  const prefix = settings?.title_prefix ?? ''
-  const suffix = settings?.title_suffix ?? ''
-  const condMap: Record<string, string> = settings?.condition_mapping ?? {}
-
-  const rawTitle = product.ebay_title ?? product.original_title ?? ''
-  const title = `${prefix}${rawTitle}${suffix}`.slice(0, 80) // eBay title max 80 chars
-
-  const originalCondKey = product.original_condition ?? ''
-  const mappedCond = condMap[originalCondKey] ?? originalCondKey
-  const conditionEntry = CONDITION_MAP[mappedCond] ?? CONDITION_MAP[originalCondKey] ?? { id: '3000', label: 'Used' }
-
-  const basePrice = product.ebay_price ?? product.original_price ?? 0
-  const startPrice = Math.ceil(basePrice * rate)
-
-  const images = (product.ebay_images?.length ? product.ebay_images : product.original_images) as string[]
-
-  return {
-    action: 'Add',
-    categoryId: product.ebay_category_id ?? '',
-    title,
-    conditionId: conditionEntry.id,
-    description: buildHtmlDescription(
-      product.ebay_description ?? product.original_description ?? '',
-      settings?.description_template,
-    ),
-    startPrice,
-    images,
-    quantity: 1,
-    location: 'Japan',
-  }
-}
-
-function buildHtmlDescription(description: string, template?: string): string {
-  const escaped = description
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, '<br>')
-
-  if (template) {
-    return template.replace('{{description}}', escaped)
-  }
-
-  return `<div style="font-family:sans-serif;line-height:1.6">${escaped}</div>`
-}
-
-function rowToCsvLine(row: EbayRow): string {
-  const picUrls = row.images.slice(0, 12).join('|') // eBay最大12枚
-
-  const values = [
-    row.action,
-    row.categoryId,
-    row.title,
-    row.conditionId,
-    row.description,
-    'FixedPriceItem',
-    'GTC',
-    row.startPrice.toString(),
-    (row.buyItNowPrice ?? row.startPrice).toString(),
-    row.quantity.toString(),
-    picUrls,
-    'Flat',
-    'JP_EMS',
-    '0',
-    '3',
-    row.location,
-    'JP',
-    '',
-    '',
-    '',
-  ]
-
-  return values.map(escapeCsv).join(',')
-}
-
 function escapeCsv(value: string): string {
-  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+  if (value.includes(',') || value.includes('"') || value.includes('\n') || value.includes('\r')) {
     return `"${value.replace(/"/g, '""')}"`
   }
   return value
 }
 
 export function generateEbayCsv(
-  products: Product[],
-  bulkSetting?: BulkEditSetting | null,
+  products: ScrapedProduct[],
+  options: EbayCsvOptions,
 ): string {
-  const header = EBAY_CSV_COLUMNS.join(',')
+  const rate = options.exchangeRate ?? JPY_TO_USD
+
   const rows = products.map((p) => {
-    const row = applyBulkSettings(p, bulkSetting)
-    return rowToCsvLine(row)
+    const row = [
+      'Add',
+      customLabel(),
+      p.price ? (p.price * rate).toFixed(2) : '9.99',
+      toConditionId(p.condition),
+      p.title.slice(0, 80),
+      buildDescription(p),
+      p.category ?? 'NA',
+      p.images.slice(0, 12).join('|'),
+      'NA',
+      options.category,
+      '1',
+      options.sellerEmail ?? 'payAddress',
+      options.paymentProfileName,
+      options.returnProfileName,
+      options.shippingProfileName,
+      'JP',
+      'Japan',
+      '0.0',
+      '0.0',
+      '0.0',
+      'GTC',
+      'FixedPriceItem',
+      '1',
+      'USD',
+      'US',
+      'Japan',
+      ...Array(34).fill('NA'),
+    ]
+    return row.map(escapeCsv).join(',')
   })
-  return [header, ...rows].join('\n')
+
+  return [CSV_HEADERS.join(','), ...rows].join('\r\n')
+}
+
+export function applyBulkSettings(
+  product: ScrapedProduct,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setting: any,
+): { title: string; price: number | null } {
+  const title = `${setting.title_prefix ?? ''}${product.title}${setting.title_suffix ?? ''}`.slice(0, 80)
+  const price = product.price && setting.price_rate
+    ? Math.ceil(product.price * setting.price_rate)
+    : product.price
+  return { title, price }
 }
