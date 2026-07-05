@@ -11,9 +11,11 @@ const BASE_HEADERS = {
 // Various endpoint patterns to try for snkrdunk search API
 const ENDPOINTS = [
   (params: URLSearchParams) => `https://snkrdunk.com/v3/search?${params}`,
+  (params: URLSearchParams) => `https://snkrdunk.com/v1/search?${params}`,
+  (params: URLSearchParams) => `https://snkrdunk.com/v1/apparel/used/listings?${params}`,
   (params: URLSearchParams) => `https://snkrdunk.com/v3/apparel/used/listings?${params}`,
   (params: URLSearchParams) => `https://snkrdunk.com/v3/apparel/used/search?${params}`,
-  (params: URLSearchParams) => `https://snkrdunk.com/api/v3/search?${params}`,
+  (params: URLSearchParams) => `https://snkrdunk.com/v1/apparel/used/search?${params}`,
 ]
 
 export async function POST(req: NextRequest) {
