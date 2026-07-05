@@ -26,7 +26,6 @@ function itemToProduct(item: any): ScrapedProduct | null {
     images.push(item.thumbnailUrl)
   }
 
-  // snkrdunkの画像URLをlargeサイズに変換
   const largeImages = images.map((url: string) =>
     url.includes('?') ? url.replace(/\?.*$/, '?size=l') : `${url}?size=l`
   )
@@ -44,6 +43,39 @@ function itemToProduct(item: any): ScrapedProduct | null {
     condition: item.condition ?? item.itemCondition ?? null,
     category: item.categoryName ?? item.brand?.name ?? null,
   }
+}
+
+function extractFromRscData(html: string): unknown[] {
+  // Collect all RSC push data strings
+  const pushMatches = [...html.matchAll(/self\.__next_f\.push\(\[(\d+),(.*?)\]\)/gs)]
+  const combined = pushMatches.map(m => m[2]).join('\n')
+
+  const patterns = [
+    /"apparelUsedListings"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
+    /"listings"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
+    /"items"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
+    /"products"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
+    /"searchResults"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
+    /"result"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
+  ]
+
+  for (const source of [combined, html]) {
+    for (const pattern of patterns) {
+      const match = source.match(pattern)
+      if (match) {
+        try {
+          const arr = JSON.parse(match[1])
+          if (Array.isArray(arr) && arr.length > 0 && arr[0] && typeof arr[0] === 'object') {
+            return arr
+          }
+        } catch {
+          // continue
+        }
+      }
+    }
+  }
+
+  return []
 }
 
 export class SnkrDunkScraper {
@@ -74,44 +106,40 @@ export class SnkrDunkScraper {
       const html = await res.text()
       const $ = cheerio.load(html)
 
-      // __NEXT_DATA__からデータを取得
+      // Try __NEXT_DATA__ first (older Next.js pages)
       const nextDataText = $('#__NEXT_DATA__').text()
-      if (!nextDataText) {
-        throw new ScraperError('__NEXT_DATA__ not found', this.siteKey, url)
-      }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const nextData: any = JSON.parse(nextDataText)
-
-      // 検索結果ページ
-      const pageProps = nextData?.props?.pageProps ?? {}
-
-      // 商品リストを様々なキーで探す
-      const candidates = [
-        pageProps.listings,
-        pageProps.items,
-        pageProps.products,
-        pageProps.searchResults,
-        pageProps.apparelUsedListings,
-        pageProps.data?.listings,
-        pageProps.data?.items,
-        pageProps.initialData?.listings,
-        pageProps.initialData?.items,
-      ]
-
-      let items: unknown[] = []
-      for (const candidate of candidates) {
-        if (Array.isArray(candidate) && candidate.length > 0) {
-          items = candidate
-          break
+      if (nextDataText) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const nextData: any = JSON.parse(nextDataText)
+        const pageProps = nextData?.props?.pageProps ?? {}
+        const candidates = [
+          pageProps.listings,
+          pageProps.items,
+          pageProps.products,
+          pageProps.searchResults,
+          pageProps.apparelUsedListings,
+          pageProps.data?.listings,
+          pageProps.data?.items,
+          pageProps.initialData?.listings,
+          pageProps.initialData?.items,
+        ]
+        for (const candidate of candidates) {
+          if (Array.isArray(candidate) && candidate.length > 0) {
+            const products = candidate
+              .map((item) => itemToProduct(item))
+              .filter((p): p is ScrapedProduct => p !== null && p.title !== '')
+            if (products.length > 0) return products
+          }
         }
       }
 
+      // Try RSC flight data (Next.js App Router)
+      const items = extractFromRscData(html)
+
       if (items.length === 0) {
-        // __NEXT_DATA__全体を検索して配列を探す
-        const dataStr = JSON.stringify(nextData)
+        const hasNextF = html.includes('self.__next_f')
         throw new ScraperError(
-          `No items found. Data keys: ${Object.keys(pageProps).join(', ')}. Data preview: ${dataStr.slice(0, 200)}`,
+          `No items found. hasNextData=${!!nextDataText}, hasNextF=${hasNextF}, htmlLength=${html.length}`,
           this.siteKey,
           url
         )
