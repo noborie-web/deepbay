@@ -45,10 +45,15 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete }: Pr
   }
 
   async function handleDelete() {
-    if (!confirm('この抽出を削除しますか？')) return
+    if (!confirm('この抽出を削除しますか？商品データも全て削除されます。')) return
     setMenuOpen(false)
     const res = await fetch(`/api/extractions/${extraction.id}`, { method: 'DELETE' })
-    if (res.ok) onDelete?.(extraction.id)
+    if (res.ok) {
+      onDelete?.(extraction.id)
+    } else {
+      const json = await res.json().catch(() => ({}))
+      alert(`削除に失敗しました: ${json.error ?? res.status}`)
+    }
   }
 
   return (
