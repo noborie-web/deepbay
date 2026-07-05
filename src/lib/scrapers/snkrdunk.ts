@@ -11,7 +11,41 @@ const HEADERS = {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function itemToProduct(item: any): ScrapedProduct | null {
+function serverSearchItemToProduct(item: any): ScrapedProduct | null {
+  if (!item) return null
+
+  // itemId format: "uaf-47646401" → extract numeric part
+  // link format: "/apparel-free-used-items/47646401"
+  const link: string = item.link ?? ''
+  const linkIdMatch = link.match(/\/(\d+)$/)
+  const itemId = linkIdMatch?.[1] ?? item.itemId ?? ''
+  if (!itemId) return null
+
+  const images: string[] = []
+  if (item.imageUrl) images.push(item.imageUrl)
+  if (item.imageUrls && Array.isArray(item.imageUrls)) images.push(...item.imageUrls.filter(Boolean))
+
+  const price = item.salePrice ?? item.price ?? item.minPrice ?? null
+
+  const sourceUrl = link.startsWith('http')
+    ? link
+    : `https://snkrdunk.com${link}`
+
+  return {
+    sourceUrl,
+    sourceSite: 'snkrdunk',
+    sourceItemId: String(itemId),
+    title: item.title ?? item.name ?? '',
+    price: typeof price === 'number' ? price : null,
+    description: item.description ?? '',
+    images,
+    condition: item.condition ?? null,
+    category: item.brandId ?? item.categoryId ?? null,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function legacyItemToProduct(item: any): ScrapedProduct | null {
   if (!item) return null
 
   const itemId = item.id ?? item.listingId ?? String(item.apparelUsedListingId ?? '')
@@ -26,10 +60,6 @@ function itemToProduct(item: any): ScrapedProduct | null {
     images.push(item.thumbnailUrl)
   }
 
-  const largeImages = images.map((url: string) =>
-    url.includes('?') ? url.replace(/\?.*$/, '?size=l') : `${url}?size=l`
-  )
-
   const price = item.price ?? item.minPrice ?? item.lowestPrice ?? null
 
   return {
@@ -39,24 +69,64 @@ function itemToProduct(item: any): ScrapedProduct | null {
     title: item.name ?? item.title ?? item.productName ?? '',
     price: typeof price === 'number' ? price : null,
     description: item.description ?? '',
-    images: largeImages,
+    images,
     condition: item.condition ?? item.itemCondition ?? null,
     category: item.categoryName ?? item.brand?.name ?? null,
   }
 }
 
-function extractFromRscData(html: string): unknown[] {
-  // Collect all RSC push data strings
+function extractFromRscData(html: string): { items: unknown[]; source: 'serverSearchData' | 'legacy' } {
   const pushMatches = [...html.matchAll(/self\.__next_f\.push\(\[(\d+),([\s\S]*?)\]\)/g)]
   const combined = pushMatches.map(m => m[2]).join('\n')
 
+  // Primary: look for serverSearchData.products (confirmed format)
+  for (const source of [combined, html]) {
+    const idx = source.indexOf('"serverSearchData"')
+    if (idx !== -1) {
+      // Find the products array within serverSearchData
+      const chunk = source.slice(idx, idx + 500000)
+      const productsIdx = chunk.indexOf('"products"')
+      if (productsIdx !== -1) {
+        const afterProducts = chunk.slice(productsIdx + '"products"'.length)
+        const colonIdx = afterProducts.indexOf('[')
+        if (colonIdx !== -1 && colonIdx < 10) {
+          // Find matching closing bracket
+          let depth = 0
+          let end = -1
+          const arr = afterProducts.slice(colonIdx)
+          for (let i = 0; i < arr.length; i++) {
+            if (arr[i] === '[') depth++
+            else if (arr[i] === ']') { depth--; if (depth === 0) { end = i; break } }
+          }
+          if (end !== -1) {
+            try {
+              const parsed = JSON.parse(arr.slice(0, end + 1))
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                return { items: parsed, source: 'serverSearchData' }
+              }
+            } catch {
+              // try unescaping
+              try {
+                const unescaped = arr.slice(0, end + 1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+                const parsed = JSON.parse(unescaped)
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                  return { items: parsed, source: 'serverSearchData' }
+                }
+              } catch { /* continue */ }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback: legacy patterns
   const patterns = [
     /"apparelUsedListings"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
     /"listings"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
     /"items"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
     /"products"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
     /"searchResults"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
-    /"result"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
   ]
 
   for (const source of [combined, html]) {
@@ -66,16 +136,14 @@ function extractFromRscData(html: string): unknown[] {
         try {
           const arr = JSON.parse(match[1])
           if (Array.isArray(arr) && arr.length > 0 && arr[0] && typeof arr[0] === 'object') {
-            return arr
+            return { items: arr, source: 'legacy' }
           }
-        } catch {
-          // continue
-        }
+        } catch { /* continue */ }
       }
     }
   }
 
-  return []
+  return { items: [], source: 'legacy' }
 }
 
 export class SnkrDunkScraper {
@@ -126,7 +194,7 @@ export class SnkrDunkScraper {
         for (const candidate of candidates) {
           if (Array.isArray(candidate) && candidate.length > 0) {
             const products = candidate
-              .map((item) => itemToProduct(item))
+              .map((item) => legacyItemToProduct(item))
               .filter((p): p is ScrapedProduct => p !== null && p.title !== '')
             if (products.length > 0) return products
           }
@@ -134,7 +202,7 @@ export class SnkrDunkScraper {
       }
 
       // Try RSC flight data (Next.js App Router)
-      const items = extractFromRscData(html)
+      const { items, source } = extractFromRscData(html)
 
       if (items.length === 0) {
         const hasNextF = html.includes('self.__next_f')
@@ -145,8 +213,9 @@ export class SnkrDunkScraper {
         )
       }
 
+      const mapper = source === 'serverSearchData' ? serverSearchItemToProduct : legacyItemToProduct
       const products = items
-        .map((item) => itemToProduct(item))
+        .map((item) => mapper(item))
         .filter((p): p is ScrapedProduct => p !== null && p.title !== '')
 
       return products
