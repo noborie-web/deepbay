@@ -131,7 +131,7 @@ export default function ExtractionPageClient({
       </div>
 
       {/* 抽出リスト */}
-      <div className="border rounded-md bg-white overflow-hidden">
+      <div className="border rounded-md bg-white overflow-visible">
         {/* ヘッダー */}
         <div className="grid grid-cols-[160px_1fr_1fr_180px_140px_1fr] gap-4 px-4 py-2 bg-gray-50 border-b text-xs font-medium text-gray-500">
           <span>種別</span>

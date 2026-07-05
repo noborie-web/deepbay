@@ -155,7 +155,7 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete }: Pr
           </button>
 
           {menuOpen && (
-            <div className="absolute right-0 top-9 z-50 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+            <div className="absolute right-0 bottom-9 z-50 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
               <button
                 onClick={() => { onViewResult(extraction.id); setMenuOpen(false) }}
                 className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors"
