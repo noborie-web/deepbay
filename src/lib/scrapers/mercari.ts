@@ -16,14 +16,14 @@ export class MercariScraper {
       throw new ScraperError('Invalid Mercari URL', this.siteKey, url)
     }
 
-    const apiUrl = `https://api.mercari.jp/items/get?id=${itemId}`
+    const apiUrl = `https://api.mercari.jp/v1/items/get_items_by_id?id=${itemId}`
     const res = await fetch(apiUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
-        'Accept': 'application/json',
+        'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'ja-JP,ja;q=0.9',
-        'DPoP': 'dummy',
-        'X-Platform': 'ios',
+        'Origin': 'https://jp.mercari.com',
+        'Referer': 'https://jp.mercari.com/',
       },
     })
 
