@@ -8,19 +8,15 @@ const HEADERS = {
   'Origin': 'https://snkrdunk.com',
 }
 
-// v3/search exists (400 bad_request) - try different param combos
 const BASE = 'https://snkrdunk.com/v3/search'
-const KW = encodeURIComponent('ダウンジャケット')
+const KW = 'ダウンジャケット'
 
-const ENDPOINTS = [
-  `${BASE}?keyword=${KW}&categoryId=2%2F38&minPrice=5000&maxPrice=50000&page=1`,
-  `${BASE}?keyword=${KW}&searchCategoryId=2%2F38&minPrice=5000&maxPrice=50000&page=1`,
-  `${BASE}?q=${KW}&searchCategoryIds=2%2F38&minPrice=5000&maxPrice=50000&page=1`,
-  `${BASE}?keywords=${KW}&page=1`,
-  `${BASE}?keyword=${KW}&page=1`,
-  `${BASE}?keyword=${KW}&type=apparel&page=1`,
-  `${BASE}?keyword=${KW}&searchCategoryIds=2%2F38&page=1`,
-  `${BASE}?keywords=${KW}&searchCategoryIds=2%2F38&minPrice=5000&maxPrice=50000&page=1`,
+const POST_BODIES = [
+  { keywords: KW, searchCategoryIds: ['2/38'], minPrice: 5000, maxPrice: 50000, isSaleOnly: true, page: 1 },
+  { keyword: KW, searchCategoryIds: ['2/38'], minPrice: 5000, maxPrice: 50000, page: 1 },
+  { keywords: KW, categoryIds: ['2/38'], minPrice: 5000, maxPrice: 50000, page: 1 },
+  { keywords: KW, page: 1 },
+  { keyword: KW, page: 1 },
 ]
 
 export async function GET(req: NextRequest) {
@@ -35,13 +31,19 @@ export async function GET(req: NextRequest) {
   const results: Record<string, { status: number; preview: string }> = {}
 
   await Promise.all(
-    ENDPOINTS.map(async (endpoint) => {
+    POST_BODIES.map(async (body) => {
+      const key = JSON.stringify(body)
       try {
-        const res = await fetch(endpoint, { headers: HEADERS, signal: AbortSignal.timeout(5000) })
+        const res = await fetch(BASE, {
+          method: 'POST',
+          headers: { ...HEADERS, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(5000),
+        })
         const text = await res.text()
-        results[endpoint] = { status: res.status, preview: text.slice(0, 300) }
+        results[key] = { status: res.status, preview: text.slice(0, 500) }
       } catch (err) {
-        results[endpoint] = { status: 0, preview: String(err) }
+        results[key] = { status: 0, preview: String(err) }
       }
     })
   )
