@@ -2,8 +2,11 @@ import { NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 
 async function getEbayToken(): Promise<string> {
-  const clientId = process.env.EBAY_CLIENT_ID!
-  const clientSecret = process.env.EBAY_CLIENT_SECRET!
+  const clientId = (process.env.EBAY_CLIENT_ID ?? '').trim()
+  const clientSecret = (process.env.EBAY_CLIENT_SECRET ?? '').trim()
+  if (!clientId || !clientSecret) {
+    throw new Error(`Missing env vars: EBAY_CLIENT_ID=${!!clientId} EBAY_CLIENT_SECRET=${!!clientSecret}`)
+  }
   const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
 
   const res = await fetch('https://api.ebay.com/identity/v1/oauth2/token', {
