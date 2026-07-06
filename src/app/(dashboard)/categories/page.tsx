@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { EBAY_CATEGORIES } from '@/data/ebay-categories'
 import type { ListingCategory } from '@/types/database'
@@ -8,6 +9,7 @@ import type { ListingCategory } from '@/types/database'
 interface EbayCategory { id: string; name: string; level?: number }
 
 export default function CategoriesPage() {
+  const router = useRouter()
   const [tab, setTab] = useState<'add' | 'manage'>('add')
   const [categoryId, setCategoryId] = useState('')
   const [categoryName, setCategoryName] = useState('')
@@ -102,7 +104,15 @@ export default function CategoriesPage() {
 
   return (
     <div className="p-6 max-w-3xl">
-      <h1 className="text-xl font-bold mb-6">出品カテゴリー管理</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-xl font-bold">出品カテゴリー管理</h1>
+        <button
+          onClick={() => router.back()}
+          className="text-sm text-gray-500 hover:text-gray-700 border border-gray-300 rounded px-4 py-1.5 transition-colors"
+        >
+          閉じる
+        </button>
+      </div>
 
       {/* タブ */}
       <div className="flex gap-6 border-b mb-6">
