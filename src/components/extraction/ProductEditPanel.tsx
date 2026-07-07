@@ -233,7 +233,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           )}
 
           {/* 商品リスト */}
-          {tab === 'main' && (
+          {(tab === 'main' || tab === 'exclude' || tab === 'edit') && (
             <div ref={scrollRef} className="overflow-y-auto max-h-[70vh]">
               {loading ? (
                 <div className="py-12 text-center text-sm text-gray-400">読み込み中...</div>
@@ -368,7 +368,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           )}
 
           {/* ボトムバー */}
-          {tab === 'main' && (
+          {(tab === 'main' || tab === 'exclude' || tab === 'edit') && (
             <div className="flex items-center gap-3 px-4 py-3 border-t bg-gray-50 flex-wrap">
               <button
                 onClick={() => setAutoScroll((v) => !v)}
