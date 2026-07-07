@@ -52,20 +52,39 @@ export async function POST(req: NextRequest) {
   }
 
   if (type === 'seller') {
-    const { error } = await db.from('danger_sellers').insert({ user_id: user.id, seller_url: payload.seller_url })
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    // bulk or single
+    if (Array.isArray(payload.seller_urls)) {
+      const rows = payload.seller_urls.map((url: string) => ({ user_id: user.id, seller_url: url }))
+      const { error } = await db.from('danger_sellers').insert(rows)
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    } else {
+      const { error } = await db.from('danger_sellers').insert({ user_id: user.id, seller_url: payload.seller_url })
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    }
     return NextResponse.json({ ok: true })
   }
 
   if (type === 'word') {
-    const { error } = await db.from('danger_words').insert({ user_id: user.id, word: payload.word })
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (Array.isArray(payload.words)) {
+      const rows = payload.words.map((word: string) => ({ user_id: user.id, word }))
+      const { error } = await db.from('danger_words').insert(rows)
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    } else {
+      const { error } = await db.from('danger_words').insert({ user_id: user.id, word: payload.word })
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    }
     return NextResponse.json({ ok: true })
   }
 
   if (type === 'replace') {
-    const { error } = await db.from('replace_words').insert({ user_id: user.id, before_word: payload.before_word, after_word: payload.after_word })
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (Array.isArray(payload.pairs)) {
+      const rows = payload.pairs.map((p: { before: string; after: string }) => ({ user_id: user.id, before_word: p.before, after_word: p.after }))
+      const { error } = await db.from('replace_words').insert(rows)
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    } else {
+      const { error } = await db.from('replace_words').insert({ user_id: user.id, before_word: payload.before_word, after_word: payload.after_word })
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    }
     return NextResponse.json({ ok: true })
   }
 
