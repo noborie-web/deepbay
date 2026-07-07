@@ -9,6 +9,7 @@ interface Props {
   extraction: Extraction
   onViewResult: (id: string) => void
   onDelete?: (id: string) => void
+  onEdit?: (id: string) => void
 }
 
 const STATUS_BADGE: Record<string, { label: string; variant: 'default' | 'success' | 'warning' | 'error' | 'info' }> = {
@@ -18,7 +19,7 @@ const STATUS_BADGE: Record<string, { label: string; variant: 'default' | 'succes
   failed:     { label: '失敗', variant: 'error' },
 }
 
-export default function ExtractionRow({ extraction, onViewResult, onDelete }: Props) {
+export default function ExtractionRow({ extraction, onViewResult, onDelete, onEdit }: Props) {
   const status = STATUS_BADGE[extraction.status] ?? STATUS_BADGE.pending
   const isManual = !extraction.is_bulk
   const [menuOpen, setMenuOpen] = useState(false)
@@ -127,8 +128,13 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete }: Pr
       {/* アクション */}
       <div className="flex items-center gap-2 justify-end">
         <button
-          disabled
-          className="border rounded px-2.5 py-1 text-xs text-gray-400 cursor-not-allowed"
+          onClick={() => onEdit?.(extraction.id)}
+          disabled={extraction.status !== 'completed'}
+          className={`border rounded px-2.5 py-1 text-xs transition-colors ${
+            extraction.status === 'completed'
+              ? 'border-gray-400 text-gray-700 hover:bg-gray-50'
+              : 'text-gray-400 cursor-not-allowed'
+          }`}
         >
           商品編集
         </button>

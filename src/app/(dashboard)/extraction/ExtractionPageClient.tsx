@@ -6,6 +6,7 @@ import { Search } from 'lucide-react'
 import ExtractionStats from '@/components/extraction/ExtractionStats'
 import ExtractionForm from '@/components/extraction/ExtractionForm'
 import ExtractionRow from '@/components/extraction/ExtractionRow'
+import ProductEditPanel from '@/components/extraction/ProductEditPanel'
 import type { SellerAccount, ListingCategory, BulkEditSetting, Extraction } from '@/types/database'
 
 interface Props {
@@ -28,6 +29,7 @@ export default function ExtractionPageClient({
   const [search, setSearch] = useState('')
   const [extractions, setExtractions] = useState(initialExtractions)
   const [error, setError] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [, startTransition] = useTransition()
 
   const filtered = extractions.filter((e) => {
@@ -156,10 +158,19 @@ export default function ExtractionPageClient({
               extraction={extraction}
               onViewResult={(id) => router.push(`/extraction/${id}`)}
               onDelete={(id) => setExtractions((prev) => prev.filter((e) => e.id !== id))}
+              onEdit={(id) => setEditingId((prev) => prev === id ? null : id)}
             />
           ))
         )}
       </div>
+
+      {/* 商品編集パネル */}
+      {editingId && (
+        <ProductEditPanel
+          extractionId={editingId}
+          onClose={() => setEditingId(null)}
+        />
+      )}
     </div>
   )
 }
