@@ -41,7 +41,7 @@ function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) =>
 }
 
 function ListSection({
-  title, inputPlaceholder, items, onAdd, onDelete, onClear, onCsvDownload,
+  title, inputPlaceholder, items, onAdd, onDelete, onClear, onCsvDownload, onCsvUpload,
   inputExtra, itemLabel,
 }: {
   title: string
@@ -51,12 +51,32 @@ function ListSection({
   onDelete: (id: string) => void
   onClear: () => void
   onCsvDownload: () => void
+  onCsvUpload: (rows: string[][]) => void
   inputExtra?: string
   itemLabel?: string
 }) {
   const [val, setVal] = useState('')
   const [val2, setVal2] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string
+      const lines = text.split(/\r?\n/)
+      // skip header row, parse each line
+      const rows = lines.slice(1).map((line) => {
+        // remove surrounding quotes, clean \\n and trailing spaces
+        return line.replace(/^"|"$/g, '').replace(/\\\\n|\\n/g, '').trim()
+          .split(',').map((v) => v.replace(/^"|"$/g, '').trim())
+      }).filter((row) => row[0])
+      onCsvUpload(rows)
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
 
   return (
     <div className="mb-8">
@@ -94,7 +114,7 @@ function ListSection({
             >
               CSVアップロード
             </button>
-            <input ref={fileRef} type="file" accept=".csv" className="hidden" />
+            <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleFileChange} />
             <button
               onClick={onCsvDownload}
               className="border border-green-500 text-green-600 rounded px-3 py-1 text-xs hover:bg-green-50"
@@ -245,6 +265,45 @@ export default function ExtractionSettingsPage() {
     setReplaces((prev) => prev.filter((r) => r.id !== id))
   }
 
+  async function uploadSellersCsv(rows: string[][]) {
+    const urls = rows.map((r) => r[0]).filter(Boolean)
+    if (!urls.length) return
+    await fetch('/api/extraction-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'seller', seller_urls: urls }),
+    })
+    const data = await fetch('/api/extraction-settings').then((r) => r.json())
+    setSellers(data.sellers ?? [])
+    flash(`${urls.length}件のセラーを追加しました`)
+  }
+
+  async function uploadWordsCsv(rows: string[][]) {
+    const wordList = rows.map((r) => r[0]).filter(Boolean)
+    if (!wordList.length) return
+    await fetch('/api/extraction-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'word', words: wordList }),
+    })
+    const data = await fetch('/api/extraction-settings').then((r) => r.json())
+    setWords(data.words ?? [])
+    flash(`${wordList.length}件の単語を追加しました`)
+  }
+
+  async function uploadReplacesCsv(rows: string[][]) {
+    const pairs = rows.map((r) => ({ before: r[0], after: r[1] ?? '' })).filter((p) => p.before)
+    if (!pairs.length) return
+    await fetch('/api/extraction-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'replace', pairs }),
+    })
+    const data = await fetch('/api/extraction-settings').then((r) => r.json())
+    setReplaces(data.replaces ?? [])
+    flash(`${pairs.length}件の置換単語を追加しました`)
+  }
+
   async function clearReplaces() {
     if (!confirm('置換単語をすべて削除しますか？')) return
     for (const r of replaces) await fetch('/api/extraction-settings', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'replace', id: r.id }) })
@@ -381,6 +440,7 @@ export default function ExtractionSettingsPage() {
             onDelete={deleteSeller}
             onClear={clearSellers}
             onCsvDownload={() => downloadCsv(sellers.map((s) => s.seller_url), 'danger_sellers.csv')}
+            onCsvUpload={uploadSellersCsv}
             itemLabel="登録セラー"
           />
           <ListSection
@@ -391,6 +451,7 @@ export default function ExtractionSettingsPage() {
             onDelete={deleteWord}
             onClear={clearWords}
             onCsvDownload={() => downloadCsv(words.map((w) => w.word), 'danger_words.csv')}
+            onCsvUpload={uploadWordsCsv}
             itemLabel="登録単語"
           />
           <ListSection
@@ -402,6 +463,7 @@ export default function ExtractionSettingsPage() {
             onDelete={deleteReplace}
             onClear={clearReplaces}
             onCsvDownload={() => downloadCsv(replaces.map((r) => `${r.before_word},${r.after_word}`), 'replace_words.csv')}
+            onCsvUpload={uploadReplacesCsv}
             itemLabel="置換前"
           />
         </div>
