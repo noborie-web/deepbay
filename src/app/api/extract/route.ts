@@ -100,6 +100,26 @@ async function runScrape(
   try {
     const limit = 600
 
+    // 抽出設定を取得
+    const [{ data: dangerSellers }, { data: dangerWords }, { data: replaceWords }] = await Promise.all([
+      supabase.from('danger_sellers').select('seller_url').eq('user_id', userId),
+      supabase.from('danger_words').select('word').eq('user_id', userId),
+      supabase.from('replace_words').select('before_word, after_word').eq('user_id', userId),
+    ])
+
+    // 危険セラーチェック: 抽出URLが危険セラーと一致する場合はスキップ
+    const sellerUrls: string[] = (dangerSellers ?? []).map((s: { seller_url: string }) =>
+      s.seller_url.split('?')[0].trim().replace(/\/+$/, ''),
+    )
+    const normalizedUrl = url.split('?')[0].trim().replace(/\/+$/, '')
+    if (sellerUrls.some((s) => normalizedUrl.includes(s) || s.includes(normalizedUrl))) {
+      await supabase
+        .from('extractions')
+        .update({ status: 'excluded', progress: 0, extracted_at: new Date().toISOString() })
+        .eq('id', extractionId)
+      return
+    }
+
     const scrapedList = await scrapeUrl(url, {
       limit,
       onPage: async (fetched, total) => {
@@ -110,6 +130,15 @@ async function runScrape(
           .eq('id', extractionId)
       },
     })
+
+    // 危険単語フィルタ
+    const wordList: string[] = (dangerWords ?? []).map((w: { word: string }) => w.word.toLowerCase())
+    const filteredList = wordList.length === 0
+      ? scrapedList
+      : scrapedList.filter((scraped: { title: string }) => {
+          const lower = scraped.title.toLowerCase()
+          return !wordList.some((word) => lower.includes(word))
+        })
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let setting: any = null
@@ -122,15 +151,25 @@ async function runScrape(
       setting = data
     }
 
-    const rows = scrapedList.map((scraped: {
+    const replacePairs: { before_word: string; after_word: string }[] = replaceWords ?? []
+
+    function applyReplaces(title: string): string {
+      let result = title
+      for (const { before_word, after_word } of replacePairs) {
+        result = result.split(before_word).join(after_word)
+      }
+      return result
+    }
+
+    const rows = filteredList.map((scraped: {
       sourceUrl: string; sourceSite: string; sourceItemId: string | null
       title: string; price: number | null; description: string
       images: string[]; condition: string | null
     }) => {
-      let ebayTitle = scraped.title
+      let ebayTitle = applyReplaces(scraped.title)
       let ebayPrice: number | null = scraped.price
       if (setting) {
-        ebayTitle = `${setting.title_prefix}${scraped.title}${setting.title_suffix}`.slice(0, 80)
+        ebayTitle = `${setting.title_prefix}${ebayTitle}${setting.title_suffix}`.slice(0, 80)
         ebayPrice = scraped.price ? Math.ceil(scraped.price * setting.price_rate) : null
       }
       return {
