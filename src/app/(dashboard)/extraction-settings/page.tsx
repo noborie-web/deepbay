@@ -181,6 +181,8 @@ export default function ExtractionSettingsPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
   const [newTemplateName, setNewTemplateName] = useState('')
   const [editingTemplate, setEditingTemplate] = useState<HtmlTemplate | null>(null)
+  const [previewMode, setPreviewMode] = useState(false)
+  const [activeTemplateId, setActiveTemplateId] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
@@ -194,6 +196,7 @@ export default function ExtractionSettingsPage() {
         setWords(data.words ?? [])
         setReplaces(data.replaces ?? [])
         setTemplates(data.templates ?? [])
+        if (data.settings?.html_template_id) setActiveTemplateId(data.settings.html_template_id)
         setLoading(false)
       })
   }, [])
@@ -499,15 +502,12 @@ export default function ExtractionSettingsPage() {
               placeholder="テンプレート名（省略可）"
               className="border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300 w-56"
             />
-            <button
-              onClick={createTemplate}
-              className="border border-green-500 text-green-600 rounded px-4 py-1.5 text-sm hover:bg-green-50"
-            >
+            <button onClick={createTemplate} className="border border-green-500 text-green-600 rounded px-4 py-1.5 text-sm hover:bg-green-50">
               新規作成
             </button>
           </div>
 
-          {/* テンプレート選択・保存 */}
+          {/* テンプレート選択 */}
           <div className="flex items-center gap-3">
             <select
               value={selectedTemplateId}
@@ -515,42 +515,105 @@ export default function ExtractionSettingsPage() {
                 setSelectedTemplateId(e.target.value)
                 const t = templates.find((t) => t.id === e.target.value)
                 setEditingTemplate(t ?? null)
+                setPreviewMode(false)
               }}
               className="flex-1 border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300"
             >
               <option value="">HTMLディスクリプション選択</option>
               {templates.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}</option>
+                <option key={t.id} value={t.id}>
+                  {t.name}{t.id === activeTemplateId ? ' ★アクティブ' : ''}
+                </option>
               ))}
             </select>
-            <button
-              onClick={async () => {
-                if (!editingTemplate) return
-                await fetch('/api/extraction-settings', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ type: 'settings', html_template_id: editingTemplate.id }),
-                })
-                flash('設定を保存しました')
-              }}
-              className="border border-green-500 text-green-600 rounded px-4 py-1.5 text-sm hover:bg-green-50"
-            >
-              設定保存
-            </button>
           </div>
 
-          {/* テンプレート編集エリア */}
+          {/* 変数チップ */}
+          {editingTemplate && (
+            <div className="space-y-1">
+              <p className="text-xs text-gray-500">クリックでカーソル位置に挿入：</p>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  ['{{title}}', '英語タイトル'],
+                  ['{{original_title}}', '日本語タイトル'],
+                  ['{{description}}', '商品説明'],
+                  ['{{condition}}', '商品状態'],
+                  ['{{price}}', '価格'],
+                  ['{{images}}', '全画像'],
+                  ['{{image1}}', '画像1'],
+                  ['{{image2}}', '画像2'],
+                  ['{{image3}}', '画像3'],
+                ].map(([tag, label]) => (
+                  <button
+                    key={tag}
+                    onClick={() => {
+                      const ta = document.getElementById('html-editor') as HTMLTextAreaElement
+                      if (!ta) return
+                      const start = ta.selectionStart
+                      const end = ta.selectionEnd
+                      const newContent = editingTemplate.content.slice(0, start) + tag + editingTemplate.content.slice(end)
+                      setEditingTemplate((prev) => prev ? { ...prev, content: newContent } : null)
+                      setTimeout(() => { ta.selectionStart = ta.selectionEnd = start + tag.length; ta.focus() }, 0)
+                    }}
+                    className="border border-blue-300 text-blue-600 rounded px-2 py-0.5 text-xs hover:bg-blue-50"
+                    title={label}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* テンプレート編集・プレビュー */}
           {editingTemplate && (
             <div className="space-y-2">
-              <label className="text-sm text-gray-600">HTMLコンテンツ</label>
-              <textarea
-                value={editingTemplate.content}
-                onChange={(e) => setEditingTemplate((prev) => prev ? { ...prev, content: e.target.value } : null)}
-                rows={16}
-                placeholder="eBay Description HTMLを入力してください"
-                className="w-full border rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
-              />
-              <div className="flex gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex border rounded overflow-hidden text-xs">
+                  <button
+                    onClick={() => setPreviewMode(false)}
+                    className={`px-3 py-1.5 ${!previewMode ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'}`}
+                  >
+                    編集
+                  </button>
+                  <button
+                    onClick={() => setPreviewMode(true)}
+                    className={`px-3 py-1.5 ${previewMode ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'}`}
+                  >
+                    プレビュー
+                  </button>
+                </div>
+                <span className="text-xs text-gray-400">※プレビューはサンプルデータで表示</span>
+              </div>
+
+              {!previewMode ? (
+                <textarea
+                  id="html-editor"
+                  value={editingTemplate.content}
+                  onChange={(e) => setEditingTemplate((prev) => prev ? { ...prev, content: e.target.value } : null)}
+                  rows={18}
+                  placeholder={`例:\n<div style="font-family:Arial,sans-serif">\n  <h2>{{title}}</h2>\n  <p>{{description}}</p>\n  {{images}}\n</div>`}
+                  className="w-full border rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-300"
+                />
+              ) : (
+                <div
+                  className="w-full border rounded p-4 min-h-64 overflow-auto bg-white text-sm"
+                  dangerouslySetInnerHTML={{
+                    __html: editingTemplate.content
+                      .replace(/\{\{title\}\}/g, 'Vintage Camera Nikon F3 35mm Film SLR Body Japan')
+                      .replace(/\{\{original_title\}\}/g, 'ニコン F3 フィルムカメラ ボディ 動作確認済み')
+                      .replace(/\{\{description\}\}/g, '状態良好。動作確認済みです。細かいキズあり。')
+                      .replace(/\{\{condition\}\}/g, 'Used - Good')
+                      .replace(/\{\{price\}\}/g, '¥12,000')
+                      .replace(/\{\{images\}\}/g, '<img src="https://placehold.co/400x300?text=Image1" style="max-width:100%;margin:4px"><img src="https://placehold.co/400x300?text=Image2" style="max-width:100%;margin:4px">')
+                      .replace(/\{\{image1\}\}/g, 'https://placehold.co/400x300?text=Image1')
+                      .replace(/\{\{image2\}\}/g, 'https://placehold.co/400x300?text=Image2')
+                      .replace(/\{\{image3\}\}/g, 'https://placehold.co/400x300?text=Image3'),
+                  }}
+                />
+              )}
+
+              <div className="flex gap-3 flex-wrap">
                 <button
                   onClick={async () => {
                     if (!editingTemplate) return
@@ -559,6 +622,7 @@ export default function ExtractionSettingsPage() {
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ type: 'template_update', id: editingTemplate.id, content: editingTemplate.content }),
                     })
+                    setTemplates((prev) => prev.map((t) => t.id === editingTemplate.id ? { ...t, content: editingTemplate.content } : t))
                     flash('保存しました')
                   }}
                   className="border border-green-500 text-green-600 rounded px-4 py-1.5 text-sm hover:bg-green-50"
@@ -567,9 +631,28 @@ export default function ExtractionSettingsPage() {
                 </button>
                 <button
                   onClick={async () => {
+                    await fetch('/api/extraction-settings', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ type: 'settings', html_template_id: editingTemplate.id }),
+                    })
+                    setActiveTemplateId(editingTemplate.id)
+                    flash(`「${editingTemplate.name}」をアクティブに設定しました`)
+                  }}
+                  className={`border rounded px-4 py-1.5 text-sm ${
+                    activeTemplateId === editingTemplate.id
+                      ? 'border-yellow-400 text-yellow-600 bg-yellow-50'
+                      : 'border-gray-400 text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {activeTemplateId === editingTemplate.id ? '★ アクティブ中' : 'アクティブに設定'}
+                </button>
+                <button
+                  onClick={async () => {
                     if (!confirm('このテンプレートを削除しますか？')) return
                     await fetch('/api/extraction-settings', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'template', id: editingTemplate.id }) })
                     setTemplates((prev) => prev.filter((t) => t.id !== editingTemplate.id))
+                    if (activeTemplateId === editingTemplate.id) setActiveTemplateId('')
                     setEditingTemplate(null)
                     setSelectedTemplateId('')
                     flash('削除しました')
@@ -580,6 +663,10 @@ export default function ExtractionSettingsPage() {
                 </button>
               </div>
             </div>
+          )}
+
+          {templates.length === 0 && (
+            <p className="text-sm text-gray-400 mt-4">テンプレートがありません。上の「新規作成」から作成してください。</p>
           )}
         </div>
       )}
