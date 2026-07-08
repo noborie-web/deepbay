@@ -325,8 +325,17 @@ export default function ExtractionSettingsPage() {
     }
   }
 
-  function downloadCsv(rows: string[], filename: string) {
-    const blob = new Blob([rows.join('\n')], { type: 'text/csv' })
+  function downloadCsv(header: string, rows: string[], filename: string) {
+    const lines = [header, ...rows.map((r) => `"${r.replace(/"/g, '""')}"`)]
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function downloadReplaceCsv(rows: { before_word: string; after_word: string }[], filename: string) {
+    const lines = ['before,after', ...rows.map((r) => `"${r.before_word.replace(/"/g, '""')}","${r.after_word.replace(/"/g, '""')}"`)]
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
     URL.revokeObjectURL(url)
@@ -439,7 +448,7 @@ export default function ExtractionSettingsPage() {
             onAdd={(url) => addSeller(url)}
             onDelete={deleteSeller}
             onClear={clearSellers}
-            onCsvDownload={() => downloadCsv(sellers.map((s) => s.seller_url), 'danger_sellers.csv')}
+            onCsvDownload={() => downloadCsv('sellers', sellers.map((s) => s.seller_url), 'danger_sellers.csv')}
             onCsvUpload={uploadSellersCsv}
             itemLabel="登録セラー"
           />
@@ -450,7 +459,7 @@ export default function ExtractionSettingsPage() {
             onAdd={(word) => addWord(word)}
             onDelete={deleteWord}
             onClear={clearWords}
-            onCsvDownload={() => downloadCsv(words.map((w) => w.word), 'danger_words.csv')}
+            onCsvDownload={() => downloadCsv('words', words.map((w) => w.word), 'danger_words.csv')}
             onCsvUpload={uploadWordsCsv}
             itemLabel="登録単語"
           />
@@ -462,7 +471,7 @@ export default function ExtractionSettingsPage() {
             onAdd={(before, after) => addReplace(before, after ?? '')}
             onDelete={deleteReplace}
             onClear={clearReplaces}
-            onCsvDownload={() => downloadCsv(replaces.map((r) => `${r.before_word},${r.after_word}`), 'replace_words.csv')}
+            onCsvDownload={() => downloadReplaceCsv(replaces, 'replace_words.csv')}
             onCsvUpload={uploadReplacesCsv}
             itemLabel="置換前"
           />
