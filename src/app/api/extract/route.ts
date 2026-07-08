@@ -109,6 +109,17 @@ async function runScrape(
       supabase.from('extraction_settings').select('*').eq('user_id', userId).single(),
     ])
 
+    // アクティブHTMLテンプレートを取得
+    let activeTemplate: string | null = null
+    if (extractionSettings?.html_template_id) {
+      const { data: tmpl } = await supabase
+        .from('html_templates')
+        .select('content')
+        .eq('id', extractionSettings.html_template_id)
+        .single()
+      activeTemplate = tmpl?.content ?? null
+    }
+
     // 危険セラーチェック: 抽出URLが危険セラーと一致する場合はスキップ
     const sellerUrls: string[] = (dangerSellers ?? []).map((s: { seller_url: string }) =>
       s.seller_url.split('?')[0].trim().replace(/\/+$/, ''),
@@ -154,6 +165,21 @@ async function runScrape(
     }
 
     const replacePairs: { before_word: string; after_word: string }[] = replaceWords ?? []
+
+    function applyTemplate(tmpl: string, data: {
+      title: string; originalTitle: string; description: string
+      condition: string | null; price: number | null; images: string[]
+    }): string {
+      const imgTags = data.images.map((src) => `<img src="${src}" style="max-width:100%;margin:4px 0">`).join('\n')
+      return tmpl
+        .replace(/\{\{title\}\}/g, data.title)
+        .replace(/\{\{original_title\}\}/g, data.originalTitle)
+        .replace(/\{\{description\}\}/g, data.description)
+        .replace(/\{\{condition\}\}/g, data.condition ?? '')
+        .replace(/\{\{price\}\}/g, data.price ? `¥${data.price.toLocaleString()}` : '')
+        .replace(/\{\{images\}\}/g, imgTags)
+        .replace(/\{\{image(\d+)\}\}/g, (_, n) => data.images[parseInt(n) - 1] ?? '')
+    }
 
     function applyReplaces(title: string): string {
       let result = title
@@ -232,7 +258,16 @@ async function runScrape(
         original_condition: scraped.condition,
         ebay_title: ebayTitle,
         ebay_price: ebayPrice,
-        ebay_description: scraped.description,
+        ebay_description: activeTemplate
+          ? applyTemplate(activeTemplate, {
+              title: ebayTitle,
+              originalTitle: scraped.title,
+              description: scraped.description,
+              condition: scraped.condition,
+              price: scraped.price,
+              images: scraped.images,
+            })
+          : scraped.description,
         ebay_images: scraped.images,
         listing_status: 'draft' as const,
       }
