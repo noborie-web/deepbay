@@ -17,6 +17,7 @@ const STATUS_BADGE: Record<string, { label: string; variant: 'default' | 'succes
   processing: { label: '抽出中', variant: 'info' },
   completed:  { label: '完了', variant: 'success' },
   failed:     { label: '失敗', variant: 'error' },
+  excluded:   { label: '危険セラー除外', variant: 'warning' },
 }
 
 export default function ExtractionRow({ extraction, onViewResult, onDelete, onEdit }: Props) {
