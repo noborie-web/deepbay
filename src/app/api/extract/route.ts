@@ -176,6 +176,38 @@ async function runScrape(
       }
     }
 
+    // 重複除外チェック用に既存商品を取得
+    const excludeActive: boolean = extractionSettings?.exclude_active_duplicate ?? true
+    const excludeTitle: boolean = extractionSettings?.exclude_title_duplicate ?? false
+    const excludeTranslated: boolean = extractionSettings?.exclude_translated_duplicate ?? false
+
+    let existingSourceUrls = new Set<string>()
+    let existingOriginalTitles = new Set<string>()
+    let existingEbayTitles = new Set<string>()
+
+    if (excludeActive || excludeTitle || excludeTranslated) {
+      const selectCols = [
+        excludeActive ? 'source_url,listing_status' : '',
+        excludeTitle ? 'original_title' : '',
+        excludeTranslated ? 'ebay_title' : '',
+      ].filter(Boolean).join(',')
+
+      const { data: existingProducts } = await supabase
+        .from('products')
+        .select(selectCols)
+        .eq('user_id', userId)
+
+      if (existingProducts) {
+        for (const p of existingProducts) {
+          if (excludeActive && p.listing_status === 'listed' && p.source_url) {
+            existingSourceUrls.add(p.source_url)
+          }
+          if (excludeTitle && p.original_title) existingOriginalTitles.add(p.original_title)
+          if (excludeTranslated && p.ebay_title) existingEbayTitles.add(p.ebay_title)
+        }
+      }
+    }
+
     const rows = filteredList.map((scraped: {
       sourceUrl: string; sourceSite: string; sourceItemId: string | null
       title: string; price: number | null; description: string
@@ -206,10 +238,20 @@ async function runScrape(
       }
     })
 
+    // 重複除外フィルタ
+    const deduped = rows.filter((row: {
+      source_url: string; original_title: string; ebay_title: string
+    }) => {
+      if (excludeActive && existingSourceUrls.has(row.source_url)) return false
+      if (excludeTitle && existingOriginalTitles.has(row.original_title)) return false
+      if (excludeTranslated && existingEbayTitles.has(row.ebay_title)) return false
+      return true
+    })
+
     // 100件ずつ分割してinsert
     const chunkSize = 100
-    for (let i = 0; i < rows.length; i += chunkSize) {
-      await supabase.from('products').insert(rows.slice(i, i + chunkSize))
+    for (let i = 0; i < deduped.length; i += chunkSize) {
+      await supabase.from('products').insert(deduped.slice(i, i + chunkSize))
     }
 
     await Promise.all([
