@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { scrapeUrl, findScraper, ScraperError } from '@/lib/scrapers'
+import { translateTitles } from '@/lib/translate'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import type { Extraction, Profile } from '@/types/database'
 
@@ -101,10 +102,11 @@ async function runScrape(
     const limit = 600
 
     // 抽出設定を取得
-    const [{ data: dangerSellers }, { data: dangerWords }, { data: replaceWords }] = await Promise.all([
+    const [{ data: dangerSellers }, { data: dangerWords }, { data: replaceWords }, { data: extractionSettings }] = await Promise.all([
       supabase.from('danger_sellers').select('seller_url').eq('user_id', userId),
       supabase.from('danger_words').select('word').eq('user_id', userId),
       supabase.from('replace_words').select('before_word, after_word').eq('user_id', userId),
+      supabase.from('extraction_settings').select('*').eq('user_id', userId).single(),
     ])
 
     // 危険セラーチェック: 抽出URLが危険セラーと一致する場合はスキップ
@@ -161,12 +163,25 @@ async function runScrape(
       return result
     }
 
+    // タイトル翻訳
+    const titleEngine: string = extractionSettings?.title_engine ?? 'high'
+    const titleEnabled: boolean = extractionSettings?.title_enabled ?? true
+    const originalTitles = filteredList.map((s: { title: string }) => s.title)
+    let translatedTitles: string[] = originalTitles
+    if (titleEnabled && process.env.OPENAI_API_KEY) {
+      try {
+        translatedTitles = await translateTitles(originalTitles, titleEngine)
+      } catch (e) {
+        console.error('Translation failed, using original titles:', e)
+      }
+    }
+
     const rows = filteredList.map((scraped: {
       sourceUrl: string; sourceSite: string; sourceItemId: string | null
       title: string; price: number | null; description: string
       images: string[]; condition: string | null
-    }) => {
-      let ebayTitle = applyReplaces(scraped.title)
+    }, idx: number) => {
+      let ebayTitle = applyReplaces(translatedTitles[idx] ?? scraped.title)
       let ebayPrice: number | null = scraped.price
       if (setting) {
         ebayTitle = `${setting.title_prefix}${ebayTitle}${setting.title_suffix}`.slice(0, 80)
