@@ -66,13 +66,21 @@ function ListSection({
     reader.onload = (ev) => {
       const text = ev.target?.result as string
       const lines = text.split(/\r?\n/)
-      // skip header row, parse each line
-      const rows = lines.slice(1).map((line) => {
-        // remove surrounding quotes, clean \\n and trailing spaces
-        return line.replace(/^"|"$/g, '').replace(/\\\\n|\\n/g, '').trim()
-          .split(',').map((v) => v.replace(/^"|"$/g, '').trim())
-      }).filter((row) => row[0])
-      onCsvUpload(rows)
+      const allRows: string[][] = []
+      for (const line of lines.slice(1)) {
+        // strip outer quotes
+        const stripped = line.replace(/^"|"$/g, '').trim()
+        if (!stripped) continue
+        // handle cells that contain multiple entries separated by \r\n or literal \r\n
+        const subLines = stripped.split(/\\r\\n|\r\n|\n/)
+        for (const sub of subLines) {
+          const cleaned = sub.replace(/\\\\n|\\n/g, '').replace(/^\\?"|\\?"$/g, '').trim()
+          if (!cleaned) continue
+          const cols = cleaned.split(',').map((v) => v.replace(/^"|"$/g, '').trim())
+          if (cols[0]) allRows.push(cols)
+        }
+      }
+      onCsvUpload(allRows)
     }
     reader.readAsText(file)
     e.target.value = ''
@@ -131,30 +139,32 @@ function ListSection({
         </div>
 
         {/* 右: 登録リスト */}
-        <div className="flex-1 border rounded">
-          <div className={`grid ${inputExtra ? 'grid-cols-[1fr_1fr_60px]' : 'grid-cols-[1fr_60px]'} px-3 py-2 bg-gray-50 border-b text-xs text-gray-500 font-medium`}>
+        <div className="flex-1 border rounded flex flex-col">
+          <div className={`grid ${inputExtra ? 'grid-cols-[1fr_1fr_60px]' : 'grid-cols-[1fr_60px]'} px-3 py-2 bg-gray-50 border-b text-xs text-gray-500 font-medium shrink-0`}>
             <span>{itemLabel ?? '登録済み'}</span>
             {inputExtra && <span>置換後</span>}
             <span className="text-right">削除</span>
           </div>
-          {items.length === 0 ? (
-            <div className="py-6 text-center text-xs text-gray-400">未登録</div>
-          ) : (
-            items.map((item) => (
-              <div key={item.id} className={`grid ${inputExtra ? 'grid-cols-[1fr_1fr_60px]' : 'grid-cols-[1fr_60px]'} px-3 py-2 border-b last:border-0 items-center text-sm`}>
-                <span className="text-gray-700 text-xs truncate">{item.label}</span>
-                {inputExtra && <span className="text-gray-500 text-xs truncate">{item.sub}</span>}
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => onDelete(item.id)}
-                    className="border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50"
-                  >
-                    削除
-                  </button>
+          <div className="overflow-y-auto max-h-48">
+            {items.length === 0 ? (
+              <div className="py-6 text-center text-xs text-gray-400">未登録</div>
+            ) : (
+              items.map((item) => (
+                <div key={item.id} className={`grid ${inputExtra ? 'grid-cols-[1fr_1fr_60px]' : 'grid-cols-[1fr_60px]'} px-3 py-2 border-b last:border-0 items-center`}>
+                  <span className="text-gray-700 text-xs truncate">{item.label}</span>
+                  {inputExtra && <span className="text-gray-500 text-xs truncate">{item.sub}</span>}
+                  <div className="flex justify-end">
+                    <button
+                      onClick={() => onDelete(item.id)}
+                      className="border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50"
+                    >
+                      削除
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))
-          )}
+              ))
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -544,7 +554,11 @@ export default function ExtractionSettingsPage() {
                 <button
                   onClick={async () => {
                     if (!editingTemplate) return
-                    // Update template content via dedicated endpoint
+                    await fetch('/api/extraction-settings', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ type: 'template_update', id: editingTemplate.id, content: editingTemplate.content }),
+                    })
                     flash('保存しました')
                   }}
                   className="border border-green-500 text-green-600 rounded px-4 py-1.5 text-sm hover:bg-green-50"

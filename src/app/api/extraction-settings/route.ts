@@ -94,6 +94,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   }
 
+  if (type === 'template_update') {
+    const { error } = await db.from('html_templates')
+      .update({ content: payload.content, updated_at: new Date().toISOString() })
+      .eq('id', payload.id)
+      .eq('user_id', user.id)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ ok: true })
+  }
+
   return NextResponse.json({ error: 'Unknown type' }, { status: 400 })
 }
 
