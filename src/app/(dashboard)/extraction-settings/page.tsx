@@ -188,6 +188,8 @@ export default function ExtractionSettingsPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+  const [veroFetching, setVeroFetching] = useState(false)
+  const [veroPreview, setVeroPreview] = useState<string[] | null>(null)
 
   useEffect(() => {
     fetch('/api/extraction-settings')
@@ -324,6 +326,35 @@ export default function ExtractionSettingsPage() {
     if (!confirm('置換単語をすべて削除しますか？')) return
     for (const r of replaces) await fetch('/api/extraction-settings', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'replace', id: r.id }) })
     setReplaces([])
+  }
+
+  async function fetchVeroFromEbay() {
+    setVeroFetching(true)
+    try {
+      const res = await fetch('/api/vero-fetch')
+      const data = await res.json()
+      setVeroPreview(data.brands ?? [])
+    } catch {
+      flash('取得に失敗しました')
+    } finally {
+      setVeroFetching(false)
+    }
+  }
+
+  async function importVeroPreview() {
+    if (!veroPreview || veroPreview.length === 0) return
+    const existing = new Set(vero.map((v) => v.brand.toLowerCase()))
+    const newBrands = veroPreview.filter((b) => !existing.has(b.toLowerCase()))
+    if (newBrands.length === 0) { flash('新しいブランドはありませんでした'); setVeroPreview(null); return }
+    await fetch('/api/extraction-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'vero', brands: newBrands }),
+    })
+    const data = await fetch('/api/extraction-settings').then((r) => r.json())
+    setVero(data.vero ?? [])
+    setVeroPreview(null)
+    flash(`${newBrands.length}件のVeroブランドを追加しました`)
   }
 
   async function addVero(brand: string) {
@@ -538,6 +569,48 @@ export default function ExtractionSettingsPage() {
             onCsvUpload={uploadVeroCsv}
             itemLabel="登録ブランド"
           />
+
+          {/* eBay VeROリスト一括取得 */}
+          <div className="mb-4">
+            <button
+              onClick={fetchVeroFromEbay}
+              disabled={veroFetching}
+              className="border border-purple-400 text-purple-600 rounded px-4 py-1.5 text-sm hover:bg-purple-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {veroFetching ? '取得中...' : '⬇ eBay VeROリストから一括取得'}
+            </button>
+            <span className="ml-3 text-xs text-gray-400">既知の主要VeROブランド {veroPreview === null ? '' : `（${veroPreview.length}件取得済）`}</span>
+
+            {veroPreview !== null && (
+              <div className="mt-3 border rounded-lg bg-white p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-gray-700">{veroPreview.length}件のブランドを取得しました</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setVeroPreview(null)}
+                      className="border border-gray-300 text-gray-500 rounded px-3 py-1 text-xs hover:bg-gray-50"
+                    >
+                      キャンセル
+                    </button>
+                    <button
+                      onClick={importVeroPreview}
+                      className="bg-purple-500 hover:bg-purple-600 text-white rounded px-4 py-1 text-xs"
+                    >
+                      すべてインポート（重複除外）
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
+                  {veroPreview.map((b) => (
+                    <span key={b} className={`px-2 py-0.5 rounded text-xs border ${vero.some((v) => v.brand.toLowerCase() === b.toLowerCase()) ? 'border-gray-200 text-gray-400 bg-gray-50' : 'border-purple-300 text-purple-700 bg-purple-50'}`}>
+                      {b}
+                    </span>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400">紫色 = 新規追加、グレー = 登録済み</p>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
