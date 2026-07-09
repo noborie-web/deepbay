@@ -11,6 +11,7 @@ export interface ScrapedProduct {
   sellerRatingCount: number | null  // 評価数
   shippingDays: number | null       // 発送日数（最短日数）
   sourceUpdatedAt: string | null    // 最終更新日（ISO文字列）
+  priceType: 'fixed' | 'auction'   // 価格タイプ
 }
 
 export interface ScraperOptions {

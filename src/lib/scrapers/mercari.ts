@@ -70,6 +70,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
     sellerRatingCount,
     shippingDays,
     sourceUpdatedAt,
+    priceType: 'fixed' as const,
   }
 }
 

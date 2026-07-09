@@ -69,6 +69,24 @@ export class YahooAuctionScraper extends BaseScraper {
       } catch { /* ignore */ }
     }
 
+    // 価格タイプ: 即決価格のみ → fixed、入札あり → auction
+    // __NEXT_DATA__ から type を確認、なければ HTML テキストで判断
+    let priceType: 'fixed' | 'auction' = 'auction'
+    if (nextDataText) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const nd: any = JSON.parse(nextDataText)
+        const item = nd?.props?.pageProps?.initialState?.auction?.item ?? nd?.props?.pageProps?.item ?? null
+        const auctionType = item?.auction_type ?? item?.auctionType ?? item?.type ?? null
+        if (auctionType === 'fixed' || auctionType === 'buy_it_now') priceType = 'fixed'
+      } catch { /* ignore */ }
+    }
+    // HTML テキストで判断: 「入札」がなく「即決」があれば fixed
+    if (priceType === 'auction') {
+      const bodyText = $('body').text()
+      if (bodyText.includes('即決') && !bodyText.includes('入札')) priceType = 'fixed'
+    }
+
     return {
       sourceUrl: url,
       sourceSite: this.siteKey,
@@ -82,6 +100,7 @@ export class YahooAuctionScraper extends BaseScraper {
       sellerRatingCount,
       shippingDays,
       sourceUpdatedAt,
+      priceType,
     }
   }
 }

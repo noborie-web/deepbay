@@ -47,6 +47,7 @@ export async function GET(req: NextRequest) {
     sellerRatingCount: null,
     shippingDays: null,
     sourceUpdatedAt: null,
+    priceType: 'fixed' as const,
   }))
 
   const options: EbayCsvOptions = {

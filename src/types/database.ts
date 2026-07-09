@@ -91,8 +91,16 @@ export interface Product {
   seller_rating_count: number | null
   shipping_days: number | null
   source_updated_at: string | null
+  price_type: string
   created_at: string
   updated_at: string
+}
+
+export interface VeroBrand {
+  id: string
+  user_id: string
+  brand: string
+  created_at: string
 }
 
 export interface Scraper {
