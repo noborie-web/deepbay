@@ -71,7 +71,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     if (sellerUrls.length === 0) return []
     const toDelete = products.filter((p) => {
       const norm = p.source_url.split('?')[0].trim().replace(/\/+$/, '')
-      return sellerUrls.some((s) => norm.includes(s) || s.includes(norm))
+      // 商品URLがセラーURLで始まる場合のみ一致（部分一致の過剰マッチを防ぐ）
+      return sellerUrls.some((s) => norm.startsWith(s))
     })
     await Promise.all(toDelete.map((p) =>
       fetch(`/api/products/${extractionId}`, {
@@ -277,7 +278,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <button
                     type="button"
                     disabled={excludeRunning['seller'] ?? false}
-                    onClick={() => { alert('危険セラー除外を実行します'); runExclude('seller', excludeDangerSellers) }}
+                    onClick={() => runExclude('seller', excludeDangerSellers)}
                     className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {excludeRunning['seller'] ? '...' : '除外'}
@@ -289,7 +290,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <button
                     type="button"
                     disabled={excludeRunning['word'] ?? false}
-                    onClick={() => { alert('危険単語除外を実行します'); runExclude('word', excludeDangerWords) }}
+                    onClick={() => runExclude('word', excludeDangerWords)}
                     className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {excludeRunning['word'] ? '...' : '除外'}

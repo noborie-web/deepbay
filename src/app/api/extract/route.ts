@@ -125,7 +125,7 @@ async function runScrape(
       s.seller_url.split('?')[0].trim().replace(/\/+$/, ''),
     )
     const normalizedUrl = url.split('?')[0].trim().replace(/\/+$/, '')
-    if (sellerUrls.some((s) => normalizedUrl.includes(s) || s.includes(normalizedUrl))) {
+    if (sellerUrls.some((s) => normalizedUrl.startsWith(s))) {
       await supabase
         .from('extractions')
         .update({ status: 'excluded', progress: 0, extracted_at: new Date().toISOString() })
