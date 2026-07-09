@@ -28,6 +28,9 @@ export class RakumaScraper extends BaseScraper {
             images: (item.item_images ?? []).map((i: { image_url?: string }) => i.image_url ?? '').filter(Boolean),
             condition: item.item_condition?.name ?? null,
             category: item.item_category?.name ?? null,
+            sellerRatingCount: null,
+            shippingDays: null,
+            sourceUpdatedAt: null,
           }
         }
       } catch {
@@ -56,6 +59,9 @@ export class RakumaScraper extends BaseScraper {
       images,
       condition: null,
       category: null,
+      sellerRatingCount: null,
+      shippingDays: null,
+      sourceUpdatedAt: null,
     }
   }
 }

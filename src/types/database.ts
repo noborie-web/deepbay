@@ -88,6 +88,9 @@ export interface Product {
   listing_status: ListingStatus
   listed_at: string | null
   sold_at: string | null
+  seller_rating_count: number | null
+  shipping_days: number | null
+  source_updated_at: string | null
   created_at: string
   updated_at: string
 }

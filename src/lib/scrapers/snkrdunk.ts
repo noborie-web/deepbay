@@ -41,6 +41,9 @@ function serverSearchItemToProduct(item: any): ScrapedProduct | null {
     images,
     condition: item.condition ?? null,
     category: item.brandId ?? item.categoryId ?? null,
+    sellerRatingCount: null,
+    shippingDays: null,
+    sourceUpdatedAt: null,
   }
 }
 
@@ -72,6 +75,9 @@ function legacyItemToProduct(item: any): ScrapedProduct | null {
     images,
     condition: item.condition ?? item.itemCondition ?? null,
     category: item.categoryName ?? item.brand?.name ?? null,
+    sellerRatingCount: null,
+    shippingDays: null,
+    sourceUpdatedAt: null,
   }
 }
 

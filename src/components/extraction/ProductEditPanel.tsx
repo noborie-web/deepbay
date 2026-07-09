@@ -40,6 +40,207 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // local edits buffer
   const [edits, setEdits] = useState<Record<string, Partial<Product>>>({})
 
+  // 除外タブ
+  const [excludeRunning, setExcludeRunning] = useState<Record<string, boolean>>({})
+  const [excludeMsg, setExcludeMsg] = useState('')
+
+  // 除外パネル展開
+  const [excludePanel, setExcludePanel] = useState<string | null>(null)
+
+  // スポット文字
+  const SPOT_PRESETS = ['難あり', 'ジャンク', '破損', '動作未確認', '訳あり', '傷あり', 'シミ', '汚れ', 'カビ', '臭い', 'NG']
+  const [spotSelected, setSpotSelected] = useState<Set<string>>(new Set())
+  const [spotCustom, setSpotCustom] = useState('')
+
+  // 価格範囲
+  const [priceMin, setPriceMin] = useState('')
+  const [priceMax, setPriceMax] = useState('')
+  const [priceTarget, setPriceTarget] = useState<'original' | 'ebay'>('original')
+
+  // 簡易除外
+  const [quickKeywords, setQuickKeywords] = useState('')
+
+  // 評価数フィルタ
+  const [ratingMax, setRatingMax] = useState('')
+
+  // 発送日数フィルタ
+  const [shippingDaysMax, setShippingDaysMax] = useState('')
+
+  // 最終更新月フィルタ
+  const [updatedMonthsAgo, setUpdatedMonthsAgo] = useState('3')
+
+  function togglePanel(key: string) {
+    setExcludePanel((v) => v === key ? null : key)
+    setExcludeMsg('')
+  }
+
+  async function runExclude(key: string, fn: () => Promise<string[]>) {
+    setExcludeRunning((v) => ({ ...v, [key]: true }))
+    setExcludeMsg('')
+    try {
+      const removedIds = await fn()
+      if (removedIds.length > 0) {
+        setProducts((prev) => prev.filter((p) => !removedIds.includes(p.id)))
+        setExcludeMsg(`${removedIds.length}件を除外しました`)
+      } else {
+        setExcludeMsg('除外対象がありませんでした')
+      }
+    } catch {
+      setExcludeMsg('エラーが発生しました')
+    } finally {
+      setExcludeRunning((v) => ({ ...v, [key]: false }))
+    }
+  }
+
+  async function excludeDangerSellers(): Promise<string[]> {
+    const res = await fetch('/api/extraction-settings')
+    const data = await res.json()
+    const sellerUrls: string[] = (data.sellers ?? []).map((s: { seller_url: string }) =>
+      s.seller_url.split('?')[0].trim().replace(/\/+$/, '')
+    )
+    if (sellerUrls.length === 0) return []
+    const toDelete = products.filter((p) => {
+      const norm = p.source_url.split('?')[0].trim().replace(/\/+$/, '')
+      // 商品URLがセラーURLで始まる場合のみ一致（部分一致の過剰マッチを防ぐ）
+      return sellerUrls.some((s) => norm.startsWith(s))
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeSpotWords(): Promise<string[]> {
+    const keywords = [
+      ...Array.from(spotSelected),
+      ...spotCustom.split(/[,、\n]/).map((s) => s.trim()).filter(Boolean),
+    ].map((w) => w.toLowerCase())
+    if (keywords.length === 0) return []
+    const toDelete = products.filter((p) => {
+      const lower = p.original_title.toLowerCase()
+      return keywords.some((w) => lower.includes(w))
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeByPrice(): Promise<string[]> {
+    const min = priceMin !== '' ? Number(priceMin) : null
+    const max = priceMax !== '' ? Number(priceMax) : null
+    if (min === null && max === null) return []
+    const toDelete = products.filter((p) => {
+      const price = priceTarget === 'original' ? (p.original_price ?? 0) : (p.ebay_price ?? 0)
+      if (min !== null && price < min) return true
+      if (max !== null && price > max) return true
+      return false
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeByRating(): Promise<string[]> {
+    const max = ratingMax !== '' ? Number(ratingMax) : null
+    if (max === null) return []
+    const toDelete = products.filter((p) =>
+      p.seller_rating_count !== null && p.seller_rating_count <= max
+    )
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeByShippingDays(): Promise<string[]> {
+    const max = shippingDaysMax !== '' ? Number(shippingDaysMax) : null
+    if (max === null) return []
+    const toDelete = products.filter((p) =>
+      p.shipping_days !== null && p.shipping_days > max
+    )
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeByUpdatedAt(): Promise<string[]> {
+    const months = Number(updatedMonthsAgo) || 3
+    const cutoff = new Date()
+    cutoff.setMonth(cutoff.getMonth() - months)
+    const toDelete = products.filter((p) => {
+      if (!p.source_updated_at) return false
+      return new Date(p.source_updated_at) < cutoff
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeQuick(): Promise<string[]> {
+    const keywords = quickKeywords.split(/[,、\n]/).map((s) => s.trim().toLowerCase()).filter(Boolean)
+    if (keywords.length === 0) return []
+    const toDelete = products.filter((p) => {
+      const lower = p.original_title.toLowerCase()
+      return keywords.some((w) => lower.includes(w))
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeDangerWords(): Promise<string[]> {
+    const res = await fetch('/api/extraction-settings')
+    const data = await res.json()
+    const words: string[] = (data.words ?? []).map((w: { word: string }) => w.word.toLowerCase())
+    if (words.length === 0) return []
+    const toDelete = products.filter((p) => {
+      const lower = p.original_title.toLowerCase()
+      return words.some((w) => lower.includes(w))
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+
   useEffect(() => {
     fetch(`/api/products/${extractionId}`)
       .then((r) => r.json())
@@ -201,15 +402,220 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
           {/* 除外タブ */}
           {tab === 'exclude' && (
-            <div className="px-4 py-4 border-b bg-gray-50">
-              <div className="grid grid-cols-5 gap-3">
-                {['Vero', '危険セラー', '危険単語', 'スポット文字', '評価数', '発送日数', '最終更新月', '価格範囲', '価格タイプ', '簡易除外'].map((label) => (
-                  <div key={label} className="flex items-center justify-between gap-2">
-                    <span className="text-sm text-gray-700">{label}</span>
-                    <button className="border border-gray-300 rounded px-2.5 py-1 text-xs hover:bg-gray-100">除外</button>
-                  </div>
-                ))}
+            <div className="border-b bg-gray-50">
+              {/* ボタングリッド */}
+              <div className="px-4 py-4 grid grid-cols-5 gap-3">
+                {/* Vero */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-400">Vero</span>
+                  <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">除外</button>
+                </div>
+                {/* 危険セラー - ワンクリック */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">危険セラー</span>
+                  <button type="button" disabled={excludeRunning['seller']} onClick={() => runExclude('seller', excludeDangerSellers)}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                    {excludeRunning['seller'] ? '...' : '除外'}
+                  </button>
+                </div>
+                {/* 危険単語 - ワンクリック */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">危険単語</span>
+                  <button type="button" disabled={excludeRunning['word']} onClick={() => runExclude('word', excludeDangerWords)}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                    {excludeRunning['word'] ? '...' : '除外'}
+                  </button>
+                </div>
+                {/* スポット文字 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">スポット文字</span>
+                  <button type="button" onClick={() => togglePanel('spot')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'spot' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
+                </div>
+                {/* 評価数 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">評価数</span>
+                  <button type="button" onClick={() => togglePanel('rating')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'rating' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
+                </div>
+                {/* 発送日数 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">発送日数</span>
+                  <button type="button" onClick={() => togglePanel('shipping')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'shipping' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
+                </div>
+                {/* 最終更新月 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">最終更新月</span>
+                  <button type="button" onClick={() => togglePanel('updated')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'updated' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
+                </div>
+                {/* 価格タイプ - 未実装 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-400">価格タイプ</span>
+                  <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">除外</button>
+                </div>
+                {/* 価格範囲 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">価格範囲</span>
+                  <button type="button" onClick={() => togglePanel('price')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'price' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
+                </div>
+                {/* 簡易除外 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">簡易除外</span>
+                  <button type="button" onClick={() => togglePanel('quick')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'quick' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
+                </div>
               </div>
+
+              {/* 展開パネル: 評価数 */}
+              {excludePanel === 'rating' && (
+                <div className="mx-4 mb-2 p-3 bg-white border rounded-lg space-y-2">
+                  <p className="text-xs text-gray-500">セラー評価数がN件以下の商品を除外します（メルカリのみ対応）</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-600">評価数</span>
+                    <input type="number" value={ratingMax} onChange={(e) => setRatingMax(e.target.value)}
+                      placeholder="例: 10" min="0"
+                      className="border rounded px-2 py-1 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                    <span className="text-xs text-gray-500">件以下を除外</span>
+                  </div>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['rating']} onClick={() => runExclude('rating', excludeByRating)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['rating'] ? '実行中...' : '除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 展開パネル: 発送日数 */}
+              {excludePanel === 'shipping' && (
+                <div className="mx-4 mb-2 p-3 bg-white border rounded-lg space-y-2">
+                  <p className="text-xs text-gray-500">発送まで指定日数より長い商品を除外します（メルカリのみ対応）</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-600">発送日数</span>
+                    <input type="number" value={shippingDaysMax} onChange={(e) => setShippingDaysMax(e.target.value)}
+                      placeholder="例: 3" min="1"
+                      className="border rounded px-2 py-1 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                    <span className="text-xs text-gray-500">日超を除外</span>
+                  </div>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['shipping']} onClick={() => runExclude('shipping', excludeByShippingDays)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['shipping'] ? '実行中...' : '除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 展開パネル: 最終更新月 */}
+              {excludePanel === 'updated' && (
+                <div className="mx-4 mb-2 p-3 bg-white border rounded-lg space-y-2">
+                  <p className="text-xs text-gray-500">最終更新が古い商品を除外します（メルカリのみ対応）</p>
+                  <div className="flex items-center gap-2">
+                    <select value={updatedMonthsAgo} onChange={(e) => setUpdatedMonthsAgo(e.target.value)}
+                      className="border rounded px-2 py-1 text-xs focus:outline-none">
+                      {[1, 2, 3, 6, 12].map((n) => (
+                        <option key={n} value={String(n)}>{n}ヶ月以上前</option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-gray-500">に更新された商品を除外</span>
+                  </div>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['updated']} onClick={() => runExclude('updated', excludeByUpdatedAt)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['updated'] ? '実行中...' : '除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 展開パネル: スポット文字 */}
+              {excludePanel === 'spot' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {SPOT_PRESETS.map((w) => (
+                      <button key={w} type="button"
+                        onClick={() => setSpotSelected((prev) => { const s = new Set(prev); s.has(w) ? s.delete(w) : s.add(w); return s })}
+                        className={`px-2 py-0.5 rounded text-xs border transition-colors ${spotSelected.has(w) ? 'bg-orange-500 text-white border-orange-500' : 'border-gray-300 text-gray-600 hover:bg-gray-100'}`}>
+                        {w}
+                      </button>
+                    ))}
+                  </div>
+                  <input type="text" value={spotCustom} onChange={(e) => setSpotCustom(e.target.value)}
+                    placeholder="カスタムキーワード（カンマ区切り）"
+                    className="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['spot']} onClick={() => runExclude('spot', excludeSpotWords)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['spot'] ? '実行中...' : '除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 展開パネル: 価格範囲 */}
+              {excludePanel === 'price' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-gray-500">対象</span>
+                      <select value={priceTarget} onChange={(e) => setPriceTarget(e.target.value as 'original' | 'ebay')}
+                        className="border rounded px-2 py-1 text-xs focus:outline-none">
+                        <option value="original">仕入れ価格（円）</option>
+                        <option value="ebay">eBay価格（$）</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input type="number" value={priceMin} onChange={(e) => setPriceMin(e.target.value)}
+                        placeholder="最小" className="border rounded px-2 py-1 text-xs w-24 focus:outline-none" />
+                      <span className="text-xs text-gray-400">〜</span>
+                      <input type="number" value={priceMax} onChange={(e) => setPriceMax(e.target.value)}
+                        placeholder="最大" className="border rounded px-2 py-1 text-xs w-24 focus:outline-none" />
+                      <span className="text-xs text-gray-500">{priceTarget === 'original' ? '円' : '$'} の範囲外を除外</span>
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['price']} onClick={() => runExclude('price', excludeByPrice)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['price'] ? '実行中...' : '除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 展開パネル: 簡易除外 */}
+              {excludePanel === 'quick' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
+                  <textarea value={quickKeywords} onChange={(e) => setQuickKeywords(e.target.value)}
+                    placeholder="キーワードをカンマ・改行区切りで入力（タイトルに含む商品を除外）"
+                    rows={3}
+                    className="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none" />
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['quick']} onClick={() => runExclude('quick', excludeQuick)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['quick'] ? '実行中...' : '除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {excludeMsg && (
+                <p className="mx-4 mb-4 text-xs text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">{excludeMsg}</p>
+              )}
             </div>
           )}
 
