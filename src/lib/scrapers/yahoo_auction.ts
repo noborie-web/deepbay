@@ -43,6 +43,9 @@ export class YahooAuctionScraper extends BaseScraper {
       images,
       condition,
       category,
+      sellerRatingCount: null,
+      shippingDays: null,
+      sourceUpdatedAt: null,
     }
   }
 }

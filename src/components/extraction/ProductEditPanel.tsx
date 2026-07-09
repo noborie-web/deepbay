@@ -60,6 +60,15 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // 簡易除外
   const [quickKeywords, setQuickKeywords] = useState('')
 
+  // 評価数フィルタ
+  const [ratingMax, setRatingMax] = useState('')
+
+  // 発送日数フィルタ
+  const [shippingDaysMax, setShippingDaysMax] = useState('')
+
+  // 最終更新月フィルタ
+  const [updatedMonthsAgo, setUpdatedMonthsAgo] = useState('3')
+
   function togglePanel(key: string) {
     setExcludePanel((v) => v === key ? null : key)
     setExcludeMsg('')
@@ -134,6 +143,56 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       if (min !== null && price < min) return true
       if (max !== null && price > max) return true
       return false
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeByRating(): Promise<string[]> {
+    const max = ratingMax !== '' ? Number(ratingMax) : null
+    if (max === null) return []
+    const toDelete = products.filter((p) =>
+      p.seller_rating_count !== null && p.seller_rating_count <= max
+    )
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeByShippingDays(): Promise<string[]> {
+    const max = shippingDaysMax !== '' ? Number(shippingDaysMax) : null
+    if (max === null) return []
+    const toDelete = products.filter((p) =>
+      p.shipping_days !== null && p.shipping_days > max
+    )
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeByUpdatedAt(): Promise<string[]> {
+    const months = Number(updatedMonthsAgo) || 3
+    const cutoff = new Date()
+    cutoff.setMonth(cutoff.getMonth() - months)
+    const toDelete = products.filter((p) => {
+      if (!p.source_updated_at) return false
+      return new Date(p.source_updated_at) < cutoff
     })
     await Promise.all(toDelete.map((p) =>
       fetch(`/api/products/${extractionId}`, {
@@ -375,13 +434,35 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     除外
                   </button>
                 </div>
-                {/* 評価数・発送日数・最終更新月・価格タイプ - 未実装 */}
-                {['評価数', '発送日数', '最終更新月', '価格タイプ'].map((label) => (
-                  <div key={label} className="flex items-center justify-between gap-2">
-                    <span className="text-sm text-gray-400">{label}</span>
-                    <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">除外</button>
-                  </div>
-                ))}
+                {/* 評価数 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">評価数</span>
+                  <button type="button" onClick={() => togglePanel('rating')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'rating' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
+                </div>
+                {/* 発送日数 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">発送日数</span>
+                  <button type="button" onClick={() => togglePanel('shipping')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'shipping' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
+                </div>
+                {/* 最終更新月 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">最終更新月</span>
+                  <button type="button" onClick={() => togglePanel('updated')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'updated' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
+                </div>
+                {/* 価格タイプ - 未実装 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-400">価格タイプ</span>
+                  <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">除外</button>
+                </div>
                 {/* 価格範囲 - パネル展開 */}
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">価格範囲</span>
@@ -399,6 +480,68 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   </button>
                 </div>
               </div>
+
+              {/* 展開パネル: 評価数 */}
+              {excludePanel === 'rating' && (
+                <div className="mx-4 mb-2 p-3 bg-white border rounded-lg space-y-2">
+                  <p className="text-xs text-gray-500">セラー評価数がN件以下の商品を除外します（メルカリのみ対応）</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-600">評価数</span>
+                    <input type="number" value={ratingMax} onChange={(e) => setRatingMax(e.target.value)}
+                      placeholder="例: 10" min="0"
+                      className="border rounded px-2 py-1 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                    <span className="text-xs text-gray-500">件以下を除外</span>
+                  </div>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['rating']} onClick={() => runExclude('rating', excludeByRating)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['rating'] ? '実行中...' : '除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 展開パネル: 発送日数 */}
+              {excludePanel === 'shipping' && (
+                <div className="mx-4 mb-2 p-3 bg-white border rounded-lg space-y-2">
+                  <p className="text-xs text-gray-500">発送まで指定日数より長い商品を除外します（メルカリのみ対応）</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-600">発送日数</span>
+                    <input type="number" value={shippingDaysMax} onChange={(e) => setShippingDaysMax(e.target.value)}
+                      placeholder="例: 3" min="1"
+                      className="border rounded px-2 py-1 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                    <span className="text-xs text-gray-500">日超を除外</span>
+                  </div>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['shipping']} onClick={() => runExclude('shipping', excludeByShippingDays)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['shipping'] ? '実行中...' : '除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 展開パネル: 最終更新月 */}
+              {excludePanel === 'updated' && (
+                <div className="mx-4 mb-2 p-3 bg-white border rounded-lg space-y-2">
+                  <p className="text-xs text-gray-500">最終更新が古い商品を除外します（メルカリのみ対応）</p>
+                  <div className="flex items-center gap-2">
+                    <select value={updatedMonthsAgo} onChange={(e) => setUpdatedMonthsAgo(e.target.value)}
+                      className="border rounded px-2 py-1 text-xs focus:outline-none">
+                      {[1, 2, 3, 6, 12].map((n) => (
+                        <option key={n} value={String(n)}>{n}ヶ月以上前</option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-gray-500">に更新された商品を除外</span>
+                  </div>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['updated']} onClick={() => runExclude('updated', excludeByUpdatedAt)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['updated'] ? '実行中...' : '除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* 展開パネル: スポット文字 */}
               {excludePanel === 'spot' && (

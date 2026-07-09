@@ -44,6 +44,9 @@ export async function GET(req: NextRequest) {
     images: p.ebay_images ?? p.original_images ?? [],
     condition: p.original_condition,
     category: null,
+    sellerRatingCount: null,
+    shippingDays: null,
+    sourceUpdatedAt: null,
   }))
 
   const options: EbayCsvOptions = {

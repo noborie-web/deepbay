@@ -18,6 +18,28 @@ function toProduct(item: any, url: string): ScrapedProduct {
     )
     .filter(Boolean)
 
+  // 評価数: seller.ratings?.good + seller.ratings?.bad or num_ratings
+  const seller = item.seller ?? item.sellerInfo ?? null
+  const sellerRatingCount: number | null =
+    seller?.num_ratings ?? seller?.ratings?.good ?? null
+
+  // 発送日数: shipping_duration.min (日数)
+  // e.g. "1~2日" → min=1, "2~3日" → min=2
+  const sd = item.shipping_duration ?? item.shippingDuration ?? null
+  let shippingDays: number | null = null
+  if (typeof sd?.min === 'number') {
+    shippingDays = sd.min
+  } else if (typeof sd === 'string') {
+    const m = sd.match(/(\d+)/)
+    if (m) shippingDays = parseInt(m[1], 10)
+  }
+
+  // 最終更新日
+  const updatedRaw = item.updated ?? item.updated_at ?? item.updatedAt ?? null
+  const sourceUpdatedAt: string | null = updatedRaw
+    ? new Date(typeof updatedRaw === 'number' ? updatedRaw * 1000 : updatedRaw).toISOString()
+    : null
+
   return {
     sourceUrl: `https://jp.mercari.com/item/${itemId}`,
     sourceSite: 'mercari',
@@ -28,6 +50,9 @@ function toProduct(item: any, url: string): ScrapedProduct {
     images,
     condition: item.item_condition?.name ?? item.itemCondition?.name ?? null,
     category: item.item_category?.name ?? item.itemCategory?.name ?? null,
+    sellerRatingCount,
+    shippingDays,
+    sourceUpdatedAt,
   }
 }
 
