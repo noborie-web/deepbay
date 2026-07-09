@@ -44,6 +44,9 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [excludeRunning, setExcludeRunning] = useState<Record<string, boolean>>({})
   const [excludeMsg, setExcludeMsg] = useState('')
 
+  // 除外パネル展開
+  const [excludePanel, setExcludePanel] = useState<string | null>(null)
+
   // スポット文字
   const SPOT_PRESETS = ['難あり', 'ジャンク', '破損', '動作未確認', '訳あり', '傷あり', 'シミ', '汚れ', 'カビ', '臭い', 'NG']
   const [spotSelected, setSpotSelected] = useState<Set<string>>(new Set())
@@ -56,6 +59,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
   // 簡易除外
   const [quickKeywords, setQuickKeywords] = useState('')
+
+  function togglePanel(key: string) {
+    setExcludePanel((v) => v === key ? null : key)
+    setExcludeMsg('')
+  }
 
   async function runExclude(key: string, fn: () => Promise<string[]>) {
     setExcludeRunning((v) => ({ ...v, [key]: true }))
@@ -335,13 +343,15 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
           {/* 除外タブ */}
           {tab === 'exclude' && (
-            <div className="px-4 py-4 border-b bg-gray-50 space-y-4">
-              {/* ワンクリック除外ボタン群 */}
-              <div className="grid grid-cols-5 gap-3">
+            <div className="border-b bg-gray-50">
+              {/* ボタングリッド */}
+              <div className="px-4 py-4 grid grid-cols-5 gap-3">
+                {/* Vero */}
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-gray-700">Vero</span>
-                  <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-400 cursor-not-allowed">除外</button>
+                  <span className="text-sm text-gray-400">Vero</span>
+                  <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">除外</button>
                 </div>
+                {/* 危険セラー - ワンクリック */}
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">危険セラー</span>
                   <button type="button" disabled={excludeRunning['seller']} onClick={() => runExclude('seller', excludeDangerSellers)}
@@ -349,6 +359,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     {excludeRunning['seller'] ? '...' : '除外'}
                   </button>
                 </div>
+                {/* 危険単語 - ワンクリック */}
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">危険単語</span>
                   <button type="button" disabled={excludeRunning['word']} onClick={() => runExclude('word', excludeDangerWords)}
@@ -356,89 +367,111 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     {excludeRunning['word'] ? '...' : '除外'}
                   </button>
                 </div>
+                {/* スポット文字 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">スポット文字</span>
+                  <button type="button" onClick={() => togglePanel('spot')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'spot' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
+                </div>
+                {/* 評価数・発送日数・最終更新月・価格タイプ - 未実装 */}
                 {['評価数', '発送日数', '最終更新月', '価格タイプ'].map((label) => (
                   <div key={label} className="flex items-center justify-between gap-2">
                     <span className="text-sm text-gray-400">{label}</span>
                     <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">除外</button>
                   </div>
                 ))}
-              </div>
-
-              <hr className="border-gray-200" />
-
-              {/* スポット文字 */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700">スポット文字</span>
-                  <button type="button" disabled={excludeRunning['spot']} onClick={() => runExclude('spot', excludeSpotWords)}
-                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
-                    {excludeRunning['spot'] ? '...' : '除外'}
+                {/* 価格範囲 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">価格範囲</span>
+                  <button type="button" onClick={() => togglePanel('price')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'price' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
                   </button>
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {SPOT_PRESETS.map((w) => (
-                    <button key={w} type="button"
-                      onClick={() => setSpotSelected((prev) => { const s = new Set(prev); s.has(w) ? s.delete(w) : s.add(w); return s })}
-                      className={`px-2 py-0.5 rounded text-xs border transition-colors ${spotSelected.has(w) ? 'bg-orange-500 text-white border-orange-500' : 'border-gray-300 text-gray-600 hover:bg-gray-100'}`}>
-                      {w}
+                {/* 簡易除外 - パネル展開 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">簡易除外</span>
+                  <button type="button" onClick={() => togglePanel('quick')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'quick' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
+                </div>
+              </div>
+
+              {/* 展開パネル: スポット文字 */}
+              {excludePanel === 'spot' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {SPOT_PRESETS.map((w) => (
+                      <button key={w} type="button"
+                        onClick={() => setSpotSelected((prev) => { const s = new Set(prev); s.has(w) ? s.delete(w) : s.add(w); return s })}
+                        className={`px-2 py-0.5 rounded text-xs border transition-colors ${spotSelected.has(w) ? 'bg-orange-500 text-white border-orange-500' : 'border-gray-300 text-gray-600 hover:bg-gray-100'}`}>
+                        {w}
+                      </button>
+                    ))}
+                  </div>
+                  <input type="text" value={spotCustom} onChange={(e) => setSpotCustom(e.target.value)}
+                    placeholder="カスタムキーワード（カンマ区切り）"
+                    className="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['spot']} onClick={() => runExclude('spot', excludeSpotWords)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['spot'] ? '実行中...' : '除外を実行'}
                     </button>
-                  ))}
-                </div>
-                <input type="text" value={spotCustom} onChange={(e) => setSpotCustom(e.target.value)}
-                  placeholder="カスタムキーワード（カンマ区切り）"
-                  className="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300" />
-              </div>
-
-              <hr className="border-gray-200" />
-
-              {/* 価格範囲 */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700">価格範囲</span>
-                  <button type="button" disabled={excludeRunning['price']} onClick={() => runExclude('price', excludeByPrice)}
-                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
-                    {excludeRunning['price'] ? '...' : '除外'}
-                  </button>
-                </div>
-                <div className="flex items-center gap-3 flex-wrap">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-gray-500">対象</span>
-                    <select value={priceTarget} onChange={(e) => setPriceTarget(e.target.value as 'original' | 'ebay')}
-                      className="border rounded px-2 py-1 text-xs focus:outline-none">
-                      <option value="original">仕入れ価格（円）</option>
-                      <option value="ebay">eBay価格（$）</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <input type="number" value={priceMin} onChange={(e) => setPriceMin(e.target.value)}
-                      placeholder="最小" className="border rounded px-2 py-1 text-xs w-24 focus:outline-none" />
-                    <span className="text-xs text-gray-400">〜</span>
-                    <input type="number" value={priceMax} onChange={(e) => setPriceMax(e.target.value)}
-                      placeholder="最大" className="border rounded px-2 py-1 text-xs w-24 focus:outline-none" />
-                    <span className="text-xs text-gray-500">{priceTarget === 'original' ? '円' : '$'} の範囲外を除外</span>
                   </div>
                 </div>
-              </div>
+              )}
 
-              <hr className="border-gray-200" />
-
-              {/* 簡易除外 */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700">簡易除外</span>
-                  <button type="button" disabled={excludeRunning['quick']} onClick={() => runExclude('quick', excludeQuick)}
-                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
-                    {excludeRunning['quick'] ? '...' : '除外'}
-                  </button>
+              {/* 展開パネル: 価格範囲 */}
+              {excludePanel === 'price' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-gray-500">対象</span>
+                      <select value={priceTarget} onChange={(e) => setPriceTarget(e.target.value as 'original' | 'ebay')}
+                        className="border rounded px-2 py-1 text-xs focus:outline-none">
+                        <option value="original">仕入れ価格（円）</option>
+                        <option value="ebay">eBay価格（$）</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input type="number" value={priceMin} onChange={(e) => setPriceMin(e.target.value)}
+                        placeholder="最小" className="border rounded px-2 py-1 text-xs w-24 focus:outline-none" />
+                      <span className="text-xs text-gray-400">〜</span>
+                      <input type="number" value={priceMax} onChange={(e) => setPriceMax(e.target.value)}
+                        placeholder="最大" className="border rounded px-2 py-1 text-xs w-24 focus:outline-none" />
+                      <span className="text-xs text-gray-500">{priceTarget === 'original' ? '円' : '$'} の範囲外を除外</span>
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['price']} onClick={() => runExclude('price', excludeByPrice)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['price'] ? '実行中...' : '除外を実行'}
+                    </button>
+                  </div>
                 </div>
-                <textarea value={quickKeywords} onChange={(e) => setQuickKeywords(e.target.value)}
-                  placeholder="キーワードをカンマ・改行区切りで入力（タイトルに含む商品を除外）"
-                  rows={3}
-                  className="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none" />
-              </div>
+              )}
+
+              {/* 展開パネル: 簡易除外 */}
+              {excludePanel === 'quick' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
+                  <textarea value={quickKeywords} onChange={(e) => setQuickKeywords(e.target.value)}
+                    placeholder="キーワードをカンマ・改行区切りで入力（タイトルに含む商品を除外）"
+                    rows={3}
+                    className="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none" />
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['quick']} onClick={() => runExclude('quick', excludeQuick)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['quick'] ? '実行中...' : '除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {excludeMsg && (
-                <p className="text-xs text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">{excludeMsg}</p>
+                <p className="mx-4 mb-4 text-xs text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">{excludeMsg}</p>
               )}
             </div>
           )}
