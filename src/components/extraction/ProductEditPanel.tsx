@@ -277,8 +277,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <button
                     type="button"
                     disabled={excludeRunning['seller'] ?? false}
-                    onClick={() => runExclude('seller', excludeDangerSellers)}
-                    className="border border-gray-300 rounded px-2.5 py-1 text-xs hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={() => { alert('危険セラー除外を実行します'); runExclude('seller', excludeDangerSellers) }}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {excludeRunning['seller'] ? '...' : '除外'}
                   </button>
@@ -289,8 +289,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <button
                     type="button"
                     disabled={excludeRunning['word'] ?? false}
-                    onClick={() => runExclude('word', excludeDangerWords)}
-                    className="border border-gray-300 rounded px-2.5 py-1 text-xs hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={() => { alert('危険単語除外を実行します'); runExclude('word', excludeDangerWords) }}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {excludeRunning['word'] ? '...' : '除外'}
                   </button>
