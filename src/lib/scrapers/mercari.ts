@@ -77,14 +77,19 @@ function toProduct(item: any, url: string): ScrapedProduct {
 export class MercariScraper {
   name = 'メルカリ'
   siteKey = 'mercari'
-  urlPattern = /mercari\.com\/(jp\/items|item|s)\/[^/?#]+/
+  urlPattern = /mercari\.com\/(jp\/items|item|s\/[^/?#]+|search)/
 
   matches(url: string): boolean {
-    return this.urlPattern.test(url)
+    return this.urlPattern.test(url) || /mercari\.com\/search/.test(url)
   }
 
   async scrape(url: string, options: ScraperOptions = {}): Promise<ScrapedProduct[]> {
     const { limit = 100 } = options
+
+    // 検索ページ: jp.mercari.com/search?keyword=...
+    if (/mercari\.com\/search/.test(url)) {
+      return this.scrapeSearch(url, limit, options)
+    }
 
     // セラーページ: jp.mercari.com/s/{sellerId}
     const sellerMatch = url.match(/mercari\.com\/s\/([^/?#]+)/)
@@ -100,6 +105,93 @@ export class MercariScraper {
     }
 
     throw new ScraperError('Invalid Mercari URL', this.siteKey, url)
+  }
+
+  private async scrapeSearch(url: string, limit: number, options: ScraperOptions): Promise<ScrapedProduct[]> {
+    const srcParams = new URL(url).searchParams
+
+    // MercariのAPIパラメータに変換
+    const apiParams: Record<string, string | number | string[]> = {
+      limit: Math.min(limit, 120),
+      offset: 0,
+      status: 'STATUS_TRADING',
+    }
+
+    const keyword = srcParams.get('keyword')
+    if (keyword) apiParams.keyword = keyword
+
+    const sort = srcParams.get('sort')
+    const order = srcParams.get('order')
+    if (sort) {
+      // sort=num_likes → SORT_NUM_LIKES_DESC etc.
+      const sortMap: Record<string, string> = {
+        num_likes: 'SORT_NUM_LIKES',
+        created_time: 'SORT_CREATED_TIME',
+        updated_time: 'SORT_UPDATED_TIME',
+        price: 'SORT_PRICE',
+        score: 'SORT_SCORE',
+      }
+      const orderStr = order === 'asc' ? 'ASC' : 'DESC'
+      apiParams.sort = `${sortMap[sort] ?? 'SORT_SCORE'}_${orderStr}`
+    }
+
+    const priceMin = srcParams.get('price_min')
+    const priceMax = srcParams.get('price_max')
+    if (priceMin) apiParams.price_min = Number(priceMin)
+    if (priceMax) apiParams.price_max = Number(priceMax)
+
+    // 商品状態: item_condition_id (複数可)
+    const conditionIds = srcParams.getAll('item_condition_id')
+    if (conditionIds.length > 0) apiParams.item_condition_id = conditionIds
+
+    // カテゴリ
+    const categoryId = srcParams.get('category_id')
+    if (categoryId) apiParams.category_id = categoryId
+
+    // 出品状態
+    const status = srcParams.get('status')
+    if (status === 'on_sale') apiParams.status = 'STATUS_TRADING'
+    else if (status === 'sold_out') apiParams.status = 'STATUS_SOLD_OUT'
+
+    const res = await fetch('https://api.mercari.jp/v2/entities/search', {
+      method: 'POST',
+      headers: { ...HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify(apiParams),
+    })
+
+    if (!res.ok) {
+      throw new ScraperError(`Search API error: ${res.status}`, this.siteKey, url)
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const json: any = await res.json()
+    const items: unknown[] = json?.data ?? json?.items ?? []
+
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new ScraperError('検索結果が0件でした', this.siteKey, url)
+    }
+
+    // ページネーション: limitに達するまで続けて取得
+    const allItems = [...items]
+    let offset = items.length
+
+    while (allItems.length < limit && items.length > 0) {
+      if (options.onPage) await options.onPage(allItems.length, limit)
+      const nextRes = await fetch('https://api.mercari.jp/v2/entities/search', {
+        method: 'POST',
+        headers: { ...HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...apiParams, offset }),
+      })
+      if (!nextRes.ok) break
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const nextJson: any = await nextRes.json()
+      const nextItems: unknown[] = nextJson?.data ?? nextJson?.items ?? []
+      if (!Array.isArray(nextItems) || nextItems.length === 0) break
+      allItems.push(...nextItems)
+      offset += nextItems.length
+    }
+
+    return allItems.slice(0, limit).map((item) => toProduct(item, url))
   }
 
   private async scrapeSellerPage(sellerId: string, url: string, limit: number): Promise<ScrapedProduct[]> {
