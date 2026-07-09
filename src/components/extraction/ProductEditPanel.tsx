@@ -102,18 +102,6 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     return toDelete.map((p) => p.id)
   }
 
-  const excludeItems: { label: string; action: (() => void) | null; running: boolean }[] = [
-    { label: 'Vero', action: null, running: false },
-    { label: '危険セラー', action: () => runExclude('seller', excludeDangerSellers), running: excludeRunning['seller'] ?? false },
-    { label: '危険単語', action: () => runExclude('word', excludeDangerWords), running: excludeRunning['word'] ?? false },
-    { label: 'スポット文字', action: null, running: false },
-    { label: '評価数', action: null, running: false },
-    { label: '発送日数', action: null, running: false },
-    { label: '最終更新月', action: null, running: false },
-    { label: '価格範囲', action: null, running: false },
-    { label: '価格タイプ', action: null, running: false },
-    { label: '簡易除外', action: null, running: false },
-  ]
 
   useEffect(() => {
     fetch(`/api/products/${extractionId}`)
@@ -278,19 +266,33 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           {tab === 'exclude' && (
             <div className="px-4 py-4 border-b bg-gray-50 space-y-3">
               <div className="grid grid-cols-5 gap-3">
-                {excludeItems.map(({ label, action, running }) => (
+                {([
+                  ['Vero', null],
+                  ['危険セラー', 'seller'],
+                  ['危険単語', 'word'],
+                  ['スポット文字', null],
+                  ['評価数', null],
+                  ['発送日数', null],
+                  ['最終更新月', null],
+                  ['価格範囲', null],
+                  ['価格タイプ', null],
+                  ['簡易除外', null],
+                ] as [string, string | null][]).map(([label, key]) => (
                   <div key={label} className="flex items-center justify-between gap-2">
                     <span className="text-sm text-gray-700">{label}</span>
                     <button
-                      onClick={action ?? undefined}
-                      disabled={!action || running}
+                      onClick={key ? () => {
+                        if (key === 'seller') runExclude('seller', excludeDangerSellers)
+                        if (key === 'word') runExclude('word', excludeDangerWords)
+                      } : undefined}
+                      disabled={!key || (excludeRunning[key] ?? false)}
                       className={`border rounded px-2.5 py-1 text-xs transition-colors ${
-                        action && !running
-                          ? 'border-gray-300 hover:bg-gray-100'
+                        key && !(excludeRunning[key] ?? false)
+                          ? 'border-gray-300 hover:bg-gray-100 cursor-pointer'
                           : 'border-gray-200 text-gray-400 cursor-not-allowed'
                       }`}
                     >
-                      {running ? '...' : '除外'}
+                      {key && (excludeRunning[key] ?? false) ? '...' : '除外'}
                     </button>
                   </div>
                 ))}
