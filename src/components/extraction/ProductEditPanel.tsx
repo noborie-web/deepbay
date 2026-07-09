@@ -266,34 +266,40 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           {tab === 'exclude' && (
             <div className="px-4 py-4 border-b bg-gray-50 space-y-3">
               <div className="grid grid-cols-5 gap-3">
-                {([
-                  ['Vero', null],
-                  ['危険セラー', 'seller'],
-                  ['危険単語', 'word'],
-                  ['スポット文字', null],
-                  ['評価数', null],
-                  ['発送日数', null],
-                  ['最終更新月', null],
-                  ['価格範囲', null],
-                  ['価格タイプ', null],
-                  ['簡易除外', null],
-                ] as [string, string | null][]).map(([label, key]) => (
+                {/* Vero - 未実装 */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">Vero</span>
+                  <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-400 cursor-not-allowed">除外</button>
+                </div>
+                {/* 危険セラー - 実装済み */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">危険セラー</span>
+                  <button
+                    type="button"
+                    disabled={excludeRunning['seller'] ?? false}
+                    onClick={() => runExclude('seller', excludeDangerSellers)}
+                    className="border border-gray-300 rounded px-2.5 py-1 text-xs hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {excludeRunning['seller'] ? '...' : '除外'}
+                  </button>
+                </div>
+                {/* 危険単語 - 実装済み */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-700">危険単語</span>
+                  <button
+                    type="button"
+                    disabled={excludeRunning['word'] ?? false}
+                    onClick={() => runExclude('word', excludeDangerWords)}
+                    className="border border-gray-300 rounded px-2.5 py-1 text-xs hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {excludeRunning['word'] ? '...' : '除外'}
+                  </button>
+                </div>
+                {/* 未実装ボタン群 */}
+                {['スポット文字', '評価数', '発送日数', '最終更新月', '価格範囲', '価格タイプ', '簡易除外'].map((label) => (
                   <div key={label} className="flex items-center justify-between gap-2">
                     <span className="text-sm text-gray-700">{label}</span>
-                    <button
-                      onClick={key ? () => {
-                        if (key === 'seller') runExclude('seller', excludeDangerSellers)
-                        if (key === 'word') runExclude('word', excludeDangerWords)
-                      } : undefined}
-                      disabled={!key || (excludeRunning[key] ?? false)}
-                      className={`border rounded px-2.5 py-1 text-xs transition-colors ${
-                        key && !(excludeRunning[key] ?? false)
-                          ? 'border-gray-300 hover:bg-gray-100 cursor-pointer'
-                          : 'border-gray-200 text-gray-400 cursor-not-allowed'
-                      }`}
-                    >
-                      {key && (excludeRunning[key] ?? false) ? '...' : '除外'}
-                    </button>
+                    <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-400 cursor-not-allowed">除外</button>
                   </div>
                 ))}
               </div>
