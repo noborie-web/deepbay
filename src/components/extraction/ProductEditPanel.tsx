@@ -44,6 +44,19 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [excludeRunning, setExcludeRunning] = useState<Record<string, boolean>>({})
   const [excludeMsg, setExcludeMsg] = useState('')
 
+  // スポット文字
+  const SPOT_PRESETS = ['難あり', 'ジャンク', '破損', '動作未確認', '訳あり', '傷あり', 'シミ', '汚れ', 'カビ', '臭い', 'NG']
+  const [spotSelected, setSpotSelected] = useState<Set<string>>(new Set())
+  const [spotCustom, setSpotCustom] = useState('')
+
+  // 価格範囲
+  const [priceMin, setPriceMin] = useState('')
+  const [priceMax, setPriceMax] = useState('')
+  const [priceTarget, setPriceTarget] = useState<'original' | 'ebay'>('original')
+
+  // 簡易除外
+  const [quickKeywords, setQuickKeywords] = useState('')
+
   async function runExclude(key: string, fn: () => Promise<string[]>) {
     setExcludeRunning((v) => ({ ...v, [key]: true }))
     setExcludeMsg('')
@@ -73,6 +86,63 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       const norm = p.source_url.split('?')[0].trim().replace(/\/+$/, '')
       // 商品URLがセラーURLで始まる場合のみ一致（部分一致の過剰マッチを防ぐ）
       return sellerUrls.some((s) => norm.startsWith(s))
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeSpotWords(): Promise<string[]> {
+    const keywords = [
+      ...Array.from(spotSelected),
+      ...spotCustom.split(/[,、\n]/).map((s) => s.trim()).filter(Boolean),
+    ].map((w) => w.toLowerCase())
+    if (keywords.length === 0) return []
+    const toDelete = products.filter((p) => {
+      const lower = p.original_title.toLowerCase()
+      return keywords.some((w) => lower.includes(w))
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeByPrice(): Promise<string[]> {
+    const min = priceMin !== '' ? Number(priceMin) : null
+    const max = priceMax !== '' ? Number(priceMax) : null
+    if (min === null && max === null) return []
+    const toDelete = products.filter((p) => {
+      const price = priceTarget === 'original' ? (p.original_price ?? 0) : (p.ebay_price ?? 0)
+      if (min !== null && price < min) return true
+      if (max !== null && price > max) return true
+      return false
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeQuick(): Promise<string[]> {
+    const keywords = quickKeywords.split(/[,、\n]/).map((s) => s.trim().toLowerCase()).filter(Boolean)
+    if (keywords.length === 0) return []
+    const toDelete = products.filter((p) => {
+      const lower = p.original_title.toLowerCase()
+      return keywords.some((w) => lower.includes(w))
     })
     await Promise.all(toDelete.map((p) =>
       fetch(`/api/products/${extractionId}`, {
@@ -265,45 +335,108 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
           {/* 除外タブ */}
           {tab === 'exclude' && (
-            <div className="px-4 py-4 border-b bg-gray-50 space-y-3">
+            <div className="px-4 py-4 border-b bg-gray-50 space-y-4">
+              {/* ワンクリック除外ボタン群 */}
               <div className="grid grid-cols-5 gap-3">
-                {/* Vero - 未実装 */}
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">Vero</span>
                   <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-400 cursor-not-allowed">除外</button>
                 </div>
-                {/* 危険セラー - 実装済み */}
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">危険セラー</span>
-                  <button
-                    type="button"
-                    disabled={excludeRunning['seller'] ?? false}
-                    onClick={() => runExclude('seller', excludeDangerSellers)}
-                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
+                  <button type="button" disabled={excludeRunning['seller']} onClick={() => runExclude('seller', excludeDangerSellers)}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
                     {excludeRunning['seller'] ? '...' : '除外'}
                   </button>
                 </div>
-                {/* 危険単語 - 実装済み */}
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">危険単語</span>
-                  <button
-                    type="button"
-                    disabled={excludeRunning['word'] ?? false}
-                    onClick={() => runExclude('word', excludeDangerWords)}
-                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
+                  <button type="button" disabled={excludeRunning['word']} onClick={() => runExclude('word', excludeDangerWords)}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
                     {excludeRunning['word'] ? '...' : '除外'}
                   </button>
                 </div>
-                {/* 未実装ボタン群 */}
-                {['スポット文字', '評価数', '発送日数', '最終更新月', '価格範囲', '価格タイプ', '簡易除外'].map((label) => (
+                {['評価数', '発送日数', '最終更新月', '価格タイプ'].map((label) => (
                   <div key={label} className="flex items-center justify-between gap-2">
-                    <span className="text-sm text-gray-700">{label}</span>
-                    <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-400 cursor-not-allowed">除外</button>
+                    <span className="text-sm text-gray-400">{label}</span>
+                    <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">除外</button>
                   </div>
                 ))}
               </div>
+
+              <hr className="border-gray-200" />
+
+              {/* スポット文字 */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-gray-700">スポット文字</span>
+                  <button type="button" disabled={excludeRunning['spot']} onClick={() => runExclude('spot', excludeSpotWords)}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                    {excludeRunning['spot'] ? '...' : '除外'}
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {SPOT_PRESETS.map((w) => (
+                    <button key={w} type="button"
+                      onClick={() => setSpotSelected((prev) => { const s = new Set(prev); s.has(w) ? s.delete(w) : s.add(w); return s })}
+                      className={`px-2 py-0.5 rounded text-xs border transition-colors ${spotSelected.has(w) ? 'bg-orange-500 text-white border-orange-500' : 'border-gray-300 text-gray-600 hover:bg-gray-100'}`}>
+                      {w}
+                    </button>
+                  ))}
+                </div>
+                <input type="text" value={spotCustom} onChange={(e) => setSpotCustom(e.target.value)}
+                  placeholder="カスタムキーワード（カンマ区切り）"
+                  className="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300" />
+              </div>
+
+              <hr className="border-gray-200" />
+
+              {/* 価格範囲 */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-gray-700">価格範囲</span>
+                  <button type="button" disabled={excludeRunning['price']} onClick={() => runExclude('price', excludeByPrice)}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                    {excludeRunning['price'] ? '...' : '除外'}
+                  </button>
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-gray-500">対象</span>
+                    <select value={priceTarget} onChange={(e) => setPriceTarget(e.target.value as 'original' | 'ebay')}
+                      className="border rounded px-2 py-1 text-xs focus:outline-none">
+                      <option value="original">仕入れ価格（円）</option>
+                      <option value="ebay">eBay価格（$）</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <input type="number" value={priceMin} onChange={(e) => setPriceMin(e.target.value)}
+                      placeholder="最小" className="border rounded px-2 py-1 text-xs w-24 focus:outline-none" />
+                    <span className="text-xs text-gray-400">〜</span>
+                    <input type="number" value={priceMax} onChange={(e) => setPriceMax(e.target.value)}
+                      placeholder="最大" className="border rounded px-2 py-1 text-xs w-24 focus:outline-none" />
+                    <span className="text-xs text-gray-500">{priceTarget === 'original' ? '円' : '$'} の範囲外を除外</span>
+                  </div>
+                </div>
+              </div>
+
+              <hr className="border-gray-200" />
+
+              {/* 簡易除外 */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-gray-700">簡易除外</span>
+                  <button type="button" disabled={excludeRunning['quick']} onClick={() => runExclude('quick', excludeQuick)}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                    {excludeRunning['quick'] ? '...' : '除外'}
+                  </button>
+                </div>
+                <textarea value={quickKeywords} onChange={(e) => setQuickKeywords(e.target.value)}
+                  placeholder="キーワードをカンマ・改行区切りで入力（タイトルに含む商品を除外）"
+                  rows={3}
+                  className="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none" />
+              </div>
+
               {excludeMsg && (
                 <p className="text-xs text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">{excludeMsg}</p>
               )}
