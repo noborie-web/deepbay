@@ -40,6 +40,81 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // local edits buffer
   const [edits, setEdits] = useState<Record<string, Partial<Product>>>({})
 
+  // 除外タブ
+  const [excludeRunning, setExcludeRunning] = useState<Record<string, boolean>>({})
+  const [excludeMsg, setExcludeMsg] = useState('')
+
+  async function runExclude(key: string, fn: () => Promise<string[]>) {
+    setExcludeRunning((v) => ({ ...v, [key]: true }))
+    setExcludeMsg('')
+    try {
+      const removedIds = await fn()
+      if (removedIds.length > 0) {
+        setProducts((prev) => prev.filter((p) => !removedIds.includes(p.id)))
+        setExcludeMsg(`${removedIds.length}件を除外しました`)
+      } else {
+        setExcludeMsg('除外対象がありませんでした')
+      }
+    } catch {
+      setExcludeMsg('エラーが発生しました')
+    } finally {
+      setExcludeRunning((v) => ({ ...v, [key]: false }))
+    }
+  }
+
+  async function excludeDangerSellers(): Promise<string[]> {
+    const res = await fetch('/api/extraction-settings')
+    const data = await res.json()
+    const sellerUrls: string[] = (data.sellers ?? []).map((s: { seller_url: string }) =>
+      s.seller_url.split('?')[0].trim().replace(/\/+$/, '')
+    )
+    if (sellerUrls.length === 0) return []
+    const toDelete = products.filter((p) => {
+      const norm = p.source_url.split('?')[0].trim().replace(/\/+$/, '')
+      return sellerUrls.some((s) => norm.includes(s) || s.includes(norm))
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  async function excludeDangerWords(): Promise<string[]> {
+    const res = await fetch('/api/extraction-settings')
+    const data = await res.json()
+    const words: string[] = (data.words ?? []).map((w: { word: string }) => w.word.toLowerCase())
+    if (words.length === 0) return []
+    const toDelete = products.filter((p) => {
+      const lower = p.original_title.toLowerCase()
+      return words.some((w) => lower.includes(w))
+    })
+    await Promise.all(toDelete.map((p) =>
+      fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: p.id }),
+      })
+    ))
+    return toDelete.map((p) => p.id)
+  }
+
+  const excludeItems: { label: string; action: (() => void) | null; running: boolean }[] = [
+    { label: 'Vero', action: null, running: false },
+    { label: '危険セラー', action: () => runExclude('seller', excludeDangerSellers), running: excludeRunning['seller'] ?? false },
+    { label: '危険単語', action: () => runExclude('word', excludeDangerWords), running: excludeRunning['word'] ?? false },
+    { label: 'スポット文字', action: null, running: false },
+    { label: '評価数', action: null, running: false },
+    { label: '発送日数', action: null, running: false },
+    { label: '最終更新月', action: null, running: false },
+    { label: '価格範囲', action: null, running: false },
+    { label: '価格タイプ', action: null, running: false },
+    { label: '簡易除外', action: null, running: false },
+  ]
+
   useEffect(() => {
     fetch(`/api/products/${extractionId}`)
       .then((r) => r.json())
@@ -201,15 +276,28 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
           {/* 除外タブ */}
           {tab === 'exclude' && (
-            <div className="px-4 py-4 border-b bg-gray-50">
+            <div className="px-4 py-4 border-b bg-gray-50 space-y-3">
               <div className="grid grid-cols-5 gap-3">
-                {['Vero', '危険セラー', '危険単語', 'スポット文字', '評価数', '発送日数', '最終更新月', '価格範囲', '価格タイプ', '簡易除外'].map((label) => (
+                {excludeItems.map(({ label, action, running }) => (
                   <div key={label} className="flex items-center justify-between gap-2">
                     <span className="text-sm text-gray-700">{label}</span>
-                    <button className="border border-gray-300 rounded px-2.5 py-1 text-xs hover:bg-gray-100">除外</button>
+                    <button
+                      onClick={action ?? undefined}
+                      disabled={!action || running}
+                      className={`border rounded px-2.5 py-1 text-xs transition-colors ${
+                        action && !running
+                          ? 'border-gray-300 hover:bg-gray-100'
+                          : 'border-gray-200 text-gray-400 cursor-not-allowed'
+                      }`}
+                    >
+                      {running ? '...' : '除外'}
+                    </button>
                   </div>
                 ))}
               </div>
+              {excludeMsg && (
+                <p className="text-xs text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">{excludeMsg}</p>
+              )}
             </div>
           )}
 
