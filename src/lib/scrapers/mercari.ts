@@ -18,24 +18,41 @@ function toProduct(item: any, url: string): ScrapedProduct {
     )
     .filter(Boolean)
 
-  // 評価数: seller.ratings?.good + seller.ratings?.bad or num_ratings
+  // 評価数: seller情報から複数パスを試みる
   const seller = item.seller ?? item.sellerInfo ?? null
-  const sellerRatingCount: number | null =
-    seller?.num_ratings ?? seller?.ratings?.good ?? null
+  let sellerRatingCount: number | null = null
+  if (seller) {
+    // num_ratings が直接ある場合
+    if (typeof seller.num_ratings === 'number') sellerRatingCount = seller.num_ratings
+    // ratings オブジェクトがある場合 → good + bad の合計
+    else if (seller.ratings) {
+      const g = seller.ratings.good ?? 0
+      const b = seller.ratings.bad ?? 0
+      if (g + b > 0) sellerRatingCount = g + b
+    }
+    // evaluation_count / ratingCount
+    else if (typeof seller.evaluation_count === 'number') sellerRatingCount = seller.evaluation_count
+    else if (typeof seller.ratingCount === 'number') sellerRatingCount = seller.ratingCount
+  }
 
-  // 発送日数: shipping_duration.min (日数)
-  // e.g. "1~2日" → min=1, "2~3日" → min=2
-  const sd = item.shipping_duration ?? item.shippingDuration ?? null
+  // 発送日数: shipping_duration から取得
+  // APIレスポンス例: { min: 1, max: 2 } または "1~2日で発送"
+  const sd = item.shipping_duration ?? item.shippingDuration ?? item.shipping_payer ?? null
   let shippingDays: number | null = null
-  if (typeof sd?.min === 'number') {
-    shippingDays = sd.min
+  if (sd && typeof sd === 'object') {
+    if (typeof sd.min === 'number') shippingDays = sd.min
+    else if (typeof sd.max === 'number') shippingDays = sd.max
   } else if (typeof sd === 'string') {
     const m = sd.match(/(\d+)/)
     if (m) shippingDays = parseInt(m[1], 10)
   }
+  // フォールバック: shipping_duration_days
+  if (shippingDays === null && typeof item.shipping_duration_days === 'number') {
+    shippingDays = item.shipping_duration_days
+  }
 
-  // 最終更新日
-  const updatedRaw = item.updated ?? item.updated_at ?? item.updatedAt ?? null
+  // 最終更新日: Unix秒またはISO文字列
+  const updatedRaw = item.updated ?? item.updated_at ?? item.updatedAt ?? item.created ?? null
   const sourceUpdatedAt: string | null = updatedRaw
     ? new Date(typeof updatedRaw === 'number' ? updatedRaw * 1000 : updatedRaw).toISOString()
     : null
