@@ -15,12 +15,13 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const db = admin()
-  const [settings, sellers, words, replaces, templates] = await Promise.all([
+  const [settings, sellers, words, replaces, templates, vero] = await Promise.all([
     db.from('extraction_settings').select('*').eq('user_id', user.id).single(),
     db.from('danger_sellers').select('*').eq('user_id', user.id).order('created_at'),
     db.from('danger_words').select('*').eq('user_id', user.id).order('created_at'),
     db.from('replace_words').select('*').eq('user_id', user.id).order('created_at'),
     db.from('html_templates').select('*').eq('user_id', user.id).order('created_at'),
+    db.from('vero_brands').select('*').eq('user_id', user.id).order('created_at'),
   ])
 
   return NextResponse.json({
@@ -29,6 +30,7 @@ export async function GET() {
     words: words.data ?? [],
     replaces: replaces.data ?? [],
     templates: templates.data ?? [],
+    vero: vero.data ?? [],
   })
 }
 
@@ -88,6 +90,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   }
 
+  if (type === 'vero') {
+    if (Array.isArray(payload.brands)) {
+      const rows = payload.brands.map((b: string) => ({ user_id: user.id, brand: b }))
+      const { error } = await db.from('vero_brands').insert(rows)
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    } else {
+      const { error } = await db.from('vero_brands').insert({ user_id: user.id, brand: payload.brand })
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+    return NextResponse.json({ ok: true })
+  }
+
   if (type === 'template') {
     const { error } = await db.from('html_templates').insert({ user_id: user.id, name: payload.name, content: payload.content ?? '' })
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -118,6 +132,7 @@ export async function DELETE(req: NextRequest) {
     seller: 'danger_sellers',
     word: 'danger_words',
     replace: 'replace_words',
+    vero: 'vero_brands',
     template: 'html_templates',
   }
   const table = tableMap[type]
