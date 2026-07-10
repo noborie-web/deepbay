@@ -14,7 +14,7 @@ interface Props {
     sellerAccountId: string
     bulkEditSettingId: string
     isBulk: boolean
-  }) => Promise<void>
+  }) => Promise<boolean | void>
 }
 
 export default function ExtractionForm({ sellers, categories, bulkSettings, onSubmit }: Props) {
@@ -30,8 +30,8 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
     if (!url.trim()) return
     setLoading(true)
     try {
-      await onSubmit({ url: url.trim(), categoryId, sellerAccountId, bulkEditSettingId, isBulk: true })
-      setUrl('')
+      const result = await onSubmit({ url: url.trim(), categoryId, sellerAccountId, bulkEditSettingId, isBulk: true })
+      if (result !== false) setUrl('')
     } finally {
       setLoading(false)
     }
