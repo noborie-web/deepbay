@@ -58,7 +58,7 @@ export default function ExtractionPageClient({
     const json = await res.json()
     if (!res.ok) {
       setError(json.error ?? 'エラーが発生しました')
-      return
+      return false
     }
     // 抽出詳細ページへ即時遷移（進捗をリアルタイム表示）
     router.push(`/extraction/${json.extractionId}`)
