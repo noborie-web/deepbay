@@ -31,7 +31,6 @@ export class RakumaScraper extends BaseScraper {
             sellerRatingCount: null,
             shippingDays: null,
             sourceUpdatedAt: null,
-    priceType: 'fixed' as const,
           }
         }
       } catch {
@@ -63,7 +62,6 @@ export class RakumaScraper extends BaseScraper {
       sellerRatingCount: null,
       shippingDays: null,
       sourceUpdatedAt: null,
-    priceType: 'fixed' as const,
     }
   }
 }

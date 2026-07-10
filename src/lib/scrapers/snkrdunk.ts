@@ -44,7 +44,6 @@ function serverSearchItemToProduct(item: any): ScrapedProduct | null {
     sellerRatingCount: null,
     shippingDays: null,
     sourceUpdatedAt: null,
-    priceType: 'fixed' as const,
   }
 }
 
@@ -79,7 +78,6 @@ function legacyItemToProduct(item: any): ScrapedProduct | null {
     sellerRatingCount: null,
     shippingDays: null,
     sourceUpdatedAt: null,
-    priceType: 'fixed' as const,
   }
 }
 

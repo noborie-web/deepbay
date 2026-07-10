@@ -69,9 +69,6 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // 最終更新月フィルタ
   const [updatedMonthsAgo, setUpdatedMonthsAgo] = useState('3')
 
-  // 価格タイプフィルタ
-  const [excludePriceType, setExcludePriceType] = useState<'auction' | 'fixed'>('auction')
-
   function togglePanel(key: string) {
     setExcludePanel((v) => v === key ? null : key)
     setExcludeMsg('')
@@ -233,37 +230,6 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       const lower = p.original_title.toLowerCase()
       return words.some((w) => lower.includes(w))
     })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
-  }
-
-  async function excludeVero(): Promise<string[]> {
-    const res = await fetch('/api/extraction-settings')
-    const data = await res.json()
-    const brands: string[] = (data.vero ?? []).map((v: { brand: string }) => v.brand.toLowerCase())
-    if (brands.length === 0) return []
-    const toDelete = products.filter((p) => {
-      const title = p.original_title.toLowerCase()
-      return brands.some((b) => title.includes(b))
-    })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
-  }
-
-  async function excludeByPriceType(): Promise<string[]> {
-    const toDelete = products.filter((p) => (p.price_type ?? 'fixed') === excludePriceType)
     await Promise.all(toDelete.map((p) =>
       fetch(`/api/products/${extractionId}`, {
         method: 'DELETE',
@@ -441,11 +407,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
               <div className="px-4 py-4 grid grid-cols-5 gap-3">
                 {/* Vero */}
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-gray-700">Vero</span>
-                  <button type="button" disabled={excludeRunning['vero']} onClick={() => runExclude('vero', excludeVero)}
-                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
-                    {excludeRunning['vero'] ? '...' : '除外'}
-                  </button>
+                  <span className="text-sm text-gray-400">Vero</span>
+                  <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">除外</button>
                 </div>
                 {/* 危険セラー - ワンクリック */}
                 <div className="flex items-center justify-between gap-2">
@@ -495,13 +458,10 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     除外
                   </button>
                 </div>
-                {/* 価格タイプ - パネル展開 */}
+                {/* 価格タイプ - 未実装 */}
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-gray-700">価格タイプ</span>
-                  <button type="button" onClick={() => togglePanel('pricetype')}
-                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'pricetype' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
-                    除外
-                  </button>
+                  <span className="text-sm text-gray-400">価格タイプ</span>
+                  <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">除外</button>
                 </div>
                 {/* 価格範囲 - パネル展開 */}
                 <div className="flex items-center justify-between gap-2">
@@ -648,30 +608,6 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     <button type="button" disabled={excludeRunning['quick']} onClick={() => runExclude('quick', excludeQuick)}
                       className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
                       {excludeRunning['quick'] ? '実行中...' : '除外を実行'}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* 展開パネル: 価格タイプ */}
-              {excludePanel === 'pricetype' && (
-                <div className="mx-4 mb-2 p-3 bg-white border rounded-lg space-y-2">
-                  <p className="text-xs text-gray-500">指定した価格タイプの商品を除外します（ヤフオク対応）</p>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-gray-600">除外対象</span>
-                    <label className="flex items-center gap-1 text-xs cursor-pointer">
-                      <input type="radio" name="pricetype" value="auction" checked={excludePriceType === 'auction'} onChange={() => setExcludePriceType('auction')} />
-                      オークション（入札形式）
-                    </label>
-                    <label className="flex items-center gap-1 text-xs cursor-pointer">
-                      <input type="radio" name="pricetype" value="fixed" checked={excludePriceType === 'fixed'} onChange={() => setExcludePriceType('fixed')} />
-                      固定価格（即決）
-                    </label>
-                  </div>
-                  <div className="flex justify-end">
-                    <button type="button" disabled={excludeRunning['pricetype']} onClick={() => runExclude('pricetype', excludeByPriceType)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
-                      {excludeRunning['pricetype'] ? '実行中...' : '除外を実行'}
                     </button>
                   </div>
                 </div>
