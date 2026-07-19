@@ -52,6 +52,7 @@ export async function _getDPoPContext(): Promise<DPoPContext> {
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function _toProduct(item: any, url: string) { return toProduct(item, url) }
+export function _getMultiNumberParam(params: URLSearchParams, key: string) { return getMultiNumberParam(params, key) }
 
 async function generateDPoP(htu: string, htm: string, ctx: DPoPContext): Promise<string> {
   const header = { typ: 'dpop+jwt', alg: 'ES256', jwk: ctx.publicJwk }
@@ -72,6 +73,15 @@ async function generateDPoP(htu: string, htm: string, ctx: DPoPContext): Promise
 }
 
 // ----------------------
+
+function getMultiNumberParam(params: URLSearchParams, key: string): number[] {
+  return params
+    .getAll(key)
+    .flatMap((value) => value.split(','))
+    .filter((s) => s !== '')
+    .map(Number)
+    .filter(Number.isFinite)
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toProduct(item: any, url: string): ScrapedProduct {
@@ -204,7 +214,7 @@ export class MercariScraper {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const searchCondition: Record<string, any> = {
       keyword:        srcParams.get('keyword') ?? '',
-      excludeKeyword: '',
+      excludeKeyword: srcParams.get('exclude_keyword') ?? '',
       sort:           sortValue,
       order:          orderValue,
       status:         [statusValue],
@@ -229,14 +239,14 @@ export class MercariScraper {
     const priceMax = srcParams.get('price_max')
     if (priceMax) searchCondition.priceMax = parseInt(priceMax, 10)
 
-    const conditionIds = srcParams.getAll('item_condition_id')
-    if (conditionIds.length > 0) searchCondition.itemConditionId = conditionIds.map(Number)
+    const conditionIds = getMultiNumberParam(srcParams, 'item_condition_id')
+    if (conditionIds.length > 0) searchCondition.itemConditionId = conditionIds
 
-    const categoryId = srcParams.get('category_id')
-    if (categoryId) searchCondition.categoryId = [parseInt(categoryId, 10)]
+    const categoryIds = getMultiNumberParam(srcParams, 'category_id')
+    if (categoryIds.length > 0) searchCondition.categoryId = categoryIds
 
-    const shippingPayerId = srcParams.get('shipping_payer_id')
-    if (shippingPayerId) searchCondition.shippingPayerId = [parseInt(shippingPayerId, 10)]
+    const shippingPayerIds = getMultiNumberParam(srcParams, 'shipping_payer_id')
+    if (shippingPayerIds.length > 0) searchCondition.shippingPayerId = shippingPayerIds
 
     const SEARCH_URL = 'https://api.mercari.jp/v2/entities:search'
     const dpopCtx = await getDPoPContext()
