@@ -76,7 +76,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
 export class MercariScraper {
   name = 'メルカリ'
   siteKey = 'mercari'
-  urlPattern = /mercari\.com\/(jp\/items|item|s)\/[^/?#]+/
+  urlPattern = /mercari\.com\/(?:jp\/items\/[^/?#]+|item\/[^/?#]+|s\/[^/?#]+|search(?:[/?#]|$))/
 
   matches(url: string): boolean {
     if (this.urlPattern.test(url)) return true
