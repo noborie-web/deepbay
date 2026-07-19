@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { _getDPoPContext, _generateDPoP, _toProduct } from '../lib/scrapers/mercari'
+import { _getDPoPContext, _generateDPoP, _toProduct, _getMultiNumberParam } from '../lib/scrapers/mercari'
 
 describe('DPoP JWT generation', () => {
   it('produces a 3-segment JWT string', async () => {
@@ -142,5 +142,56 @@ describe('toProduct() date handling', () => {
   it('returns null when date field is absent', () => {
     const p = _toProduct({ id: 'x1', name: 'T', price: 1, description: '', thumbnails: [] }, 'https://jp.mercari.com/item/x1')
     expect(p.sourceUpdatedAt).toBeNull()
+  })
+})
+
+describe('getMultiNumberParam()', () => {
+  it('parses comma-separated value: item_condition_id=2%2C3%2C4%2C5 → [2,3,4,5]', () => {
+    const params = new URLSearchParams('item_condition_id=2%2C3%2C4%2C5')
+    expect(_getMultiNumberParam(params, 'item_condition_id')).toEqual([2, 3, 4, 5])
+  })
+
+  it('parses repeated keys: item_condition_id=2&item_condition_id=3 → [2,3]', () => {
+    const params = new URLSearchParams('item_condition_id=2&item_condition_id=3')
+    expect(_getMultiNumberParam(params, 'item_condition_id')).toEqual([2, 3])
+  })
+
+  it('filters out non-numeric and empty values', () => {
+    const params = new URLSearchParams('item_condition_id=2%2C%2Cfoo%2C4')
+    expect(_getMultiNumberParam(params, 'item_condition_id')).toEqual([2, 4])
+  })
+
+  it('returns empty array when key is absent', () => {
+    const params = new URLSearchParams('')
+    expect(_getMultiNumberParam(params, 'item_condition_id')).toEqual([])
+  })
+})
+
+describe('scrapeSearch excludeKeyword', () => {
+  it('exclude_keyword param is passed to searchCondition.excludeKeyword', async () => {
+    // We verify by checking the fetch body constructed from a URL with exclude_keyword
+    // Intercept fetch to capture the request body
+    const calls: string[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (typeof input === 'string' && input.includes('entities:search')) {
+        calls.push(init?.body as string ?? '')
+        // Return an empty result to stop pagination
+        return new Response(JSON.stringify({ items: [] }), { status: 200 })
+      }
+      return origFetch(input, init)
+    }
+
+    try {
+      const { MercariScraper } = await import('../lib/scrapers/mercari')
+      const scraper = new MercariScraper()
+      await scraper.scrape('https://jp.mercari.com/search?keyword=nike&exclude_keyword=%E3%81%BE%E3%81%A8%E3%82%81%E5%A3%B2%E3%82%8A').catch(() => {})
+    } finally {
+      globalThis.fetch = origFetch
+    }
+
+    expect(calls.length).toBeGreaterThan(0)
+    const body = JSON.parse(calls[0])
+    expect(body.searchCondition.excludeKeyword).toBe('まとめ売り')
   })
 })
