@@ -24,6 +24,7 @@ export interface IScraper {
   name: string
   siteKey: string
   urlPattern: RegExp
+  matches?(url: string): boolean
   // 単品 or 複数を統一してリストで返す
   scrape(url: string, options?: ScraperOptions): Promise<ScrapedProduct[]>
 }

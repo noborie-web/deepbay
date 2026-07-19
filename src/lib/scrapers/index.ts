@@ -13,7 +13,7 @@ const SCRAPERS: IScraper[] = [
 ]
 
 export function findScraper(url: string): IScraper | null {
-  return SCRAPERS.find((s) => s.urlPattern.test(url)) ?? null
+  return SCRAPERS.find((s) => (s.matches ? s.matches(url) : s.urlPattern.test(url))) ?? null
 }
 
 export function getSupportedSites(): { name: string; siteKey: string; urlPattern: string }[] {
