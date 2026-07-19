@@ -34,7 +34,7 @@ async function getDPoPContext(): Promise<DPoPContext> {
   if (!_dpopCtx) {
     const keyPair = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
+      true,
       ['sign'],
     )
     const full = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
@@ -43,6 +43,15 @@ async function getDPoPContext(): Promise<DPoPContext> {
   }
   return _dpopCtx
 }
+
+export async function _generateDPoP(htu: string, htm: string, ctx: DPoPContext): Promise<string> {
+  return generateDPoP(htu, htm, ctx)
+}
+export async function _getDPoPContext(): Promise<DPoPContext> {
+  return getDPoPContext()
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function _toProduct(item: any, url: string) { return toProduct(item, url) }
 
 async function generateDPoP(htu: string, htm: string, ctx: DPoPContext): Promise<string> {
   const header = { typ: 'dpop+jwt', alg: 'ES256', jwk: ctx.publicJwk }
@@ -108,16 +117,23 @@ function toProduct(item: any, url: string): ScrapedProduct {
 
   // 最終更新日: Unix秒またはISO文字列
   const updatedRaw = item.updated ?? item.updated_at ?? item.updatedAt ?? item.created ?? null
-  const sourceUpdatedAt: string | null = updatedRaw
-    ? new Date(typeof updatedRaw === 'number' ? updatedRaw * 1000 : updatedRaw).toISOString()
-    : null
+  let sourceUpdatedAt: string | null = null
+  if (updatedRaw != null) {
+    const ms = (typeof updatedRaw === 'number' || (typeof updatedRaw === 'string' && /^\d+$/.test(updatedRaw)))
+      ? Number(updatedRaw) * 1000
+      : updatedRaw
+    try {
+      const d = new Date(ms)
+      if (isFinite(d.getTime())) sourceUpdatedAt = d.toISOString()
+    } catch { /* invalid date → null */ }
+  }
 
   return {
     sourceUrl: `https://jp.mercari.com/item/${itemId}`,
     sourceSite: 'mercari',
     sourceItemId: itemId,
     title: item.name ?? '',
-    price: typeof item.price === 'number' ? item.price : null,
+    price: (() => { if (item.price == null) return null; const n = Number(item.price); return isFinite(n) ? n : null })(),
     description: item.description ?? '',
     images,
     condition: item.item_condition?.name ?? item.itemCondition?.name ?? null,
