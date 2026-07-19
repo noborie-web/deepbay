@@ -170,12 +170,14 @@ export class MercariScraper {
     const allProducts: ScrapedProduct[] = []
     let pageToken: string | undefined
     const pageSize = Math.min(limit, 120)
+    // searchSessionId は1回の検索セッション全体で固定
+    const searchSessionId = crypto.randomUUID()
 
     while (allProducts.length < limit) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const reqBody: Record<string, any> = {
         pageSize,
-        searchSessionId: crypto.randomUUID(),
+        searchSessionId,
         searchCondition,
       }
       if (pageToken) reqBody.pageToken = pageToken
@@ -187,7 +189,7 @@ export class MercariScraper {
       })
 
       if (!res.ok) {
-        const text = await res.text().catch(() => '')
+        const text = (await res.text().catch(() => '')).slice(0, 500)
         throw new ScraperError(`Search API error: ${res.status} ${text}`, this.siteKey, url)
       }
 

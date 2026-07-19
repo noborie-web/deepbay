@@ -301,7 +301,7 @@ async function runScrape(
       supabase.rpc('increment_extraction_used', { user_id: userId }),
     ])
   } catch (err) {
-    const message = err instanceof Error ? err.message : '不明なエラー'
+    const message = (err instanceof Error ? err.message : '不明なエラー').slice(0, 500)
     console.error('Scrape failed:', message)
     await supabase
       .from('extractions')
