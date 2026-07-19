@@ -2,12 +2,67 @@ import { ScraperError } from './types'
 import type { ScrapedProduct, ScraperOptions } from './types'
 
 const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
   'Accept': 'application/json, text/plain, */*',
   'Accept-Language': 'ja-JP,ja;q=0.9',
   'Origin': 'https://jp.mercari.com',
   'Referer': 'https://jp.mercari.com/',
+  'X-Platform': 'web',
 }
+
+// ---- DPoP utility ----
+
+function base64url(data: Uint8Array): string {
+  let binary = ''
+  for (const byte of data) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+}
+
+function base64urlStr(str: string): string {
+  return base64url(new TextEncoder().encode(str))
+}
+
+interface DPoPContext {
+  keyPair: CryptoKeyPair
+  publicJwk: JsonWebKey
+  uuid: string
+}
+
+let _dpopCtx: DPoPContext | null = null
+
+async function getDPoPContext(): Promise<DPoPContext> {
+  if (!_dpopCtx) {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign'],
+    )
+    const full = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+    const publicJwk: JsonWebKey = { crv: full.crv, kty: full.kty, x: full.x, y: full.y }
+    _dpopCtx = { keyPair, publicJwk, uuid: crypto.randomUUID() }
+  }
+  return _dpopCtx
+}
+
+async function generateDPoP(htu: string, htm: string, ctx: DPoPContext): Promise<string> {
+  const header = { typ: 'dpop+jwt', alg: 'ES256', jwk: ctx.publicJwk }
+  const payload = {
+    iat: Math.floor(Date.now() / 1000),
+    jti: crypto.randomUUID().replace(/-/g, ''),
+    htu,
+    htm,
+    uuid: ctx.uuid,
+  }
+  const signingInput = `${base64urlStr(JSON.stringify(header))}.${base64urlStr(JSON.stringify(payload))}`
+  const sig = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: { name: 'SHA-256' } },
+    ctx.keyPair.privateKey,
+    new TextEncoder().encode(signingInput),
+  )
+  return `${signingInput}.${base64url(new Uint8Array(sig))}`
+}
+
+// ----------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toProduct(item: any, url: string): ScrapedProduct {
@@ -167,24 +222,32 @@ export class MercariScraper {
     const shippingPayerId = srcParams.get('shipping_payer_id')
     if (shippingPayerId) searchCondition.shippingPayerId = [parseInt(shippingPayerId, 10)]
 
+    const SEARCH_URL = 'https://api.mercari.jp/v2/entities:search'
+    const dpopCtx = await getDPoPContext()
     const allProducts: ScrapedProduct[] = []
     let pageToken: string | undefined
     const pageSize = Math.min(limit, 120)
-    // searchSessionId は1回の検索セッション全体で固定
-    const searchSessionId = crypto.randomUUID()
+    // searchSessionId は検索1セッション単位で固定（mercapiに準拠）
+    const searchSessionId = crypto.randomUUID().replace(/-/g, '')
 
     while (allProducts.length < limit) {
+      const dpop = await generateDPoP(SEARCH_URL, 'POST', dpopCtx)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const reqBody: Record<string, any> = {
+        userId: '',
         pageSize,
+        pageToken: pageToken ?? '',
         searchSessionId,
+        indexRouting: 'INDEX_ROUTING_UNSPECIFIED',
+        thumbnailTypes: [],
         searchCondition,
+        defaultDatasets: [],
+        serviceFrom: 'suruga',
       }
-      if (pageToken) reqBody.pageToken = pageToken
 
-      const res = await fetch('https://api.mercari.jp/v2/entities:search', {
+      const res = await fetch(SEARCH_URL, {
         method: 'POST',
-        headers: { ...HEADERS, 'Content-Type': 'application/json' },
+        headers: { ...HEADERS, 'Content-Type': 'application/json', 'DPoP': dpop },
         body: JSON.stringify(reqBody),
       })
 
