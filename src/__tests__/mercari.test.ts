@@ -38,6 +38,44 @@ describe('DPoP JWT generation', () => {
     const b = await _getDPoPContext()
     expect(a).toBe(b)
   })
+
+  it('signature is 64 bytes (R||S for ES256)', async () => {
+    const ctx = await _getDPoPContext()
+    const token = await _generateDPoP('https://api.mercari.jp/v2/entities:search', 'POST', ctx)
+    const sigB64 = token.split('.')[2]
+    // base64url → bytes
+    const sigBytes = Buffer.from(sigB64, 'base64url')
+    expect(sigBytes.byteLength).toBe(64)
+  })
+
+  it('signature verifies against the embedded public JWK', async () => {
+    const ctx = await _getDPoPContext()
+    const htu = 'https://api.mercari.jp/v2/entities:search'
+    const token = await _generateDPoP(htu, 'POST', ctx)
+    const [headerB64, payloadB64, sigB64] = token.split('.')
+
+    // Import public key from the JWK embedded in the header
+    const headerJson = Buffer.from(headerB64, 'base64url').toString('utf8')
+    const { jwk } = JSON.parse(headerJson)
+    const publicKey = await crypto.subtle.importKey(
+      'jwk',
+      { ...jwk, key_ops: ['verify'] },
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['verify'],
+    )
+
+    const signingInput = new TextEncoder().encode(`${headerB64}.${payloadB64}`)
+    const signature = Buffer.from(sigB64, 'base64url')
+
+    const valid = await crypto.subtle.verify(
+      { name: 'ECDSA', hash: { name: 'SHA-256' } },
+      publicKey,
+      signature,
+      signingInput,
+    )
+    expect(valid).toBe(true)
+  })
 })
 
 describe('toProduct() price handling', () => {
