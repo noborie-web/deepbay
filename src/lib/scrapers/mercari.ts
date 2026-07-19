@@ -2,12 +2,76 @@ import { ScraperError } from './types'
 import type { ScrapedProduct, ScraperOptions } from './types'
 
 const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
   'Accept': 'application/json, text/plain, */*',
   'Accept-Language': 'ja-JP,ja;q=0.9',
   'Origin': 'https://jp.mercari.com',
   'Referer': 'https://jp.mercari.com/',
+  'X-Platform': 'web',
 }
+
+// ---- DPoP utility ----
+
+function base64url(data: Uint8Array): string {
+  let binary = ''
+  for (const byte of data) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+}
+
+function base64urlStr(str: string): string {
+  return base64url(new TextEncoder().encode(str))
+}
+
+interface DPoPContext {
+  keyPair: CryptoKeyPair
+  publicJwk: JsonWebKey
+  uuid: string
+}
+
+let _dpopCtx: DPoPContext | null = null
+
+async function getDPoPContext(): Promise<DPoPContext> {
+  if (!_dpopCtx) {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign'],
+    )
+    const full = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
+    const publicJwk: JsonWebKey = { crv: full.crv, kty: full.kty, x: full.x, y: full.y }
+    _dpopCtx = { keyPair, publicJwk, uuid: crypto.randomUUID() }
+  }
+  return _dpopCtx
+}
+
+export async function _generateDPoP(htu: string, htm: string, ctx: DPoPContext): Promise<string> {
+  return generateDPoP(htu, htm, ctx)
+}
+export async function _getDPoPContext(): Promise<DPoPContext> {
+  return getDPoPContext()
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function _toProduct(item: any, url: string) { return toProduct(item, url) }
+
+async function generateDPoP(htu: string, htm: string, ctx: DPoPContext): Promise<string> {
+  const header = { typ: 'dpop+jwt', alg: 'ES256', jwk: ctx.publicJwk }
+  const payload = {
+    iat: Math.floor(Date.now() / 1000),
+    jti: crypto.randomUUID().replace(/-/g, ''),
+    htu,
+    htm,
+    uuid: ctx.uuid,
+  }
+  const signingInput = `${base64urlStr(JSON.stringify(header))}.${base64urlStr(JSON.stringify(payload))}`
+  const sig = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: { name: 'SHA-256' } },
+    ctx.keyPair.privateKey,
+    new TextEncoder().encode(signingInput),
+  )
+  return `${signingInput}.${base64url(new Uint8Array(sig))}`
+}
+
+// ----------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toProduct(item: any, url: string): ScrapedProduct {
@@ -53,16 +117,23 @@ function toProduct(item: any, url: string): ScrapedProduct {
 
   // 最終更新日: Unix秒またはISO文字列
   const updatedRaw = item.updated ?? item.updated_at ?? item.updatedAt ?? item.created ?? null
-  const sourceUpdatedAt: string | null = updatedRaw
-    ? new Date(typeof updatedRaw === 'number' ? updatedRaw * 1000 : updatedRaw).toISOString()
-    : null
+  let sourceUpdatedAt: string | null = null
+  if (updatedRaw != null) {
+    const ms = (typeof updatedRaw === 'number' || (typeof updatedRaw === 'string' && /^\d+$/.test(updatedRaw)))
+      ? Number(updatedRaw) * 1000
+      : updatedRaw
+    try {
+      const d = new Date(ms)
+      if (isFinite(d.getTime())) sourceUpdatedAt = d.toISOString()
+    } catch { /* invalid date → null */ }
+  }
 
   return {
     sourceUrl: `https://jp.mercari.com/item/${itemId}`,
     sourceSite: 'mercari',
     sourceItemId: itemId,
     title: item.name ?? '',
-    price: typeof item.price === 'number' ? item.price : null,
+    price: (() => { if (item.price == null) return null; const n = Number(item.price); return isFinite(n) ? n : null })(),
     description: item.description ?? '',
     images,
     condition: item.item_condition?.name ?? item.itemCondition?.name ?? null,
@@ -111,75 +182,106 @@ export class MercariScraper {
   private async scrapeSearch(url: string, limit: number, _options: ScraperOptions): Promise<ScrapedProduct[]> {
     const srcParams = new URL(url).searchParams
 
-    // sort マッピング
-    const sortMap: Record<string, string> = {
-      num_likes: 'SORT_NUM_LIKES_DESC',
-      price_asc: 'SORT_PRICE_ASC',
-      price_desc: 'SORT_PRICE_DESC',
-      created_time: 'SORT_CREATED_TIME_DESC',
+    // sort マッピング（新API仕様: SORT_SCORE / SORT_PRICE / SORT_CREATED_TIME / SORT_NUM_LIKES）
+    const sortMap: Record<string, { sort: string; order: string }> = {
+      num_likes:    { sort: 'SORT_NUM_LIKES',    order: 'ORDER_DESC' },
+      price_asc:    { sort: 'SORT_PRICE',        order: 'ORDER_ASC'  },
+      price_desc:   { sort: 'SORT_PRICE',        order: 'ORDER_DESC' },
+      created_time: { sort: 'SORT_CREATED_TIME', order: 'ORDER_DESC' },
     }
     const sortKey = srcParams.get('sort') ?? 'created_time'
-    const sortValue = sortMap[sortKey] ?? 'SORT_CREATED_TIME_DESC'
+    const { sort: sortValue, order: orderValue } = sortMap[sortKey] ?? { sort: 'SORT_CREATED_TIME', order: 'ORDER_DESC' }
 
-    // status マッピング
+    // status マッピング（新API: STATUS_ON_SALE / STATUS_SOLD_OUT）
     const statusMap: Record<string, string> = {
-      on_sale: 'STATUS_TRADING',
+      on_sale:  'STATUS_ON_SALE',
       sold_out: 'STATUS_SOLD_OUT',
     }
     const statusParam = srcParams.get('status') ?? 'on_sale'
-    const statusValue = statusMap[statusParam] ?? 'STATUS_TRADING'
+    const statusValue = statusMap[statusParam] ?? 'STATUS_ON_SALE'
 
+    // searchCondition を構築
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const bodyBase: Record<string, any> = {
-      limit: Math.min(limit, 120),
-      offset: 0,
-      sort: sortValue,
-      status: [statusValue],
+    const searchCondition: Record<string, any> = {
+      keyword:        srcParams.get('keyword') ?? '',
+      excludeKeyword: '',
+      sort:           sortValue,
+      order:          orderValue,
+      status:         [statusValue],
+      sizeId:         [],
+      categoryId:     [],
+      brandId:        [],
+      sellerId:       [],
+      itemConditionId: [],
+      shippingPayerId: [],
+      shippingFromArea: [],
+      shippingMethod: [],
+      colorId:        [],
+      hasCoupon:      false,
+      attributes:     [],
+      itemTypes:      [],
+      skuIds:         [],
     }
 
-    const keyword = srcParams.get('keyword')
-    if (keyword) bodyBase.keyword = keyword
-
     const priceMin = srcParams.get('price_min')
-    if (priceMin) bodyBase.priceMin = parseInt(priceMin, 10)
+    if (priceMin) searchCondition.priceMin = parseInt(priceMin, 10)
 
     const priceMax = srcParams.get('price_max')
-    if (priceMax) bodyBase.priceMax = parseInt(priceMax, 10)
+    if (priceMax) searchCondition.priceMax = parseInt(priceMax, 10)
 
     const conditionIds = srcParams.getAll('item_condition_id')
-    if (conditionIds.length > 0) bodyBase.itemConditionId = conditionIds.map(Number)
+    if (conditionIds.length > 0) searchCondition.itemConditionId = conditionIds.map(Number)
 
     const categoryId = srcParams.get('category_id')
-    if (categoryId) bodyBase.categoryId = [parseInt(categoryId, 10)]
+    if (categoryId) searchCondition.categoryId = [parseInt(categoryId, 10)]
 
     const shippingPayerId = srcParams.get('shipping_payer_id')
-    if (shippingPayerId) bodyBase.shippingPayerId = [parseInt(shippingPayerId, 10)]
+    if (shippingPayerId) searchCondition.shippingPayerId = [parseInt(shippingPayerId, 10)]
 
+    const SEARCH_URL = 'https://api.mercari.jp/v2/entities:search'
+    const dpopCtx = await getDPoPContext()
     const allProducts: ScrapedProduct[] = []
-    let offset = 0
+    let pageToken: string | undefined
     const pageSize = Math.min(limit, 120)
+    // searchSessionId は検索1セッション単位で固定（mercapiに準拠）
+    const searchSessionId = crypto.randomUUID().replace(/-/g, '')
 
     while (allProducts.length < limit) {
-      const body = JSON.stringify({ ...bodyBase, offset, limit: pageSize })
-      const res = await fetch('https://api.mercari.jp/v2/entities/search', {
+      const dpop = await generateDPoP(SEARCH_URL, 'POST', dpopCtx)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const reqBody: Record<string, any> = {
+        userId: '',
+        pageSize,
+        pageToken: pageToken ?? '',
+        searchSessionId,
+        indexRouting: 'INDEX_ROUTING_UNSPECIFIED',
+        thumbnailTypes: [],
+        searchCondition,
+        defaultDatasets: [],
+        serviceFrom: 'suruga',
+      }
+
+      const res = await fetch(SEARCH_URL, {
         method: 'POST',
-        headers: { ...HEADERS, 'Content-Type': 'application/json' },
-        body,
+        headers: { ...HEADERS, 'Content-Type': 'application/json', 'DPoP': dpop },
+        body: JSON.stringify(reqBody),
       })
 
       if (!res.ok) {
-        throw new ScraperError(`Search API error: ${res.status}`, this.siteKey, url)
+        const text = (await res.text().catch(() => '')).slice(0, 500)
+        throw new ScraperError(`Search API error: ${res.status} ${text}`, this.siteKey, url)
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const json: any = await res.json()
-      const items: unknown[] = json?.data ?? json?.items ?? []
+      const items: unknown[] = json?.items ?? json?.data ?? []
 
       if (!Array.isArray(items) || items.length === 0) break
 
       allProducts.push(...items.map((item) => toProduct(item, url)))
-      if (items.length < pageSize) break
-      offset += items.length
+
+      pageToken = json?.meta?.nextPageToken ?? json?.nextPageToken
+      if (!pageToken || items.length < pageSize) break
     }
 
     if (allProducts.length === 0) {
