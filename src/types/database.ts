@@ -58,6 +58,7 @@ export interface Extraction {
   memo: string
   is_bulk: boolean
   extracted_at: string | null
+  error_message: string | null
   created_at: string
   updated_at: string
   // joins
