@@ -111,75 +111,96 @@ export class MercariScraper {
   private async scrapeSearch(url: string, limit: number, _options: ScraperOptions): Promise<ScrapedProduct[]> {
     const srcParams = new URL(url).searchParams
 
-    // sort マッピング
-    const sortMap: Record<string, string> = {
-      num_likes: 'SORT_NUM_LIKES_DESC',
-      price_asc: 'SORT_PRICE_ASC',
-      price_desc: 'SORT_PRICE_DESC',
-      created_time: 'SORT_CREATED_TIME_DESC',
+    // sort マッピング（新API仕様: SORT_SCORE / SORT_PRICE / SORT_CREATED_TIME / SORT_NUM_LIKES）
+    const sortMap: Record<string, { sort: string; order: string }> = {
+      num_likes:    { sort: 'SORT_NUM_LIKES',    order: 'ORDER_DESC' },
+      price_asc:    { sort: 'SORT_PRICE',        order: 'ORDER_ASC'  },
+      price_desc:   { sort: 'SORT_PRICE',        order: 'ORDER_DESC' },
+      created_time: { sort: 'SORT_CREATED_TIME', order: 'ORDER_DESC' },
     }
     const sortKey = srcParams.get('sort') ?? 'created_time'
-    const sortValue = sortMap[sortKey] ?? 'SORT_CREATED_TIME_DESC'
+    const { sort: sortValue, order: orderValue } = sortMap[sortKey] ?? { sort: 'SORT_CREATED_TIME', order: 'ORDER_DESC' }
 
-    // status マッピング
+    // status マッピング（新API: STATUS_ON_SALE / STATUS_SOLD_OUT）
     const statusMap: Record<string, string> = {
-      on_sale: 'STATUS_TRADING',
+      on_sale:  'STATUS_ON_SALE',
       sold_out: 'STATUS_SOLD_OUT',
     }
     const statusParam = srcParams.get('status') ?? 'on_sale'
-    const statusValue = statusMap[statusParam] ?? 'STATUS_TRADING'
+    const statusValue = statusMap[statusParam] ?? 'STATUS_ON_SALE'
 
+    // searchCondition を構築
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const bodyBase: Record<string, any> = {
-      limit: Math.min(limit, 120),
-      offset: 0,
-      sort: sortValue,
-      status: [statusValue],
+    const searchCondition: Record<string, any> = {
+      keyword:        srcParams.get('keyword') ?? '',
+      excludeKeyword: '',
+      sort:           sortValue,
+      order:          orderValue,
+      status:         [statusValue],
+      sizeId:         [],
+      categoryId:     [],
+      brandId:        [],
+      sellerId:       [],
+      itemConditionId: [],
+      shippingPayerId: [],
+      shippingFromArea: [],
+      shippingMethod: [],
+      colorId:        [],
+      hasCoupon:      false,
+      attributes:     [],
+      itemTypes:      [],
+      skuIds:         [],
     }
 
-    const keyword = srcParams.get('keyword')
-    if (keyword) bodyBase.keyword = keyword
-
     const priceMin = srcParams.get('price_min')
-    if (priceMin) bodyBase.priceMin = parseInt(priceMin, 10)
+    if (priceMin) searchCondition.priceMin = parseInt(priceMin, 10)
 
     const priceMax = srcParams.get('price_max')
-    if (priceMax) bodyBase.priceMax = parseInt(priceMax, 10)
+    if (priceMax) searchCondition.priceMax = parseInt(priceMax, 10)
 
     const conditionIds = srcParams.getAll('item_condition_id')
-    if (conditionIds.length > 0) bodyBase.itemConditionId = conditionIds.map(Number)
+    if (conditionIds.length > 0) searchCondition.itemConditionId = conditionIds.map(Number)
 
     const categoryId = srcParams.get('category_id')
-    if (categoryId) bodyBase.categoryId = [parseInt(categoryId, 10)]
+    if (categoryId) searchCondition.categoryId = [parseInt(categoryId, 10)]
 
     const shippingPayerId = srcParams.get('shipping_payer_id')
-    if (shippingPayerId) bodyBase.shippingPayerId = [parseInt(shippingPayerId, 10)]
+    if (shippingPayerId) searchCondition.shippingPayerId = [parseInt(shippingPayerId, 10)]
 
     const allProducts: ScrapedProduct[] = []
-    let offset = 0
+    let pageToken: string | undefined
     const pageSize = Math.min(limit, 120)
 
     while (allProducts.length < limit) {
-      const body = JSON.stringify({ ...bodyBase, offset, limit: pageSize })
-      const res = await fetch('https://api.mercari.jp/v2/entities/search', {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const reqBody: Record<string, any> = {
+        pageSize,
+        searchSessionId: crypto.randomUUID(),
+        searchCondition,
+      }
+      if (pageToken) reqBody.pageToken = pageToken
+
+      const res = await fetch('https://api.mercari.jp/v2/entities:search', {
         method: 'POST',
         headers: { ...HEADERS, 'Content-Type': 'application/json' },
-        body,
+        body: JSON.stringify(reqBody),
       })
 
       if (!res.ok) {
-        throw new ScraperError(`Search API error: ${res.status}`, this.siteKey, url)
+        const text = await res.text().catch(() => '')
+        throw new ScraperError(`Search API error: ${res.status} ${text}`, this.siteKey, url)
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const json: any = await res.json()
-      const items: unknown[] = json?.data ?? json?.items ?? []
+      const items: unknown[] = json?.items ?? json?.data ?? []
 
       if (!Array.isArray(items) || items.length === 0) break
 
       allProducts.push(...items.map((item) => toProduct(item, url)))
-      if (items.length < pageSize) break
-      offset += items.length
+
+      pageToken = json?.meta?.nextPageToken ?? json?.nextPageToken
+      if (!pageToken || items.length < pageSize) break
     }
 
     if (allProducts.length === 0) {

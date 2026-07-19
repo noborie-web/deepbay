@@ -115,15 +115,23 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
         <div><span className="text-gray-400">出品: </span></div>
       </div>
 
-      {/* 進捗バー */}
+      {/* 進捗バー / エラーメッセージ */}
       <div className="flex items-center gap-2">
-        <div className="flex-1 bg-gray-200 rounded-full h-2">
-          <div
-            className="bg-blue-500 h-2 rounded-full transition-all"
-            style={{ width: `${extraction.progress}%` }}
-          />
-        </div>
-        <span className="text-xs text-gray-500 w-8">{extraction.progress}%</span>
+        {extraction.status === 'failed' && extraction.error_message ? (
+          <span className="text-xs text-red-500 line-clamp-2" title={extraction.error_message}>
+            {extraction.error_message}
+          </span>
+        ) : (
+          <>
+            <div className="flex-1 bg-gray-200 rounded-full h-2">
+              <div
+                className="bg-blue-500 h-2 rounded-full transition-all"
+                style={{ width: `${extraction.progress}%` }}
+              />
+            </div>
+            <span className="text-xs text-gray-500 w-8">{extraction.progress}%</span>
+          </>
+        )}
       </div>
 
       {/* アクション */}
