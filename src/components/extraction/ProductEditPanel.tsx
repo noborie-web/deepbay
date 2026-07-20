@@ -7,6 +7,8 @@ import TitleEditModal, { applyOp } from './TitleEditModal'
 import type { TitleEditOp, TitleEditScope } from './TitleEditModal'
 import PriceEditModal from './PriceEditModal'
 import ConditionEditModal from './ConditionEditModal'
+import BrandEditModal from './BrandEditModal'
+import type { BrandEditScope } from './BrandEditModal'
 
 interface Props {
   extractionId: string
@@ -74,6 +76,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
   // 編集モーダル
   const [titleModalOpen, setTitleModalOpen] = useState(false)
+  const [brandModalOpen, setBrandModalOpen] = useState(false)
   const [priceModalOpen, setPriceModalOpen] = useState(false)
   const [conditionModalOpen, setConditionModalOpen] = useState(false)
 
@@ -290,6 +293,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     })
   }
 
+  // ---- 一括ブランド編集 ----
+  function applyBrandEdit(brand: string | null, scope: BrandEditScope) {
+    const targets = scope === 'page' ? pagedProducts : products
+    targets.forEach((product) => updateEdit(product.id, 'ebay_brand', brand))
+  }
+
   // ---- 一括価格編集 ----
   function applyPriceEdit(getPriceUsd: (p: Product) => number | null, scope: 'page' | 'all') {
     const targets = scope === 'page' ? pagedProducts : products
@@ -317,6 +326,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           : fields.ebay_title
         const out: Record<string, unknown> = { productId }
         if (ebay_title !== undefined) out.ebay_title = ebay_title
+        if (fields.ebay_brand !== undefined) out.ebay_brand = fields.ebay_brand
         // null = 明示的クリア; 保存ボタンは不正価格がある間は無効なので、ここに届くのは null か正の有限数のみ
         if (fields.ebay_price !== undefined) out.ebay_price = fields.ebay_price
         if (fields.ebay_condition !== undefined) out.ebay_condition = fields.ebay_condition
@@ -381,6 +391,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
   const getTitle = (p: Product) =>
     edits[p.id]?.ebay_title !== undefined ? (edits[p.id].ebay_title as string) : (p.ebay_title ?? '')
+  const getBrand = (p: Product) =>
+    edits[p.id]?.ebay_brand !== undefined ? (edits[p.id].ebay_brand as string | null) ?? '' : (p.ebay_brand ?? '')
   const getPrice = (p: Product): number | null =>
     edits[p.id]?.ebay_price !== undefined ? (edits[p.id].ebay_price as number | null) : p.ebay_price
 
@@ -388,6 +400,10 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const hasPriceError = Object.values(edits).some((fields) => {
     const p = fields.ebay_price
     return p !== undefined && p !== null && (typeof p !== 'number' || !isFinite(p) || p <= 0)
+  })
+  const hasBrandError = Object.values(edits).some((fields) => {
+    const brand = fields.ebay_brand
+    return typeof brand === 'string' && (brand.trim().length === 0 || brand.length > 65)
   })
   const getCondition = (p: Product) =>
     (edits[p.id]?.ebay_condition as string | undefined) ?? p.ebay_condition ?? '中古'
@@ -478,7 +494,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
               {/* 編集保存 */}
               <button
                 onClick={saveAll}
-                disabled={saving || Object.keys(edits).length === 0 || hasPriceError}
+                disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError}
                 className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1 text-xs font-medium transition-colors"
               >
                 💾 編集保存
@@ -703,8 +719,9 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 </div>
                 {/* ブランド — Phase 2 */}
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-gray-400">ブランド</span>
-                  <button disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">準備中</button>
+                  <span className="text-sm text-gray-700">ブランド</span>
+                  <button onClick={() => setBrandModalOpen(true)}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50">編集</button>
                 </div>
                 {/* 商品詳細 — Phase 2 */}
                 <div className="flex items-center justify-between gap-2">
@@ -737,7 +754,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
               <div className="mt-4 flex items-center justify-end gap-3">
                 <button
                   onClick={saveAll}
-                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError}
+                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError}
                   className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium transition-colors"
                 >
                   💾 編集保存
@@ -816,8 +833,30 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                           <p className="mt-1 text-xs text-gray-400 truncate">{product.original_title}</p>
                         </div>
 
-                        {/* 右: 価格・状態 (ブランドはPhase 2で実装) */}
+                        {/* 右: ブランド・価格・状態 */}
                         <div className="space-y-2">
+                          <div>
+                            <label className="text-xs text-gray-500 block mb-0.5">
+                              ブランド
+                              {getBrand(product) === '' && <span className="ml-1 text-amber-500">ブランド未設定</span>}
+                            </label>
+                            <input
+                              type="text"
+                              value={getBrand(product)}
+                              maxLength={65}
+                              onChange={(event) => {
+                                const value = event.target.value.slice(0, 65)
+                                updateEdit(product.id, 'ebay_brand', value === '' ? null : value)
+                              }}
+                              placeholder="ブランド未設定"
+                              className={`w-full border rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300 ${
+                                getBrand(product) !== '' && getBrand(product).trim().length === 0 ? 'border-red-400' : ''
+                              }`}
+                            />
+                            {getBrand(product) !== '' && getBrand(product).trim().length === 0 && (
+                              <p className="text-xs text-red-500 mt-0.5">空白以外の文字を入力してください</p>
+                            )}
+                          </div>
                           <div className="grid grid-cols-2 gap-2">
                             <div>
                               <label className="text-xs text-gray-500 block mb-0.5">
@@ -952,6 +991,15 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           getTitle={getTitle}
           onApply={applyTitleEdit}
           onClose={() => setTitleModalOpen(false)}
+        />
+      )}
+      {brandModalOpen && (
+        <BrandEditModal
+          products={products}
+          pagedIds={pagedIds}
+          getBrand={getBrand}
+          onApply={applyBrandEdit}
+          onClose={() => setBrandModalOpen(false)}
         />
       )}
       {priceModalOpen && (
