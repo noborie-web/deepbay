@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { PRODUCT_WRITE_WHITELIST } from '@/lib/pricing'
+import { PRODUCT_WRITE_WHITELIST, validateProductFields } from '@/lib/pricing'
 
 function pickAllowed(updates: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -37,12 +37,25 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ex
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const body = await req.json()
+  let body: { productId?: unknown; [key: string]: unknown }
+  try {
+    body = await req.json()
+  } catch {
+    return NextResponse.json({ error: '不正なJSONです' }, { status: 400 })
+  }
   const { productId, ...rawUpdates } = body
-  const updates = pickAllowed(rawUpdates)
+  if (typeof productId !== 'string' || productId.trim() === '') {
+    return NextResponse.json({ error: 'productId が無効です' }, { status: 400 })
+  }
+  const updates = pickAllowed(rawUpdates as Record<string, unknown>)
 
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: '更新可能なフィールドがありません' }, { status: 400 })
+  }
+
+  const validationError = validateProductFields(updates)
+  if (validationError) {
+    return NextResponse.json({ error: validationError }, { status: 422 })
   }
 
   const admin = createServiceClient(
@@ -50,14 +63,18 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ex
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   )
 
-  const { error } = await admin
+  const { data, error } = await admin
     .from('products')
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', productId)
     .eq('extraction_id', extractionId)
     .eq('user_id', user.id)
+    .select('id')
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (!data || data.length === 0) {
+    return NextResponse.json({ error: '商品が存在しないか、更新権限がありません' }, { status: 404 })
+  }
   return NextResponse.json({ ok: true })
 }
 

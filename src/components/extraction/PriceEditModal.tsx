@@ -21,8 +21,8 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
   // fixed mode
   const [fixedPrice, setFixedPrice] = useState('')
 
-  // rate mode
-  const [rateMultiplier, setRateMultiplier] = useState('0.1')
+  // rate mode — 初期値は空欄（ユーザーが入力するまで適用不可）
+  const [rateMultiplier, setRateMultiplier] = useState('')
 
   // profit mode
   const [jpyPerUsd, setJpyPerUsd] = useState('150')
@@ -34,6 +34,26 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
   const targetProducts = scope === 'page'
     ? products.filter((p) => pagedIds.has(p.id))
     : products
+
+  // モードごとのバリデーションエラー
+  const fixedValidationError = mode === 'fixed'
+    ? (!fixedPrice ? '価格を入力してください' : (!isSafePriceUsd(parseFloat(fixedPrice)) ? '0より大きい有限な数値を入力してください' : null))
+    : null
+
+  const rateValidationError = mode === 'rate'
+    ? (!rateMultiplier ? '倍率を入力してください' : (!(parseFloat(rateMultiplier) > 0 && isFinite(parseFloat(rateMultiplier))) ? '0より大きい倍率を入力してください' : null))
+    : null
+
+  const profitValidationError = mode === 'profit' ? validateProfitParams({
+    purchasePriceJpy: 1000,
+    jpyPerUsd: parseFloat(jpyPerUsd),
+    ebayFeeRate: parseFloat(ebayFeeRate),
+    targetProfitRate: parseFloat(targetProfitRate),
+    shippingUsd: parseFloat(shippingUsd),
+    fixedCostUsd: parseFloat(fixedCostUsd),
+  }) : null
+
+  const applyDisabled = !!(fixedValidationError || rateValidationError || profitValidationError)
 
   function getPriceForProduct(p: Product): number | null {
     if (mode === 'fixed') {
@@ -65,14 +85,7 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
     return isSafePriceUsd(salePriceUsd) ? salePriceUsd : null
   }
 
-  const profitValidationError = mode === 'profit' ? validateProfitParams({
-    purchasePriceJpy: 1000,
-    jpyPerUsd: parseFloat(jpyPerUsd),
-    ebayFeeRate: parseFloat(ebayFeeRate),
-    targetProfitRate: parseFloat(targetProfitRate),
-    shippingUsd: parseFloat(shippingUsd),
-    fixedCostUsd: parseFloat(fixedCostUsd),
-  }) : null
+  const modeError = fixedValidationError ?? rateValidationError ?? profitValidationError
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
@@ -95,26 +108,34 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
 
           {/* 固定価格モード */}
           {mode === 'fixed' && (
-            <label className="block space-y-1">
-              <span className="text-xs text-gray-500">eBay販売価格（USD）</span>
-              <div className="flex items-center gap-2">
-                <input type="number" value={fixedPrice} onChange={(e) => setFixedPrice(e.target.value)} min="0" step="0.01"
-                  className="border rounded px-3 py-1.5 text-sm w-32 focus:outline-none focus:ring-1 focus:ring-blue-300" />
-                <span className="text-sm text-gray-500">$</span>
-              </div>
-            </label>
+            <div className="space-y-1">
+              <label className="block space-y-1">
+                <span className="text-xs text-gray-500">eBay販売価格（USD）</span>
+                <div className="flex items-center gap-2">
+                  <input type="number" value={fixedPrice} onChange={(e) => setFixedPrice(e.target.value)} min="0.01" step="0.01"
+                    placeholder="例: 49.99"
+                    className="border rounded px-3 py-1.5 text-sm w-32 focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                  <span className="text-sm text-gray-500">$</span>
+                </div>
+              </label>
+              {fixedValidationError && <p className="text-xs text-red-500">{fixedValidationError}</p>}
+            </div>
           )}
 
           {/* 倍率モード */}
           {mode === 'rate' && (
-            <label className="block space-y-1">
-              <span className="text-xs text-gray-500">仕入価格（円）× 倍率 = eBay価格（$）</span>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-600">仕入価格 ×</span>
-                <input type="number" value={rateMultiplier} onChange={(e) => setRateMultiplier(e.target.value)} min="0" step="0.001"
-                  className="border rounded px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-blue-300" />
-              </div>
-            </label>
+            <div className="space-y-1">
+              <label className="block space-y-1">
+                <span className="text-xs text-gray-500">仕入価格（円）× 倍率 = eBay価格（$）</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600">仕入価格 ×</span>
+                  <input type="number" value={rateMultiplier} onChange={(e) => setRateMultiplier(e.target.value)} min="0.001" step="0.001"
+                    placeholder="例: 0.08"
+                    className="border rounded px-3 py-1.5 text-sm w-28 focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                </div>
+              </label>
+              {rateValidationError && <p className="text-xs text-red-500">{rateValidationError}</p>}
+            </div>
           )}
 
           {/* 利益計算モード */}
@@ -167,53 +188,60 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
           </div>
 
           {/* プレビュー */}
-          <div>
-            <p className="text-xs text-gray-500 mb-2">プレビュー（対象 {targetProducts.length} 件）</p>
-            <div className="space-y-1 max-h-48 overflow-y-auto border rounded p-2 bg-gray-50">
-              {targetProducts.slice(0, 10).map((p) => {
-                const jpy = getPurchaseJpy(p)
-                const usd = getPriceForProduct(p)
-                let profitLine = ''
-                if (mode === 'profit' && jpy != null && !profitValidationError) {
-                  const params = {
-                    purchasePriceJpy: jpy,
-                    jpyPerUsd: parseFloat(jpyPerUsd),
-                    ebayFeeRate: parseFloat(ebayFeeRate),
-                    targetProfitRate: parseFloat(targetProfitRate),
-                    shippingUsd: parseFloat(shippingUsd),
-                    fixedCostUsd: parseFloat(fixedCostUsd),
+          {!applyDisabled && (
+            <div>
+              <p className="text-xs text-gray-500 mb-2">プレビュー（対象 {targetProducts.length} 件）</p>
+              <div className="space-y-1 max-h-48 overflow-y-auto border rounded p-2 bg-gray-50">
+                {targetProducts.slice(0, 10).map((p) => {
+                  const jpy = getPurchaseJpy(p)
+                  const usd = getPriceForProduct(p)
+                  let profitLine = ''
+                  if (mode === 'profit' && jpy != null) {
+                    const params = {
+                      purchasePriceJpy: jpy,
+                      jpyPerUsd: parseFloat(jpyPerUsd),
+                      ebayFeeRate: parseFloat(ebayFeeRate),
+                      targetProfitRate: parseFloat(targetProfitRate),
+                      shippingUsd: parseFloat(shippingUsd),
+                      fixedCostUsd: parseFloat(fixedCostUsd),
+                    }
+                    if (!validateProfitParams(params)) {
+                      const r = calcProfit(params)
+                      profitLine = ` / 利益 $${r.profitUsd.toFixed(2)}`
+                    }
                   }
-                  if (!validateProfitParams(params)) {
-                    const r = calcProfit(params)
-                    profitLine = ` / 利益 $${r.profitUsd.toFixed(2)}`
-                  }
-                }
-                return (
-                  <div key={p.id} className="text-xs flex items-center gap-2">
-                    <span className="text-gray-500 truncate max-w-[200px]">{p.original_title.slice(0, 30)}</span>
-                    <span className="text-gray-400">仕入 {jpy != null ? `¥${jpy.toLocaleString()}` : '—'}</span>
-                    <span className={usd != null ? 'text-blue-600 font-medium' : 'text-red-400'}>
-                      {usd != null ? `$${usd.toFixed(2)}${profitLine}` : '計算不可'}
-                    </span>
-                  </div>
-                )
-              })}
-              {targetProducts.length > 10 && (
-                <p className="text-xs text-gray-400">…他 {targetProducts.length - 10} 件</p>
-              )}
+                  return (
+                    <div key={p.id} className="text-xs flex items-center gap-2">
+                      <span className="text-gray-500 truncate max-w-[200px]">{p.original_title.slice(0, 30)}</span>
+                      <span className="text-gray-400">仕入 {jpy != null ? `¥${jpy.toLocaleString()}` : '—'}</span>
+                      <span className={usd != null ? 'text-blue-600 font-medium' : 'text-red-400'}>
+                        {usd != null ? `$${usd.toFixed(2)}${profitLine}` : '計算不可'}
+                      </span>
+                    </div>
+                  )
+                })}
+                {targetProducts.length > 10 && (
+                  <p className="text-xs text-gray-400">…他 {targetProducts.length - 10} 件</p>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
-        <div className="flex justify-end gap-3 px-5 py-4 border-t">
-          <button onClick={onClose}
-            className="border rounded px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
-          <button
-            disabled={!!profitValidationError}
-            onClick={() => { onApply(getPriceForProduct, scope); onClose() }}
-            className="bg-blue-500 hover:bg-blue-600 disabled:opacity-40 text-white rounded px-4 py-2 text-sm font-medium">
-            適用 ({targetProducts.length}件)
-          </button>
+        <div className="flex items-center justify-between px-5 py-4 border-t">
+          <div>
+            {modeError && <p className="text-xs text-red-500">{modeError}</p>}
+          </div>
+          <div className="flex gap-3">
+            <button onClick={onClose}
+              className="border rounded px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
+            <button
+              disabled={applyDisabled}
+              onClick={() => { onApply(getPriceForProduct, scope); onClose() }}
+              className="bg-blue-500 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded px-4 py-2 text-sm font-medium">
+              適用 ({targetProducts.length}件)
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -284,7 +284,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       const p = products.find((x) => x.id === id)
       if (!p) return
       const before = edits[id]?.ebay_title !== undefined ? (edits[id].ebay_title as string) : (p.ebay_title ?? '')
-      const after = applyOp(before, op).slice(0, 80)
+      // applyOp が常に80文字以内を返す
+      const after = applyOp(before, op)
       updateEdit(id, 'ebay_title', after)
     })
   }
@@ -308,43 +309,61 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   async function saveAll() {
     setSaving(true)
     setSaveError(null)
-    const updates = Object.entries(edits).map(([productId, fields]) => {
-      // タイトルは必ず80文字以内
-      const ebay_title = typeof fields.ebay_title === 'string'
-        ? fields.ebay_title.slice(0, 80)
-        : fields.ebay_title
-      // 価格が不正なら除外
-      const ebay_price = (typeof fields.ebay_price === 'number' && isFinite(fields.ebay_price) && fields.ebay_price > 0)
-        ? fields.ebay_price
-        : undefined
-      const out: Record<string, unknown> = { productId }
-      if (ebay_title !== undefined) out.ebay_title = ebay_title
-      if (ebay_price !== undefined) out.ebay_price = ebay_price
-      if (fields.ebay_condition !== undefined) out.ebay_condition = fields.ebay_condition
-      if (fields.purchase_price_jpy !== undefined) out.purchase_price_jpy = fields.purchase_price_jpy
-      return out
-    })
+    try {
+      const updates = Object.entries(edits).map(([productId, fields]) => {
+        // タイトルは常に80文字以内
+        const ebay_title = typeof fields.ebay_title === 'string'
+          ? fields.ebay_title.slice(0, 80)
+          : fields.ebay_title
+        // 価格が不正なら null (サーバー側でも検証)
+        const ebay_price = (typeof fields.ebay_price === 'number' && isFinite(fields.ebay_price) && fields.ebay_price > 0)
+          ? fields.ebay_price
+          : undefined
+        const out: Record<string, unknown> = { productId }
+        if (ebay_title !== undefined) out.ebay_title = ebay_title
+        if (ebay_price !== undefined) out.ebay_price = ebay_price
+        if (fields.ebay_condition !== undefined) out.ebay_condition = fields.ebay_condition
+        if (fields.purchase_price_jpy !== undefined) out.purchase_price_jpy = fields.purchase_price_jpy
+        return out
+      })
 
-    const res = await fetch(`/api/products/${extractionId}/bulk`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ updates }),
-    })
+      const res = await fetch(`/api/products/${extractionId}/bulk`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates }),
+      })
 
-    if (res.ok) {
-      setProducts((prev) =>
-        prev.map((p) => (edits[p.id] ? { ...p, ...edits[p.id] } : p))
-      )
-      setEdits({})
-    } else {
-      const json = await res.json().catch(() => ({}))
-      if (json.failed?.length > 0) {
-        setSaveError(`${json.failed.length}件の保存に失敗しました`)
+      const json: { ok?: boolean; succeeded?: string[]; failed?: { productId: string; error: string }[] }
+        = await res.json().catch(() => ({}))
+
+      if (json.ok === true) {
+        // 全成功
+        setProducts((prev) =>
+          prev.map((p) => (edits[p.id] ? { ...p, ...edits[p.id] } : p))
+        )
+        setEdits({})
+      } else if (json.succeeded && json.failed) {
+        // 部分失敗 — 成功分だけ edits をクリア、失敗分は保持
+        const succeededSet = new Set(json.succeeded)
+        const failedSet = new Set(json.failed.map((f) => f.productId))
+        setProducts((prev) =>
+          prev.map((p) => (succeededSet.has(p.id) ? { ...p, ...edits[p.id] } : p))
+        )
+        setEdits((prev) => {
+          const next = { ...prev }
+          for (const id of succeededSet) delete next[id]
+          return next
+        })
+        const firstErrors = json.failed.slice(0, 3).map((f) => `${f.productId.slice(0, 8)}: ${f.error}`).join(' / ')
+        setSaveError(`${failedSet.size}件の保存に失敗しました — ${firstErrors}`)
       } else {
         setSaveError('保存に失敗しました')
       }
+    } catch (e) {
+      setSaveError(`通信エラー: ${e instanceof Error ? e.message : '不明なエラー'}`)
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   async function deleteProduct(productId: string) {
@@ -372,10 +391,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // purchase_price_jpy が優先; なければ original_price を表示専用に使用
   const getPurchaseJpy = (p: Product): number | null => {
     const fromEdit = edits[p.id]?.purchase_price_jpy
-    if (fromEdit !== undefined) return fromEdit as number | null
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const fromDb = (p as any).purchase_price_jpy
-    if (fromDb != null) return fromDb
+    if (fromEdit !== undefined) return fromEdit
+    if (p.purchase_price_jpy != null) return p.purchase_price_jpy
     return p.original_price ?? null
   }
 

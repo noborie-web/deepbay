@@ -92,6 +92,7 @@ export interface Product {
   seller_rating_count: number | null
   shipping_days: number | null
   source_updated_at: string | null
+  purchase_price_jpy: number | null
   created_at: string
   updated_at: string
 }

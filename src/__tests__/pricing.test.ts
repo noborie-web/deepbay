@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { calcProfit, validateProfitParams, isSafePriceUsd, PRODUCT_WRITE_WHITELIST } from '../lib/pricing'
+import { calcProfit, validateProfitParams, isSafePriceUsd, validateProductFields, PRODUCT_WRITE_WHITELIST } from '../lib/pricing'
 import { applyOp } from '../components/extraction/TitleEditModal'
 
 const BASE_PARAMS = {
@@ -28,7 +28,6 @@ describe('利益計算式', () => {
   it('手数料・利益率を正しく反映する', () => {
     const params = { ...BASE_PARAMS, shippingUsd: 0, fixedCostUsd: 0 }
     const { salePriceUsd, costUsd } = calcProfit(params)
-    // Math.ceil((costUsd) / (1 - 0.133 - 0.2))
     const expected = Math.ceil(costUsd / (1 - 0.133 - 0.2))
     expect(salePriceUsd).toBe(expected)
   })
@@ -39,7 +38,6 @@ describe('利益計算式', () => {
   })
 
   it('端数処理: Math.ceil で1ドル単位切り上げ', () => {
-    // コストが綺麗な割り切れない値になるように設定
     const params = { ...BASE_PARAMS, purchasePriceJpy: 1000, shippingUsd: 0, fixedCostUsd: 0 }
     const { salePriceUsd } = calcProfit(params)
     expect(Number.isInteger(salePriceUsd)).toBe(true)
@@ -47,6 +45,22 @@ describe('利益計算式', () => {
 })
 
 describe('validateProfitParams', () => {
+  it('正常な値ではnullを返す', () => {
+    expect(validateProfitParams(BASE_PARAMS)).toBeNull()
+  })
+
+  it('仕入価格が0の場合はエラー', () => {
+    expect(validateProfitParams({ ...BASE_PARAMS, purchasePriceJpy: 0 })).not.toBeNull()
+  })
+
+  it('仕入価格が負の場合はエラー', () => {
+    expect(validateProfitParams({ ...BASE_PARAMS, purchasePriceJpy: -1 })).not.toBeNull()
+  })
+
+  it('仕入価格がNaNの場合はエラー', () => {
+    expect(validateProfitParams({ ...BASE_PARAMS, purchasePriceJpy: NaN })).not.toBeNull()
+  })
+
   it('為替レートが0の場合はエラー', () => {
     expect(validateProfitParams({ ...BASE_PARAMS, jpyPerUsd: 0 })).not.toBeNull()
   })
@@ -66,9 +80,43 @@ describe('validateProfitParams', () => {
   it('手数料率 + 利益率 > 100% の場合はエラー', () => {
     expect(validateProfitParams({ ...BASE_PARAMS, ebayFeeRate: 0.6, targetProfitRate: 0.5 })).not.toBeNull()
   })
+})
 
-  it('正常な値ではnullを返す', () => {
-    expect(validateProfitParams(BASE_PARAMS)).toBeNull()
+describe('validateProductFields', () => {
+  it('81文字のebay_titleは拒否される', () => {
+    expect(validateProductFields({ ebay_title: 'a'.repeat(81) })).not.toBeNull()
+  })
+
+  it('80文字のebay_titleは許可される', () => {
+    expect(validateProductFields({ ebay_title: 'a'.repeat(80) })).toBeNull()
+  })
+
+  it('空のebay_titleは拒否される', () => {
+    expect(validateProductFields({ ebay_title: '' })).not.toBeNull()
+  })
+
+  it('負数のebay_priceは拒否される', () => {
+    expect(validateProductFields({ ebay_price: -1 })).not.toBeNull()
+  })
+
+  it('NaNのebay_priceは拒否される', () => {
+    expect(validateProductFields({ ebay_price: NaN })).not.toBeNull()
+  })
+
+  it('Infinityのebay_priceは拒否される', () => {
+    expect(validateProductFields({ ebay_price: Infinity })).not.toBeNull()
+  })
+
+  it('nullのebay_priceは許可される', () => {
+    expect(validateProductFields({ ebay_price: null })).toBeNull()
+  })
+
+  it('不正なebay_conditionは拒否される', () => {
+    expect(validateProductFields({ ebay_condition: 'excellent' })).not.toBeNull()
+  })
+
+  it('正しいebay_conditionは許可される', () => {
+    expect(validateProductFields({ ebay_condition: '新品' })).toBeNull()
   })
 })
 
@@ -81,22 +129,22 @@ describe('isSafePriceUsd', () => {
 })
 
 describe('タイトル80文字制限', () => {
-  it('80文字を超えるタイトルは切り詰め後80文字以内', () => {
+  it('80文字を超えるタイトルは常に80文字以内に切り詰める', () => {
     const title = 'a'.repeat(100)
-    const result = applyOp(title, { truncate: true })
+    const result = applyOp(title, {})
     expect(result.length).toBeLessThanOrEqual(80)
   })
 
-  it('prefix追加後も切り詰めが機能する', () => {
+  it('prefix追加後も80文字以内になる', () => {
     const title = 'a'.repeat(79)
-    const result = applyOp(title, { prefix: 'PREFIX_', truncate: true })
+    const result = applyOp(title, { prefix: 'PREFIX_' })
     expect(result.length).toBeLessThanOrEqual(80)
   })
 
-  it('truncateなしでは超えたまま', () => {
-    const title = 'a'.repeat(100)
-    const result = applyOp(title, { prefix: 'X' })
-    expect(result.length).toBe(101)
+  it('80文字以内のタイトルはそのまま', () => {
+    const title = 'a'.repeat(50)
+    const result = applyOp(title, {})
+    expect(result.length).toBe(50)
   })
 })
 
@@ -117,9 +165,9 @@ describe('一括タイトル編集: prefix/suffix/置換', () => {
     expect(applyOp('hello world', { searchStr: ' world', replaceStr: '' })).toBe('hello')
   })
 
-  it('prefix + 置換 + truncate を組み合わせ', () => {
+  it('prefix + suffix + 80文字制限', () => {
     const title = 'a'.repeat(70)
-    const result = applyOp(title, { prefix: 'PREFIX_', suffix: '_SUFFIX', truncate: true })
+    const result = applyOp(title, { prefix: 'PREFIX_', suffix: '_SUFFIX' })
     expect(result.length).toBeLessThanOrEqual(80)
   })
 })

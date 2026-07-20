@@ -10,7 +10,6 @@ export interface TitleEditOp {
   suffix?: string
   searchStr?: string
   replaceStr?: string
-  truncate?: boolean
 }
 
 interface Props {
@@ -21,13 +20,13 @@ interface Props {
   onClose: () => void
 }
 
+/** タイトルに操作を適用し、常に80文字以内に切り詰める */
 function applyOp(title: string, op: TitleEditOp): string {
   let t = title
   if (op.searchStr) t = t.split(op.searchStr).join(op.replaceStr ?? '')
   if (op.prefix) t = op.prefix + t
   if (op.suffix) t = t + op.suffix
-  if (op.truncate) t = t.slice(0, 80)
-  return t
+  return t.slice(0, 80)
 }
 
 export default function TitleEditModal({ products, pagedIds, getTitle, onApply, onClose }: Props) {
@@ -35,7 +34,6 @@ export default function TitleEditModal({ products, pagedIds, getTitle, onApply, 
   const [suffix, setSuffix] = useState('')
   const [searchStr, setSearchStr] = useState('')
   const [replaceStr, setReplaceStr] = useState('')
-  const [truncate, setTruncate] = useState(false)
   const [scope, setScope] = useState<TitleEditScope>('page')
 
   const op: TitleEditOp = {
@@ -43,7 +41,6 @@ export default function TitleEditModal({ products, pagedIds, getTitle, onApply, 
     suffix: suffix || undefined,
     searchStr: searchStr || undefined,
     replaceStr: searchStr ? replaceStr : undefined,
-    truncate: truncate || undefined,
   }
 
   const targetProducts = scope === 'page'
@@ -60,7 +57,8 @@ export default function TitleEditModal({ products, pagedIds, getTitle, onApply, 
         </div>
 
         <div className="overflow-y-auto flex-1 p-5 space-y-4">
-          {/* 操作フォーム */}
+          <p className="text-xs text-gray-400">タイトルは常に80文字以内に切り詰めます</p>
+
           <div className="grid grid-cols-2 gap-4">
             <label className="block space-y-1">
               <span className="text-xs text-gray-500">先頭に追加</span>
@@ -91,12 +89,6 @@ export default function TitleEditModal({ products, pagedIds, getTitle, onApply, 
             </label>
           </div>
 
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={truncate} onChange={(e) => setTruncate(e.target.checked)}
-              className="w-4 h-4 rounded border-gray-300" />
-            <span className="text-sm text-gray-700">80文字以内に切り詰める</span>
-          </label>
-
           {/* 適用範囲 */}
           <div className="flex items-center gap-4">
             <span className="text-xs text-gray-500">適用範囲:</span>
@@ -112,18 +104,17 @@ export default function TitleEditModal({ products, pagedIds, getTitle, onApply, 
 
           {/* プレビュー */}
           <div>
-            <p className="text-xs text-gray-500 mb-2">プレビュー（対象 {previewCount} 件）</p>
+            <p className="text-xs text-gray-500 mb-2">プレビュー（対象 {previewCount} 件 / 全て80文字以内に切り詰め）</p>
             <div className="space-y-1 max-h-48 overflow-y-auto border rounded p-2 bg-gray-50">
               {targetProducts.slice(0, 10).map((p) => {
                 const before = getTitle(p)
                 const after = applyOp(before, op)
-                const tooLong = after.length > 80
                 return (
                   <div key={p.id} className="text-xs">
                     <span className="text-gray-400 line-through">{before.slice(0, 60)}{before.length > 60 ? '…' : ''}</span>
                     <span className="mx-1 text-gray-400">→</span>
-                    <span className={tooLong ? 'text-red-500' : 'text-gray-800'}>{after.slice(0, 80)}</span>
-                    {tooLong && <span className="ml-1 text-red-400">({after.length}文字)</span>}
+                    <span className="text-gray-800">{after}</span>
+                    <span className="ml-1 text-gray-400">({after.length}文字)</span>
                   </div>
                 )
               })}
