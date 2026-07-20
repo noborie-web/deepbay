@@ -241,11 +241,12 @@ async function runScrape(
       sellerRatingCount: number | null; shippingDays: number | null; sourceUpdatedAt: string | null
     }, idx: number) => {
       let ebayTitle = applyReplaces(translatedTitles[idx] ?? scraped.title)
-      let ebayPrice: number | null = scraped.price
       if (setting) {
         ebayTitle = `${setting.title_prefix}${ebayTitle}${setting.title_suffix}`.slice(0, 80)
-        ebayPrice = scraped.price ? Math.ceil(scraped.price * setting.price_rate) : null
       }
+      // ebay_price は価格編集で明示的に設定するまで null にする
+      // (original_price をそのまま使うと円がドルになる)
+      const ebayPrice: number | null = null
       return {
         user_id: userId,
         extraction_id: extractionId,
