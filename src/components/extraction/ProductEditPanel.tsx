@@ -734,6 +734,18 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <button disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">準備中</button>
                 </div>
               </div>
+              <div className="mt-4 flex items-center justify-end gap-3">
+                <button
+                  onClick={saveAll}
+                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError}
+                  className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium transition-colors"
+                >
+                  💾 編集保存
+                </button>
+                {saveError && (
+                  <span className="text-xs text-red-500">{saveError}</span>
+                )}
+              </div>
             </div>
           )}
 
