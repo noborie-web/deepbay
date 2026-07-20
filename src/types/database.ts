@@ -81,6 +81,7 @@ export interface Product {
   original_images: string[]
   original_condition: string | null
   ebay_title: string | null
+  ebay_brand: string | null
   ebay_price: number | null
   ebay_description: string | null
   ebay_images: string[]
