@@ -45,9 +45,7 @@ export const PRODUCT_WRITE_WHITELIST = new Set([
   'ebay_price',
   'ebay_condition',
   'purchase_price_jpy',
-  'ebay_description',
-  'ebay_images',
-  'ebay_category_id',
+  // ebay_description, ebay_images, ebay_category_id は Phase 2 で追加
 ])
 
 /** サーバー側フィールド検証。エラーメッセージを返す。問題なければ null。 */

@@ -315,10 +315,13 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         const ebay_title = typeof fields.ebay_title === 'string'
           ? fields.ebay_title.slice(0, 80)
           : fields.ebay_title
-        // 価格が不正なら null (サーバー側でも検証)
-        const ebay_price = (typeof fields.ebay_price === 'number' && isFinite(fields.ebay_price) && fields.ebay_price > 0)
-          ? fields.ebay_price
-          : undefined
+        // null = 価格を明示的にクリア; 正の有限数のみ有効; それ以外は送信しない
+        let ebay_price: number | null | undefined
+        if (fields.ebay_price === null) {
+          ebay_price = null
+        } else if (typeof fields.ebay_price === 'number' && isFinite(fields.ebay_price) && fields.ebay_price > 0) {
+          ebay_price = fields.ebay_price
+        }
         const out: Record<string, unknown> = { productId }
         if (ebay_title !== undefined) out.ebay_title = ebay_title
         if (ebay_price !== undefined) out.ebay_price = ebay_price
@@ -384,8 +387,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
   const getTitle = (p: Product) =>
     edits[p.id]?.ebay_title !== undefined ? (edits[p.id].ebay_title as string) : (p.ebay_title ?? '')
-  const getPrice = (p: Product) =>
-    edits[p.id]?.ebay_price !== undefined ? (edits[p.id].ebay_price as number) : (p.ebay_price ?? 0)
+  const getPrice = (p: Product): number | null =>
+    edits[p.id]?.ebay_price !== undefined ? (edits[p.id].ebay_price as number | null) : p.ebay_price
   const getCondition = (p: Product) =>
     (edits[p.id]?.ebay_condition as string | undefined) ?? p.ebay_condition ?? '中古'
   // purchase_price_jpy が優先; なければ original_price を表示専用に使用
@@ -805,12 +808,29 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                         <div className="space-y-2">
                           <div className="grid grid-cols-2 gap-2">
                             <div>
-                              <label className="text-xs text-gray-500 block mb-0.5">eBay販売価格</label>
-                              <div className="flex items-center border rounded overflow-hidden">
+                              <label className="text-xs text-gray-500 block mb-0.5">
+                                eBay販売価格
+                                {getPrice(product) == null && (
+                                  <span className="ml-1 text-amber-500">未設定</span>
+                                )}
+                              </label>
+                              <div className={`flex items-center border rounded overflow-hidden ${
+                                getPrice(product) !== null && (getPrice(product)! <= 0 || !isFinite(getPrice(product)!))
+                                  ? 'border-red-400' : ''
+                              }`}>
                                 <input
                                   type="number"
-                                  value={getPrice(product)}
-                                  onChange={(e) => updateEdit(product.id, 'ebay_price', parseFloat(e.target.value))}
+                                  value={getPrice(product) ?? ''}
+                                  onChange={(e) => {
+                                    const raw = e.target.value
+                                    if (raw === '') {
+                                      updateEdit(product.id, 'ebay_price', null)
+                                    } else {
+                                      const n = parseFloat(raw)
+                                      updateEdit(product.id, 'ebay_price', isNaN(n) ? null : n)
+                                    }
+                                  }}
+                                  placeholder="未設定"
                                   className="flex-1 px-2 py-1.5 text-sm focus:outline-none min-w-0"
                                 />
                                 <span className="px-2 text-xs text-gray-500 bg-gray-50 border-l h-full flex items-center">$</span>

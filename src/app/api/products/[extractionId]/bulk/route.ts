@@ -53,40 +53,43 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ex
   const failed: { productId: string; error: string }[] = []
   const now = new Date().toISOString()
 
-  await Promise.all(
-    rawUpdates.map(async (item) => {
-      const { productId, ...rawFields } = item as { productId: string; [key: string]: unknown }
-      const fields = pickAllowed(rawFields)
+  const CHUNK_SIZE = 10
+  for (let i = 0; i < rawUpdates.length; i += CHUNK_SIZE) {
+    await Promise.all(
+      rawUpdates.slice(i, i + CHUNK_SIZE).map(async (item) => {
+        const { productId, ...rawFields } = item as { productId: string; [key: string]: unknown }
+        const fields = pickAllowed(rawFields)
 
-      if (Object.keys(fields).length === 0) {
-        failed.push({ productId, error: '更新可能なフィールドがありません' })
-        return
-      }
+        if (Object.keys(fields).length === 0) {
+          failed.push({ productId, error: '更新可能なフィールドがありません' })
+          return
+        }
 
-      // サーバー側フィールド検証
-      const validationError = validateProductFields(fields)
-      if (validationError) {
-        failed.push({ productId, error: validationError })
-        return
-      }
+        // サーバー側フィールド検証
+        const validationError = validateProductFields(fields)
+        if (validationError) {
+          failed.push({ productId, error: validationError })
+          return
+        }
 
-      const { data, error } = await admin
-        .from('products')
-        .update({ ...fields, updated_at: now })
-        .eq('id', productId)
-        .eq('extraction_id', extractionId)
-        .eq('user_id', user.id)
-        .select('id')
+        const { data, error } = await admin
+          .from('products')
+          .update({ ...fields, updated_at: now })
+          .eq('id', productId)
+          .eq('extraction_id', extractionId)
+          .eq('user_id', user.id)
+          .select('id')
 
-      if (error) {
-        failed.push({ productId, error: error.message })
-      } else if (!data || data.length === 0) {
-        failed.push({ productId, error: '商品が存在しないか、更新権限がありません' })
-      } else {
-        succeeded.push(productId)
-      }
-    })
-  )
+        if (error) {
+          failed.push({ productId, error: error.message })
+        } else if (!data || data.length === 0) {
+          failed.push({ productId, error: '商品が存在しないか、更新権限がありません' })
+        } else {
+          succeeded.push(productId)
+        }
+      })
+    )
+  }
 
   if (failed.length > 0) {
     return NextResponse.json({ ok: false, succeeded, failed }, { status: 422 })
@@ -95,4 +98,3 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ex
   return NextResponse.json({ ok: true, succeeded, failed: [] }, { status: 200 })
 }
 
-export { ALLOWED_CONDITIONS }

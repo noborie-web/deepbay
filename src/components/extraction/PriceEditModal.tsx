@@ -35,6 +35,17 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
     ? products.filter((p) => pagedIds.has(p.id))
     : products
 
+  // 倍率・利益計算モードでは仕入価格が必要
+  const needsPurchasePrice = mode === 'rate' || mode === 'profit'
+  const missingPurchaseProducts = needsPurchasePrice
+    ? targetProducts.filter((p) => {
+        const jpy = getPurchaseJpy(p)
+        return jpy == null || !isFinite(jpy) || jpy <= 0
+      })
+    : []
+  const missingCount = missingPurchaseProducts.length
+  const applicableCount = targetProducts.length - missingCount
+
   // モードごとのバリデーションエラー
   const fixedValidationError = mode === 'fixed'
     ? (!fixedPrice ? '価格を入力してください' : (!isSafePriceUsd(parseFloat(fixedPrice)) ? '0より大きい有限な数値を入力してください' : null))
@@ -54,6 +65,8 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
   }) : null
 
   const applyDisabled = !!(fixedValidationError || rateValidationError || profitValidationError)
+    || targetProducts.length === 0
+    || missingCount > 0
 
   function getPriceForProduct(p: Product): number | null {
     if (mode === 'fixed') {
@@ -187,6 +200,16 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
             </label>
           </div>
 
+          {/* 仕入価格未設定の警告（倍率・利益計算モード） */}
+          {needsPurchasePrice && targetProducts.length > 0 && (
+            <div className="text-xs space-y-0.5">
+              <p className="text-gray-600">適用可能: <span className="font-medium text-blue-600">{applicableCount}件</span></p>
+              {missingCount > 0 && (
+                <p className="text-amber-600">仕入価格未設定: {missingCount}件 — 仕入価格を設定してから適用してください</p>
+              )}
+            </div>
+          )}
+
           {/* プレビュー */}
           {!applyDisabled && (
             <div>
@@ -239,7 +262,7 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
               disabled={applyDisabled}
               onClick={() => { onApply(getPriceForProduct, scope); onClose() }}
               className="bg-blue-500 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded px-4 py-2 text-sm font-medium">
-              適用 ({targetProducts.length}件)
+              適用 ({needsPurchasePrice ? applicableCount : targetProducts.length}件)
             </button>
           </div>
         </div>
