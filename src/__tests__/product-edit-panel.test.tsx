@@ -51,6 +51,7 @@ function makeProduct(id: string, overrides: Record<string, unknown> = {}) {
     original_images: [],
     original_condition: null,
     ebay_title: `eBay Title ${id}`,
+    ebay_brand: null,
     ebay_price: null,
     ebay_description: null,
     ebay_images: [],
@@ -303,6 +304,105 @@ describe('ProductEditPanel: 編集タブの保存操作', () => {
     })
 
     expect(saveBtn).not.toBeDisabled()
+  })
+})
+
+describe('ProductEditPanel: ブランド編集', () => {
+  it('商品ごとのブランド変更を保存APIへ送る', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1', { ebay_brand: 'PILOT' })],
+    })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, succeeded: ['p1'], failed: [] }),
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+
+    await waitFor(() => screen.getByDisplayValue('PILOT'))
+    const brandInput = screen.getByDisplayValue('PILOT')
+    await act(async () => {
+      await userEvent.clear(brandInput)
+      await userEvent.type(brandInput, 'SAILOR')
+      await userEvent.click(screen.getByText(/💾 編集保存/))
+    })
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const body = JSON.parse(fetchMock.mock.calls[1][1].body as string)
+    expect(body.updates).toEqual([{ productId: 'p1', ebay_brand: 'SAILOR' }])
+  })
+
+  it('ブランド入力を空にするとnullを保存する', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1', { ebay_brand: 'PILOT' })],
+    })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, succeeded: ['p1'], failed: [] }),
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+
+    await waitFor(() => screen.getByDisplayValue('PILOT'))
+    await act(async () => {
+      await userEvent.clear(screen.getByDisplayValue('PILOT'))
+      await userEvent.click(screen.getByText(/💾 編集保存/))
+    })
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const body = JSON.parse(fetchMock.mock.calls[1][1].body as string)
+    expect(body.updates).toEqual([{ productId: 'p1', ebay_brand: null }])
+  })
+
+  it('一括編集で同じブランドを現在ページへ適用する', async () => {
+    const { default: BrandEditModal } = await import('../components/extraction/BrandEditModal')
+    const products = [makeProduct('p1'), makeProduct('p2')]
+    const onApply = vi.fn()
+
+    render(
+      <BrandEditModal
+        products={products}
+        pagedIds={new Set(['p1'])}
+        getBrand={() => ''}
+        onApply={onApply}
+        onClose={vi.fn()}
+      />
+    )
+
+    await act(async () => {
+      await userEvent.type(screen.getByPlaceholderText('例: PILOT'), '  PILOT  ')
+      await userEvent.click(screen.getByRole('button', { name: /適用 \(1件\)/ }))
+    })
+
+    expect(onApply).toHaveBeenCalledWith('PILOT', 'page')
+  })
+
+  it('一括編集でブランドを全商品からクリアする', async () => {
+    const { default: BrandEditModal } = await import('../components/extraction/BrandEditModal')
+    const products = [makeProduct('p1'), makeProduct('p2')]
+    const onApply = vi.fn()
+
+    render(
+      <BrandEditModal
+        products={products}
+        pagedIds={new Set(['p1'])}
+        getBrand={() => 'PILOT'}
+        onApply={onApply}
+        onClose={vi.fn()}
+      />
+    )
+
+    await act(async () => {
+      await userEvent.click(screen.getByLabelText('ブランドをクリア'))
+      await userEvent.click(screen.getByLabelText('抽出商品すべて'))
+      await userEvent.click(screen.getByRole('button', { name: /適用 \(2件\)/ }))
+    })
+
+    expect(onApply).toHaveBeenCalledWith(null, 'all')
   })
 })
 
