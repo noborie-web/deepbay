@@ -1,0 +1,3 @@
+ALTER TABLE products
+ADD COLUMN IF NOT EXISTS ebay_brand TEXT;
+
