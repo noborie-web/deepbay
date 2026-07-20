@@ -190,10 +190,22 @@ describe('Bulk API: フィールドバリデーション', () => {
     expect((await res.json()).failed[0].error).toMatch(/ebay_condition/)
   })
 
-  it('Phase2フィールド(ebay_description)はホワイトリストで除外され、有効フィールドなしで失敗', async () => {
+  it('有効なebay_descriptionは更新できる', async () => {
     const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_description: 'test' }] })
+    expect(res.status).toBe(200)
+    expect((await res.json()).succeeded).toContain('p1')
+  })
+
+  it('nullのebay_descriptionは許可される（商品詳細クリア）', async () => {
+    const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_description: null }] })
+    expect(res.status).toBe(200)
+    expect((await res.json()).succeeded).toContain('p1')
+  })
+
+  it('空白だけのebay_descriptionは422で失敗に含まれる', async () => {
+    const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_description: '   ' }] })
     expect(res.status).toBe(422)
-    expect((await res.json()).failed[0].error).toMatch(/フィールド/)
+    expect((await res.json()).failed[0].error).toMatch(/ebay_description/)
   })
 })
 

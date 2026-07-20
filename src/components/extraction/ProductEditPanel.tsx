@@ -9,6 +9,8 @@ import PriceEditModal from './PriceEditModal'
 import ConditionEditModal from './ConditionEditModal'
 import BrandEditModal from './BrandEditModal'
 import type { BrandEditScope } from './BrandEditModal'
+import DescriptionEditModal, { applyDescriptionOp, DESCRIPTION_MAX_LENGTH } from './DescriptionEditModal'
+import type { DescriptionEditOp, DescriptionEditScope } from './DescriptionEditModal'
 
 interface Props {
   extractionId: string
@@ -77,6 +79,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // 編集モーダル
   const [titleModalOpen, setTitleModalOpen] = useState(false)
   const [brandModalOpen, setBrandModalOpen] = useState(false)
+  const [descriptionModalOpen, setDescriptionModalOpen] = useState(false)
   const [priceModalOpen, setPriceModalOpen] = useState(false)
   const [conditionModalOpen, setConditionModalOpen] = useState(false)
 
@@ -299,6 +302,14 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     targets.forEach((product) => updateEdit(product.id, 'ebay_brand', brand))
   }
 
+  // ---- 一括商品詳細編集 ----
+  function applyDescriptionEdit(op: DescriptionEditOp, scope: DescriptionEditScope) {
+    const targets = scope === 'page' ? pagedProducts : products
+    targets.forEach((product) => {
+      updateEdit(product.id, 'ebay_description', applyDescriptionOp(getDescription(product), op))
+    })
+  }
+
   // ---- 一括価格編集 ----
   function applyPriceEdit(getPriceUsd: (p: Product) => number | null, scope: 'page' | 'all') {
     const targets = scope === 'page' ? pagedProducts : products
@@ -327,6 +338,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         const out: Record<string, unknown> = { productId }
         if (ebay_title !== undefined) out.ebay_title = ebay_title
         if (fields.ebay_brand !== undefined) out.ebay_brand = fields.ebay_brand
+        if (fields.ebay_description !== undefined) out.ebay_description = fields.ebay_description
         // null = 明示的クリア; 保存ボタンは不正価格がある間は無効なので、ここに届くのは null か正の有限数のみ
         if (fields.ebay_price !== undefined) out.ebay_price = fields.ebay_price
         if (fields.ebay_condition !== undefined) out.ebay_condition = fields.ebay_condition
@@ -393,6 +405,10 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     edits[p.id]?.ebay_title !== undefined ? (edits[p.id].ebay_title as string) : (p.ebay_title ?? '')
   const getBrand = (p: Product) =>
     edits[p.id]?.ebay_brand !== undefined ? (edits[p.id].ebay_brand as string | null) ?? '' : (p.ebay_brand ?? '')
+  const getDescription = (p: Product) =>
+    edits[p.id]?.ebay_description !== undefined
+      ? (edits[p.id].ebay_description as string | null) ?? ''
+      : (p.ebay_description ?? '')
   const getPrice = (p: Product): number | null =>
     edits[p.id]?.ebay_price !== undefined ? (edits[p.id].ebay_price as number | null) : p.ebay_price
 
@@ -404,6 +420,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const hasBrandError = Object.values(edits).some((fields) => {
     const brand = fields.ebay_brand
     return typeof brand === 'string' && (brand.trim().length === 0 || brand.length > 65)
+  })
+  const hasDescriptionError = Object.values(edits).some((fields) => {
+    const description = fields.ebay_description
+    return typeof description === 'string'
+      && (description.trim().length === 0 || description.length > DESCRIPTION_MAX_LENGTH)
   })
   const getCondition = (p: Product) =>
     (edits[p.id]?.ebay_condition as string | undefined) ?? p.ebay_condition ?? '中古'
@@ -494,7 +515,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
               {/* 編集保存 */}
               <button
                 onClick={saveAll}
-                disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError}
+                disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError || hasDescriptionError}
                 className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1 text-xs font-medium transition-colors"
               >
                 💾 編集保存
@@ -723,10 +744,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <button onClick={() => setBrandModalOpen(true)}
                     className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50">編集</button>
                 </div>
-                {/* 商品詳細 — Phase 2 */}
+                {/* 商品詳細 — Phase 3 */}
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-gray-400">商品詳細</span>
-                  <button disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">準備中</button>
+                  <span className="text-sm text-gray-700">商品詳細</span>
+                  <button onClick={() => setDescriptionModalOpen(true)}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50">編集</button>
                 </div>
                 {/* 画像枚数以降 — Phase 2 */}
                 <div className="flex items-center justify-between gap-2">
@@ -754,7 +776,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
               <div className="mt-4 flex items-center justify-end gap-3">
                 <button
                   onClick={saveAll}
-                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError}
+                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError || hasDescriptionError}
                   className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium transition-colors"
                 >
                   💾 編集保存
@@ -831,6 +853,28 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                             </span>
                           </div>
                           <p className="mt-1 text-xs text-gray-400 truncate">{product.original_title}</p>
+                          {editMode === '詳細編集モード' && (
+                            <div className="mt-3">
+                              <label className="text-xs text-gray-500 block mb-1">
+                                商品詳細
+                                {getDescription(product) === '' && <span className="ml-1 text-amber-500">未設定</span>}
+                              </label>
+                              <textarea
+                                value={getDescription(product)}
+                                maxLength={DESCRIPTION_MAX_LENGTH}
+                                rows={5}
+                                onChange={(event) => {
+                                  const value = event.target.value.slice(0, DESCRIPTION_MAX_LENGTH)
+                                  updateEdit(product.id, 'ebay_description', value === '' ? null : value)
+                                }}
+                                placeholder="商品詳細未設定"
+                                className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300 resize-y"
+                              />
+                              <p className="text-right text-xs text-gray-400">
+                                {getDescription(product).length.toLocaleString()} / {DESCRIPTION_MAX_LENGTH.toLocaleString()}
+                              </p>
+                            </div>
+                          )}
                         </div>
 
                         {/* 右: ブランド・価格・状態 */}
@@ -1000,6 +1044,15 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           getBrand={getBrand}
           onApply={applyBrandEdit}
           onClose={() => setBrandModalOpen(false)}
+        />
+      )}
+      {descriptionModalOpen && (
+        <DescriptionEditModal
+          products={products}
+          pagedIds={pagedIds}
+          getDescription={getDescription}
+          onApply={applyDescriptionEdit}
+          onClose={() => setDescriptionModalOpen(false)}
         />
       )}
       {priceModalOpen && (
