@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
+import { PRODUCT_WRITE_WHITELIST } from '@/lib/pricing'
+
+function pickAllowed(updates: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(updates).filter(([k]) => PRODUCT_WRITE_WHITELIST.has(k))
+  )
+}
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ extractionId: string }> }) {
   const { extractionId } = await params
@@ -31,7 +38,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ex
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json()
-  const { productId, ...updates } = body
+  const { productId, ...rawUpdates } = body
+  const updates = pickAllowed(rawUpdates)
+
+  if (Object.keys(updates).length === 0) {
+    return NextResponse.json({ error: '更新可能なフィールドがありません' }, { status: 400 })
+  }
 
   const admin = createServiceClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
