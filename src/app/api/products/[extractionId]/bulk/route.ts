@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { PRODUCT_WRITE_WHITELIST, ALLOWED_CONDITIONS, validateProductFields } from '@/lib/pricing'
+import { PRODUCT_WRITE_WHITELIST, validateProductFields } from '@/lib/pricing'
 
 function pickAllowed(updates: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -29,6 +29,13 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ex
   }
   if (rawUpdates.length > 200) {
     return NextResponse.json({ error: '一度に更新できるのは200件までです' }, { status: 400 })
+  }
+
+  // 各アイテムの型チェック（null・プリミティブ・配列は拒否）
+  for (const item of rawUpdates) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      return NextResponse.json({ error: '各アイテムはオブジェクトである必要があります' }, { status: 400 })
+    }
   }
 
   // 重複 productId チェック

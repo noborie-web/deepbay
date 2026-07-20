@@ -98,6 +98,30 @@ describe('Bulk API: 入力バリデーション', () => {
     const res = await callBulkPatch('ext-1', { updates: [] })
     expect(res.status).toBe(400)
   })
+
+  it('null要素は400を返す（{"updates":[null]}）', async () => {
+    const res = await callBulkPatch('ext-1', { updates: [null] })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/オブジェクト/)
+  })
+
+  it('文字列要素は400を返す（{"updates":["test"]}）', async () => {
+    const res = await callBulkPatch('ext-1', { updates: ['test'] })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/オブジェクト/)
+  })
+
+  it('数値要素は400を返す（{"updates":[123]}）', async () => {
+    const res = await callBulkPatch('ext-1', { updates: [123] })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/オブジェクト/)
+  })
+
+  it('配列要素は400を返す（{"updates":[[]]}）', async () => {
+    const res = await callBulkPatch('ext-1', { updates: [[]] })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/オブジェクト/)
+  })
 })
 
 describe('Bulk API: フィールドバリデーション', () => {

@@ -315,16 +315,10 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         const ebay_title = typeof fields.ebay_title === 'string'
           ? fields.ebay_title.slice(0, 80)
           : fields.ebay_title
-        // null = 価格を明示的にクリア; 正の有限数のみ有効; それ以外は送信しない
-        let ebay_price: number | null | undefined
-        if (fields.ebay_price === null) {
-          ebay_price = null
-        } else if (typeof fields.ebay_price === 'number' && isFinite(fields.ebay_price) && fields.ebay_price > 0) {
-          ebay_price = fields.ebay_price
-        }
         const out: Record<string, unknown> = { productId }
         if (ebay_title !== undefined) out.ebay_title = ebay_title
-        if (ebay_price !== undefined) out.ebay_price = ebay_price
+        // null = 明示的クリア; 保存ボタンは不正価格がある間は無効なので、ここに届くのは null か正の有限数のみ
+        if (fields.ebay_price !== undefined) out.ebay_price = fields.ebay_price
         if (fields.ebay_condition !== undefined) out.ebay_condition = fields.ebay_condition
         if (fields.purchase_price_jpy !== undefined) out.purchase_price_jpy = fields.purchase_price_jpy
         return out
@@ -389,6 +383,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     edits[p.id]?.ebay_title !== undefined ? (edits[p.id].ebay_title as string) : (p.ebay_title ?? '')
   const getPrice = (p: Product): number | null =>
     edits[p.id]?.ebay_price !== undefined ? (edits[p.id].ebay_price as number | null) : p.ebay_price
+
+  // 不正価格: edits に入っているが null でもなく正の有限数でもない
+  const hasPriceError = Object.values(edits).some((fields) => {
+    const p = fields.ebay_price
+    return p !== undefined && p !== null && (typeof p !== 'number' || !isFinite(p) || p <= 0)
+  })
   const getCondition = (p: Product) =>
     (edits[p.id]?.ebay_condition as string | undefined) ?? p.ebay_condition ?? '中古'
   // purchase_price_jpy が優先; なければ original_price を表示専用に使用
@@ -478,7 +478,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
               {/* 編集保存 */}
               <button
                 onClick={saveAll}
-                disabled={saving || Object.keys(edits).length === 0}
+                disabled={saving || Object.keys(edits).length === 0 || hasPriceError}
                 className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1 text-xs font-medium transition-colors"
               >
                 💾 編集保存
@@ -827,14 +827,22 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                                       updateEdit(product.id, 'ebay_price', null)
                                     } else {
                                       const n = parseFloat(raw)
+                                      // NaN → null (クリア扱い); 0・負数はそのまま保持してエラー表示
                                       updateEdit(product.id, 'ebay_price', isNaN(n) ? null : n)
                                     }
                                   }}
                                   placeholder="未設定"
                                   className="flex-1 px-2 py-1.5 text-sm focus:outline-none min-w-0"
                                 />
+
                                 <span className="px-2 text-xs text-gray-500 bg-gray-50 border-l h-full flex items-center">$</span>
                               </div>
+                              {(() => {
+                                const v = getPrice(product)
+                                return v !== null && (v <= 0 || !isFinite(v))
+                                  ? <p className="text-xs text-red-500 mt-0.5">0より大きい値を入力してください</p>
+                                  : null
+                              })()}
                             </div>
                             <div>
                               <label className="text-xs text-gray-500 block mb-0.5">仕入価格（参照用）</label>
