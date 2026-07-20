@@ -166,6 +166,24 @@ describe('Bulk API: フィールドバリデーション', () => {
     expect((await res.json()).succeeded).toContain('p1')
   })
 
+  it('有効なebay_brandは更新できる', async () => {
+    const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_brand: 'PILOT' }] })
+    expect(res.status).toBe(200)
+    expect((await res.json()).succeeded).toContain('p1')
+  })
+
+  it('nullのebay_brandは許可される（ブランドクリア）', async () => {
+    const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_brand: null }] })
+    expect(res.status).toBe(200)
+    expect((await res.json()).succeeded).toContain('p1')
+  })
+
+  it('66文字のebay_brandは422で失敗に含まれる', async () => {
+    const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_brand: 'a'.repeat(66) }] })
+    expect(res.status).toBe(422)
+    expect((await res.json()).failed[0].error).toMatch(/ebay_brand/)
+  })
+
   it('不正なebay_conditionは422で失敗に含まれる', async () => {
     const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_condition: 'excellent' }] })
     expect(res.status).toBe(422)
