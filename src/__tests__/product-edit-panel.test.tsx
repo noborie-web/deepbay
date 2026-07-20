@@ -280,6 +280,32 @@ describe('ProductEditPanel: saveAll の動作', () => {
   })
 })
 
+describe('ProductEditPanel: 編集タブの保存操作', () => {
+  it('編集タブでも保存ボタンが表示され、編集後に有効になる', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1', { ebay_price: null })],
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: '編集', exact: true }))
+    })
+
+    const saveBtn = screen.getByText(/💾 編集保存/)
+    expect(saveBtn).toBeDisabled()
+
+    await act(async () => {
+      await userEvent.type(screen.getByPlaceholderText('未設定'), '83')
+    })
+
+    expect(saveBtn).not.toBeDisabled()
+  })
+})
+
 describe('PriceEditModal: 仕入価格未設定の処理', () => {
   it('倍率モードで仕入価格未設定商品があれば適用ボタンが無効', async () => {
     const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
