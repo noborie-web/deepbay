@@ -28,7 +28,7 @@ let fetchMock: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   fetchMock = vi.fn()
-  global.fetch = fetchMock
+  global.fetch = fetchMock as unknown as typeof fetch
 })
 
 afterEach(() => {
@@ -293,7 +293,7 @@ describe('ProductEditPanel: 編集タブの保存操作', () => {
 
     await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
     await act(async () => {
-      await userEvent.click(screen.getByRole('button', { name: '編集', exact: true }))
+      await userEvent.click(screen.getByRole('button', { name: '編集' }))
     })
 
     const saveBtn = screen.getByText(/💾 編集保存/)
@@ -403,6 +403,84 @@ describe('ProductEditPanel: ブランド編集', () => {
     })
 
     expect(onApply).toHaveBeenCalledWith(null, 'all')
+  })
+})
+
+describe('ProductEditPanel: 商品詳細編集', () => {
+  it('詳細編集モードで商品ごとの商品詳細を保存APIへ送る', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1', { ebay_description: 'Old description' })],
+    })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, succeeded: ['p1'], failed: [] }),
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+
+    await waitFor(() => screen.getByDisplayValue('簡易編集モード'))
+    await act(async () => {
+      await userEvent.selectOptions(screen.getByDisplayValue('簡易編集モード'), '詳細編集モード')
+    })
+    const description = await screen.findByDisplayValue('Old description')
+    await act(async () => {
+      await userEvent.clear(description)
+      await userEvent.type(description, 'New description')
+      await userEvent.click(screen.getByText(/💾 編集保存/))
+    })
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const body = JSON.parse(fetchMock.mock.calls[1][1].body as string)
+    expect(body.updates).toEqual([{ productId: 'p1', ebay_description: 'New description' }])
+  })
+
+  it('一括編集で同じ商品詳細を現在ページへ適用する', async () => {
+    const { default: DescriptionEditModal } = await import('../components/extraction/DescriptionEditModal')
+    const products = [makeProduct('p1'), makeProduct('p2')]
+    const onApply = vi.fn()
+
+    render(
+      <DescriptionEditModal
+        products={products}
+        pagedIds={new Set(['p1'])}
+        getDescription={() => ''}
+        onApply={onApply}
+        onClose={vi.fn()}
+      />
+    )
+
+    await act(async () => {
+      await userEvent.type(screen.getByPlaceholderText('商品詳細を入力'), 'Description')
+      await userEvent.click(screen.getByRole('button', { name: /適用 \(1件\)/ }))
+    })
+
+    expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ mode: 'set', value: 'Description' }), 'page')
+  })
+
+  it('一括編集で全商品の商品詳細をクリアする', async () => {
+    const { default: DescriptionEditModal } = await import('../components/extraction/DescriptionEditModal')
+    const products = [makeProduct('p1'), makeProduct('p2')]
+    const onApply = vi.fn()
+
+    render(
+      <DescriptionEditModal
+        products={products}
+        pagedIds={new Set(['p1'])}
+        getDescription={() => 'Description'}
+        onApply={onApply}
+        onClose={vi.fn()}
+      />
+    )
+
+    await act(async () => {
+      await userEvent.click(screen.getByLabelText('商品詳細をクリア'))
+      await userEvent.click(screen.getByLabelText('抽出商品すべて'))
+      await userEvent.click(screen.getByRole('button', { name: /適用 \(2件\)/ }))
+    })
+
+    expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ mode: 'clear' }), 'all')
   })
 })
 

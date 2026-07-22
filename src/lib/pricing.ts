@@ -43,10 +43,11 @@ export const ALLOWED_CONDITIONS = new Set(['新品', '新品同様', '良い', '
 export const PRODUCT_WRITE_WHITELIST = new Set([
   'ebay_title',
   'ebay_brand',
+  'ebay_description',
   'ebay_price',
   'ebay_condition',
   'purchase_price_jpy',
-  // ebay_description, ebay_images, ebay_category_id は Phase 2 で追加
+  // ebay_images, ebay_category_id は後続フェーズで追加
 ])
 
 /** サーバー側フィールド検証。エラーメッセージを返す。問題なければ null。 */
@@ -69,6 +70,12 @@ export function validateProductFields(fields: Record<string, unknown>): string |
     const brand = fields.ebay_brand
     if (brand !== null && (typeof brand !== 'string' || brand.trim().length === 0 || brand.length > 65)) {
       return `ebay_brand はnullまたは1〜65文字にしてください (現在: ${typeof brand === 'string' ? brand.length : typeof brand}文字)`
+    }
+  }
+  if ('ebay_description' in fields) {
+    const description = fields.ebay_description
+    if (description !== null && (typeof description !== 'string' || description.trim().length === 0 || description.length > 500_000)) {
+      return `ebay_description はnullまたは1〜500000文字にしてください (現在: ${typeof description === 'string' ? description.length : typeof description}文字)`
     }
   }
   if ('ebay_condition' in fields) {
