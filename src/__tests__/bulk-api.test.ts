@@ -207,6 +207,26 @@ describe('Bulk API: フィールドバリデーション', () => {
     expect(res.status).toBe(422)
     expect((await res.json()).failed[0].error).toMatch(/ebay_description/)
   })
+
+  it('有効なebay_imagesは更新できる', async () => {
+    const ebayImages = ['https://example.com/1.jpg', 'https://example.com/2.jpg']
+    const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_images: ebayImages }] })
+    expect(res.status).toBe(200)
+    expect((await res.json()).succeeded).toContain('p1')
+  })
+
+  it('13枚のebay_imagesは422で失敗に含まれる', async () => {
+    const ebayImages = Array.from({ length: 13 }, (_, index) => `https://example.com/${index}.jpg`)
+    const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_images: ebayImages }] })
+    expect(res.status).toBe(422)
+    expect((await res.json()).failed[0].error).toMatch(/ebay_images/)
+  })
+
+  it('不正URLを含むebay_imagesは422で失敗に含まれる', async () => {
+    const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_images: ['not-a-url'] }] })
+    expect(res.status).toBe(422)
+    expect((await res.json()).failed[0].error).toMatch(/ebay_images/)
+  })
 })
 
 describe('Bulk API: DB更新結果', () => {

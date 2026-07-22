@@ -484,6 +484,87 @@ describe('ProductEditPanel: 商品詳細編集', () => {
   })
 })
 
+describe('ProductEditPanel: 画像枚数編集', () => {
+  const images = Array.from({ length: 5 }, (_, index) => `https://example.com/${index + 1}.jpg`)
+
+  it('画像枚数モーダルで現在ページに指定枚数を適用する', async () => {
+    const { default: ImageCountEditModal } = await import('../components/extraction/ImageCountEditModal')
+    const products = [
+      makeProduct('p1', { ebay_images: images }),
+      makeProduct('p2', { ebay_images: images }),
+    ]
+    const onApply = vi.fn()
+
+    render(
+      <ImageCountEditModal
+        products={products}
+        pagedIds={new Set(['p1'])}
+        getImages={(product) => product.ebay_images}
+        onApply={onApply}
+        onClose={vi.fn()}
+      />
+    )
+
+    const countInput = screen.getByRole('spinbutton', { name: '残す画像枚数' })
+    await act(async () => {
+      await userEvent.clear(countInput)
+      await userEvent.type(countInput, '3')
+      await userEvent.click(screen.getByRole('button', { name: /適用（変更 1件）/ }))
+    })
+
+    expect(onApply).toHaveBeenCalledWith(3, 'page')
+  })
+
+  it('画像を先頭2枚に絞って保存APIへ送る', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1', { ebay_images: images, original_images: images })],
+    })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, succeeded: ['p1'], failed: [] }),
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: '編集' }))
+      await userEvent.click(screen.getByRole('button', { name: '画像枚数以降を編集' }))
+    })
+
+    const countInput = screen.getByRole('spinbutton', { name: '残す画像枚数' })
+    await act(async () => {
+      await userEvent.clear(countInput)
+      await userEvent.type(countInput, '2')
+      await userEvent.click(screen.getByRole('button', { name: /適用（変更 1件）/ }))
+      await userEvent.click(screen.getByText(/💾 編集保存/))
+    })
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const body = JSON.parse(fetchMock.mock.calls[1][1].body as string)
+    expect(body.updates).toEqual([{ productId: 'p1', ebay_images: images.slice(0, 2) }])
+  })
+
+  it('変更対象がない場合は適用ボタンを無効化する', async () => {
+    const { default: ImageCountEditModal } = await import('../components/extraction/ImageCountEditModal')
+    const products = [makeProduct('p1', { ebay_images: images.slice(0, 2) })]
+
+    render(
+      <ImageCountEditModal
+        products={products}
+        pagedIds={new Set(['p1'])}
+        getImages={(product) => product.ebay_images}
+        onApply={vi.fn()}
+        onClose={vi.fn()}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: /適用（変更 0件）/ })).toBeDisabled()
+  })
+})
+
 describe('PriceEditModal: 仕入価格未設定の処理', () => {
   it('倍率モードで仕入価格未設定商品があれば適用ボタンが無効', async () => {
     const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
