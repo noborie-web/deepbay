@@ -11,6 +11,8 @@ import BrandEditModal from './BrandEditModal'
 import type { BrandEditScope } from './BrandEditModal'
 import DescriptionEditModal, { applyDescriptionOp, DESCRIPTION_MAX_LENGTH } from './DescriptionEditModal'
 import type { DescriptionEditOp, DescriptionEditScope } from './DescriptionEditModal'
+import ImageCountEditModal, { limitImages } from './ImageCountEditModal'
+import type { ImageCountEditScope } from './ImageCountEditModal'
 
 interface Props {
   extractionId: string
@@ -80,6 +82,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [titleModalOpen, setTitleModalOpen] = useState(false)
   const [brandModalOpen, setBrandModalOpen] = useState(false)
   const [descriptionModalOpen, setDescriptionModalOpen] = useState(false)
+  const [imageCountModalOpen, setImageCountModalOpen] = useState(false)
   const [priceModalOpen, setPriceModalOpen] = useState(false)
   const [conditionModalOpen, setConditionModalOpen] = useState(false)
 
@@ -310,6 +313,17 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     })
   }
 
+  // ---- 一括画像枚数編集 ----
+  function applyImageCountEdit(keepCount: number, scope: ImageCountEditScope) {
+    const targets = scope === 'page' ? pagedProducts : products
+    targets.forEach((product) => {
+      const before = getImages(product)
+      if (before.length > keepCount) {
+        updateEdit(product.id, 'ebay_images', limitImages(before, keepCount))
+      }
+    })
+  }
+
   // ---- 一括価格編集 ----
   function applyPriceEdit(getPriceUsd: (p: Product) => number | null, scope: 'page' | 'all') {
     const targets = scope === 'page' ? pagedProducts : products
@@ -339,6 +353,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         if (ebay_title !== undefined) out.ebay_title = ebay_title
         if (fields.ebay_brand !== undefined) out.ebay_brand = fields.ebay_brand
         if (fields.ebay_description !== undefined) out.ebay_description = fields.ebay_description
+        if (fields.ebay_images !== undefined) out.ebay_images = fields.ebay_images
         // null = 明示的クリア; 保存ボタンは不正価格がある間は無効なので、ここに届くのは null か正の有限数のみ
         if (fields.ebay_price !== undefined) out.ebay_price = fields.ebay_price
         if (fields.ebay_condition !== undefined) out.ebay_condition = fields.ebay_condition
@@ -409,6 +424,10 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     edits[p.id]?.ebay_description !== undefined
       ? (edits[p.id].ebay_description as string | null) ?? ''
       : (p.ebay_description ?? '')
+  const getImages = (p: Product): string[] =>
+    edits[p.id]?.ebay_images !== undefined
+      ? (edits[p.id].ebay_images as string[])
+      : (p.ebay_images?.length ? p.ebay_images : (p.original_images ?? []))
   const getPrice = (p: Product): number | null =>
     edits[p.id]?.ebay_price !== undefined ? (edits[p.id].ebay_price as number | null) : p.ebay_price
 
@@ -660,7 +679,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <div className="flex flex-wrap gap-1.5">
                     {SPOT_PRESETS.map((w) => (
                       <button key={w} type="button"
-                        onClick={() => setSpotSelected((prev) => { const s = new Set(prev); s.has(w) ? s.delete(w) : s.add(w); return s })}
+                        onClick={() => setSpotSelected((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(w)) next.delete(w)
+                          else next.add(w)
+                          return next
+                        })}
                         className={`px-2 py-0.5 rounded text-xs border transition-colors ${spotSelected.has(w) ? 'bg-orange-500 text-white border-orange-500' : 'border-gray-300 text-gray-600 hover:bg-gray-100'}`}>
                         {w}
                       </button>
@@ -750,10 +774,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <button onClick={() => setDescriptionModalOpen(true)}
                     className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50">編集</button>
                 </div>
-                {/* 画像枚数以降 — Phase 2 */}
+                {/* 画像枚数以降 — Phase 4 */}
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-gray-400">画像枚数以降</span>
-                  <button disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">準備中</button>
+                  <span className="text-sm text-gray-700">画像枚数以降</span>
+                  <button aria-label="画像枚数以降を編集" onClick={() => setImageCountModalOpen(true)}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50">編集</button>
                 </div>
                 {/* 商品状態 — 実装済み */}
                 <div className="flex items-center justify-between gap-2">
@@ -824,9 +849,9 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
                       {/* メイン画像 */}
                       <div className={`shrink-0 ${IMAGE_SIZE_MAP[imageSize]}`}>
-                        {product.original_images[0] ? (
+                        {getImages(product)[0] ? (
                           <img
-                            src={product.original_images[0]}
+                            src={getImages(product)[0]}
                             alt=""
                             className="w-full h-full object-cover rounded border"
                           />
@@ -966,9 +991,9 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     </div>
 
                     {/* サムネイル */}
-                    {product.original_images.length > 1 && (
+                    {getImages(product).length > 1 && (
                       <div className="flex gap-2 mt-3 ml-[5.5rem] overflow-x-auto pb-1">
-                        {product.original_images.slice(0, 12).map((img, i) => (
+                        {getImages(product).slice(0, 12).map((img, i) => (
                           <img
                             key={i}
                             src={img}
@@ -1053,6 +1078,15 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           getDescription={getDescription}
           onApply={applyDescriptionEdit}
           onClose={() => setDescriptionModalOpen(false)}
+        />
+      )}
+      {imageCountModalOpen && (
+        <ImageCountEditModal
+          products={products}
+          pagedIds={pagedIds}
+          getImages={getImages}
+          onApply={applyImageCountEdit}
+          onClose={() => setImageCountModalOpen(false)}
         />
       )}
       {priceModalOpen && (

@@ -44,10 +44,11 @@ export const PRODUCT_WRITE_WHITELIST = new Set([
   'ebay_title',
   'ebay_brand',
   'ebay_description',
+  'ebay_images',
   'ebay_price',
   'ebay_condition',
   'purchase_price_jpy',
-  // ebay_images, ebay_category_id は後続フェーズで追加
+  // ebay_category_id は後続フェーズで追加
 ])
 
 /** サーバー側フィールド検証。エラーメッセージを返す。問題なければ null。 */
@@ -94,8 +95,16 @@ export function validateProductFields(fields: Record<string, unknown>): string |
   }
   if ('ebay_images' in fields) {
     const imgs = fields.ebay_images
-    if (!Array.isArray(imgs) || imgs.some((u) => typeof u !== 'string')) {
-      return 'ebay_images は文字列URLの配列にしてください'
+    if (!Array.isArray(imgs) || imgs.length > 12 || imgs.some((url) => {
+      if (typeof url !== 'string') return true
+      try {
+        const parsed = new URL(url)
+        return parsed.protocol !== 'http:' && parsed.protocol !== 'https:'
+      } catch {
+        return true
+      }
+    })) {
+      return 'ebay_images は最大12件のHTTP(S) URL配列にしてください'
     }
   }
   return null
