@@ -64,11 +64,72 @@ function makeProduct(id: string, overrides: Record<string, unknown> = {}) {
     shipping_days: null,
     source_updated_at: null,
     purchase_price_jpy: null,
+    price_type: 'fixed' as const,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     ...overrides,
   }
 }
+
+describe('ProductEditPanel: 未実装だった除外機能', () => {
+  it('Veroブランドに一致する商品だけを除外する', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          makeProduct('p1', { ebay_brand: 'Nintendo' }),
+          makeProduct('p2', { ebay_brand: 'Generic' }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ vero: [{ brand: 'Nintendo' }] }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'Veroを除外' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Vero除外を実行' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/products/ext-1')
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ productId: 'p1' })
+    await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p1')).toBeNull())
+    expect(screen.getByDisplayValue('eBay Title p2')).toBeTruthy()
+  })
+
+  it('価格タイプの初期選択ではオークション商品だけを除外する', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          makeProduct('p1', { price_type: 'fixed' }),
+          makeProduct('p2', { price_type: 'auction' }),
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: '価格タイプを除外' }))
+    expect(screen.getByRole('checkbox', { name: '固定価格（1件）' })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'オークション（1件）' })).toBeChecked()
+
+    await userEvent.click(screen.getByRole('button', { name: '価格タイプ除外を実行' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ productId: 'p2' })
+    await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p2')).toBeNull())
+    expect(screen.getByDisplayValue('eBay Title p1')).toBeTruthy()
+  })
+})
 
 // ---------- テスト ----------
 

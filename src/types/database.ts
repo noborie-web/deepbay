@@ -1,6 +1,7 @@
 export type PlanType = 'free' | 'basic' | 'pro' | 'enterprise'
 export type ExtractionStatus = 'pending' | 'processing' | 'completed' | 'failed'
 export type ListingStatus = 'draft' | 'listed' | 'sold' | 'delisted'
+export type ProductPriceType = 'fixed' | 'auction'
 
 export interface Profile {
   id: string
@@ -94,6 +95,7 @@ export interface Product {
   shipping_days: number | null
   source_updated_at: string | null
   purchase_price_jpy: number | null
+  price_type: ProductPriceType
   created_at: string
   updated_at: string
 }

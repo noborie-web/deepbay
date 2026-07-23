@@ -13,6 +13,12 @@ import DescriptionEditModal, { applyDescriptionOp, DESCRIPTION_MAX_LENGTH } from
 import type { DescriptionEditOp, DescriptionEditScope } from './DescriptionEditModal'
 import ImageCountEditModal, { limitImages } from './ImageCountEditModal'
 import type { ImageCountEditScope } from './ImageCountEditModal'
+import {
+  findPriceTypeProductIds,
+  findVeroProductIds,
+  getProductPriceType,
+} from '@/lib/product-exclusion'
+import type { ProductPriceType } from '@/lib/product-exclusion'
 
 interface Props {
   extractionId: string
@@ -78,6 +84,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // 最終更新月フィルタ
   const [updatedMonthsAgo, setUpdatedMonthsAgo] = useState('3')
 
+  // Vero・価格タイプ
+  const [priceTypesSelected, setPriceTypesSelected] = useState<Record<ProductPriceType, boolean>>({
+    fixed: false,
+    auction: true,
+  })
+
   // 編集モーダル
   const [titleModalOpen, setTitleModalOpen] = useState(false)
   const [brandModalOpen, setBrandModalOpen] = useState(false)
@@ -128,6 +140,42 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       })
     ))
     return toDelete.map((p) => p.id)
+  }
+
+  async function deleteExcludedProducts(productIds: string[]): Promise<string[]> {
+    if (productIds.length === 0) return []
+
+    const results = await Promise.all(productIds.map(async (productId) => {
+      const response = await fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId }),
+      })
+      return { productId, ok: response.ok }
+    }))
+
+    const failed = results.filter((result) => !result.ok)
+    if (failed.length > 0) {
+      throw new Error(`${failed.length}件の除外に失敗しました`)
+    }
+    return productIds
+  }
+
+  async function excludeVero(): Promise<string[]> {
+    const response = await fetch('/api/extraction-settings')
+    if (!response.ok) throw new Error('Veroブランドを取得できませんでした')
+    const data = await response.json()
+    const brands: string[] = (data.vero ?? [])
+      .map((item: { brand?: unknown }) => typeof item.brand === 'string' ? item.brand : '')
+      .filter(Boolean)
+    return deleteExcludedProducts(findVeroProductIds(products, brands))
+  }
+
+  async function excludeByPriceType(): Promise<string[]> {
+    const selectedTypes = (Object.entries(priceTypesSelected) as [ProductPriceType, boolean][])
+      .filter(([, selected]) => selected)
+      .map(([type]) => type)
+    return deleteExcludedProducts(findPriceTypeProductIds(products, selectedTypes))
   }
 
   async function excludeSpotWords(): Promise<string[]> {
@@ -550,8 +598,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
             <div className="border-b bg-gray-50">
               <div className="px-4 py-4 grid grid-cols-5 gap-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-gray-400">Vero</span>
-                  <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">除外</button>
+                  <span className="text-sm text-gray-700">Vero</span>
+                  <button type="button" aria-label="Veroを除外" onClick={() => togglePanel('vero')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'vero' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">危険セラー</span>
@@ -596,8 +647,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-gray-400">価格タイプ</span>
-                  <button type="button" disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">除外</button>
+                  <span className="text-sm text-gray-700">価格タイプ</span>
+                  <button type="button" aria-label="価格タイプを除外" onClick={() => togglePanel('priceType')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'priceType' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
+                  </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">価格範囲</span>
@@ -614,6 +668,54 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   </button>
                 </div>
               </div>
+
+              {excludePanel === 'vero' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
+                  <p className="text-xs text-gray-500">
+                    抽出設定のVeroブランドと、eBayブランドまたは商品タイトルが一致する商品を除外します。
+                  </p>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['vero']} onClick={() => runExclude('vero', excludeVero)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['vero'] ? '実行中...' : 'Vero除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {excludePanel === 'priceType' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-3">
+                  <p className="text-xs text-gray-500">選択した販売形式の商品を除外します。</p>
+                  <div className="flex items-center gap-5">
+                    {([
+                      ['fixed', '固定価格'],
+                      ['auction', 'オークション'],
+                    ] as const).map(([type, label]) => (
+                      <label key={type} className="flex items-center gap-2 text-xs text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={priceTypesSelected[type]}
+                          onChange={(event) => setPriceTypesSelected((current) => ({
+                            ...current,
+                            [type]: event.target.checked,
+                          }))}
+                        />
+                        {label}（{products.filter((product) => getProductPriceType(product) === type).length}件）
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      disabled={excludeRunning['priceType'] || !Object.values(priceTypesSelected).some(Boolean)}
+                      onClick={() => runExclude('priceType', excludeByPriceType)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {excludeRunning['priceType'] ? '実行中...' : '価格タイプ除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {excludePanel === 'rating' && (
                 <div className="mx-4 mb-2 p-3 bg-white border rounded-lg space-y-2">
