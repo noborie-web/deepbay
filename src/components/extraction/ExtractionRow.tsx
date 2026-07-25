@@ -10,18 +10,10 @@ interface Props {
   onViewResult: (id: string) => void
   onDelete?: (id: string) => void
   onEdit?: (id: string) => void
+  onList?: (id: string) => void
 }
 
-const STATUS_BADGE: Record<string, { label: string; variant: 'default' | 'success' | 'warning' | 'error' | 'info' }> = {
-  pending:    { label: '待機中', variant: 'default' },
-  processing: { label: '抽出中', variant: 'info' },
-  completed:  { label: '完了', variant: 'success' },
-  failed:     { label: '失敗', variant: 'error' },
-  excluded:   { label: '危険セラー除外', variant: 'warning' },
-}
-
-export default function ExtractionRow({ extraction, onViewResult, onDelete, onEdit }: Props) {
-  const status = STATUS_BADGE[extraction.status] ?? STATUS_BADGE.pending
+export default function ExtractionRow({ extraction, onViewResult, onDelete, onEdit, onList }: Props) {
   const isManual = !extraction.is_bulk
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -148,8 +140,13 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
           商品編集
         </button>
         <button
-          disabled
-          className="border rounded px-2.5 py-1 text-xs text-gray-400 cursor-not-allowed"
+          onClick={() => onList?.(extraction.id)}
+          disabled={extraction.status !== 'completed'}
+          className={`border rounded px-2.5 py-1 text-xs transition-colors ${
+            extraction.status === 'completed'
+              ? 'border-gray-400 text-gray-700 hover:bg-gray-50'
+              : 'text-gray-400 cursor-not-allowed'
+          }`}
         >
           出品
         </button>

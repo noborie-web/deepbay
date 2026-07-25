@@ -1,12 +1,13 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Search } from 'lucide-react'
 import ExtractionStats from '@/components/extraction/ExtractionStats'
 import ExtractionForm from '@/components/extraction/ExtractionForm'
 import ExtractionRow from '@/components/extraction/ExtractionRow'
 import ProductEditPanel from '@/components/extraction/ProductEditPanel'
+import ListingModal from '@/components/extraction/ListingModal'
 import type { SellerAccount, ListingCategory, BulkEditSetting, Extraction } from '@/types/database'
 
 interface Props {
@@ -30,7 +31,7 @@ export default function ExtractionPageClient({
   const [extractions, setExtractions] = useState(initialExtractions)
   const [error, setError] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [, startTransition] = useTransition()
+  const [listingId, setListingId] = useState<string | null>(null)
 
   const filtered = extractions.filter((e) => {
     if (!search) return true
@@ -159,6 +160,7 @@ export default function ExtractionPageClient({
               onViewResult={(id) => router.push(`/extraction/${id}`)}
               onDelete={(id) => setExtractions((prev) => prev.filter((e) => e.id !== id))}
               onEdit={(id) => setEditingId((prev) => prev === id ? null : id)}
+              onList={(id) => setListingId(id)}
             />
           ))
         )}
@@ -169,6 +171,14 @@ export default function ExtractionPageClient({
         <ProductEditPanel
           extractionId={editingId}
           onClose={() => setEditingId(null)}
+        />
+      )}
+
+      {listingId && (
+        <ListingModal
+          extraction={extractions.find((item) => item.id === listingId)!}
+          sellers={sellers}
+          onClose={() => setListingId(null)}
         />
       )}
     </div>
