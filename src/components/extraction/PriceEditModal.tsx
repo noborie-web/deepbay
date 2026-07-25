@@ -1,10 +1,48 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Product } from '@/types/database'
-import { calcProfit, validateProfitParams, isSafePriceUsd } from '@/lib/pricing'
+import {
+  calcProfit,
+  calcTieredProfit,
+  findTierProfitJpy,
+  isSafePriceUsd,
+  validateProfitParams,
+  validateProfitTiers,
+  validateTieredProfitParams,
+} from '@/lib/pricing'
+import type { ProfitTier } from '@/lib/pricing'
 
-type PriceMode = 'fixed' | 'rate' | 'profit'
+type PriceMode = 'fixed' | 'rate' | 'profit' | 'tiered'
+
+interface ProfitTierInput {
+  id: string
+  maxPurchaseJpy: string
+  profitJpy: string
+}
+
+const INITIAL_PROFIT_TIERS: ProfitTierInput[] = [
+  { id: 'tier-1', maxPurchaseJpy: '5000', profitJpy: '2000' },
+  { id: 'tier-2', maxPurchaseJpy: '10000', profitJpy: '3000' },
+  { id: 'tier-3', maxPurchaseJpy: '20000', profitJpy: '5000' },
+  { id: 'tier-4', maxPurchaseJpy: '50000', profitJpy: '10000' },
+  { id: 'tier-unlimited', maxPurchaseJpy: '', profitJpy: '15000' },
+]
+
+async function requestExchangeRate(): Promise<{ rate: number; date: string }> {
+  const response = await fetch('/api/exchange-rate')
+  const data: { rate?: unknown; date?: unknown } = await response.json()
+  if (
+    !response.ok
+    || typeof data.rate !== 'number'
+    || !isFinite(data.rate)
+    || data.rate <= 0
+    || typeof data.date !== 'string'
+  ) {
+    throw new Error('invalid exchange rate')
+  }
+  return { rate: data.rate, date: data.date }
+}
 
 interface Props {
   products: Product[]
@@ -30,13 +68,87 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
   const [targetProfitRate, setTargetProfitRate] = useState('0.2')
   const [shippingUsd, setShippingUsd] = useState('15')
   const [fixedCostUsd, setFixedCostUsd] = useState('0')
+  const [profitTiers, setProfitTiers] = useState<ProfitTierInput[]>(INITIAL_PROFIT_TIERS)
+  const [exchangeRateStatus, setExchangeRateStatus] = useState<'loading' | 'success' | 'error'>('loading')
+  const [exchangeRateDate, setExchangeRateDate] = useState('')
+  const [exchangeRateAdjusted, setExchangeRateAdjusted] = useState(false)
+  const exchangeRateEditedRef = useRef(false)
+  const nextTierIdRef = useRef(5)
+
+  async function loadExchangeRate(force: boolean) {
+    try {
+      const data = await requestExchangeRate()
+      if (force || !exchangeRateEditedRef.current) {
+        setJpyPerUsd(data.rate.toFixed(2))
+        exchangeRateEditedRef.current = false
+        setExchangeRateAdjusted(false)
+      }
+      setExchangeRateDate(data.date)
+      setExchangeRateStatus('success')
+    } catch {
+      setExchangeRateStatus('error')
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    requestExchangeRate()
+      .then((data) => {
+        if (cancelled) return
+        if (!exchangeRateEditedRef.current) {
+          setJpyPerUsd(data.rate.toFixed(2))
+          setExchangeRateAdjusted(false)
+        }
+        setExchangeRateDate(data.date)
+        setExchangeRateStatus('success')
+      })
+      .catch(() => {
+        if (!cancelled) setExchangeRateStatus('error')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  function updateExchangeRate(value: string) {
+    exchangeRateEditedRef.current = true
+    setExchangeRateAdjusted(true)
+    setJpyPerUsd(value)
+  }
+
+  function updateTier(id: string, field: 'maxPurchaseJpy' | 'profitJpy', value: string) {
+    setProfitTiers((current) => current.map((tier) => (
+      tier.id === id ? { ...tier, [field]: value } : tier
+    )))
+  }
+
+  function addTier() {
+    const id = `tier-${nextTierIdRef.current}`
+    nextTierIdRef.current += 1
+    setProfitTiers((current) => [
+      ...current.slice(0, -1),
+      { id, maxPurchaseJpy: '', profitJpy: '' },
+      current[current.length - 1],
+    ])
+  }
+
+  function removeTier(id: string) {
+    setProfitTiers((current) => current.filter((tier) => tier.id !== id))
+  }
+
+  const parsedProfitTiers: ProfitTier[] = profitTiers.map((tier, index) => ({
+    maxPurchaseJpy: index === profitTiers.length - 1
+      ? null
+      : parseFloat(tier.maxPurchaseJpy),
+    profitJpy: parseFloat(tier.profitJpy),
+  }))
 
   const targetProducts = scope === 'page'
     ? products.filter((p) => pagedIds.has(p.id))
     : products
 
-  // 倍率・利益計算モードでは仕入価格が必要
-  const needsPurchasePrice = mode === 'rate' || mode === 'profit'
+  // 倍率・利益計算・価格帯別利益額モードでは仕入価格が必要
+  const needsPurchasePrice = mode === 'rate' || mode === 'profit' || mode === 'tiered'
   const missingPurchaseProducts = needsPurchasePrice
     ? targetProducts.filter((p) => {
         const jpy = getPurchaseJpy(p)
@@ -64,7 +176,24 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
     fixedCostUsd: parseFloat(fixedCostUsd),
   }) : null
 
-  const applyDisabled = !!(fixedValidationError || rateValidationError || profitValidationError)
+  const tierValidationError = mode === 'tiered'
+    ? validateProfitTiers(parsedProfitTiers)
+      ?? validateTieredProfitParams({
+        purchasePriceJpy: 1000,
+        profitJpy: parsedProfitTiers[0]?.profitJpy ?? NaN,
+        jpyPerUsd: parseFloat(jpyPerUsd),
+        ebayFeeRate: parseFloat(ebayFeeRate),
+        shippingUsd: parseFloat(shippingUsd),
+        fixedCostUsd: parseFloat(fixedCostUsd),
+      })
+    : null
+
+  const applyDisabled = !!(
+    fixedValidationError
+    || rateValidationError
+    || profitValidationError
+    || tierValidationError
+  )
     || targetProducts.length === 0
     || missingCount > 0
 
@@ -80,6 +209,23 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
       if (!isFinite(rate) || rate <= 0) return null
       const price = Math.ceil(purchase * rate)
       return isSafePriceUsd(price) ? price : null
+    }
+    if (mode === 'tiered') {
+      const purchase = getPurchaseJpy(p)
+      if (purchase == null || !isFinite(purchase) || purchase <= 0) return null
+      const profitJpy = findTierProfitJpy(purchase, parsedProfitTiers)
+      if (profitJpy === null) return null
+      const params = {
+        purchasePriceJpy: purchase,
+        profitJpy,
+        jpyPerUsd: parseFloat(jpyPerUsd),
+        ebayFeeRate: parseFloat(ebayFeeRate),
+        shippingUsd: parseFloat(shippingUsd),
+        fixedCostUsd: parseFloat(fixedCostUsd),
+      }
+      if (validateTieredProfitParams(params)) return null
+      const { salePriceUsd } = calcTieredProfit(params)
+      return isSafePriceUsd(salePriceUsd) ? salePriceUsd : null
     }
     // profit mode
     const purchase = getPurchaseJpy(p)
@@ -98,11 +244,14 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
     return isSafePriceUsd(salePriceUsd) ? salePriceUsd : null
   }
 
-  const modeError = fixedValidationError ?? rateValidationError ?? profitValidationError
+  const modeError = fixedValidationError
+    ?? rateValidationError
+    ?? profitValidationError
+    ?? tierValidationError
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 flex flex-col max-h-[90vh]">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl mx-4 flex flex-col max-h-[90vh]">
         <div className="flex items-center justify-between px-5 py-4 border-b">
           <h2 className="font-semibold text-gray-900">価格一括編集</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none">&times;</button>
@@ -110,8 +259,13 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
 
         <div className="overflow-y-auto flex-1 p-5 space-y-5">
           {/* モード選択 */}
-          <div className="flex gap-4 border-b pb-4">
-            {([['fixed', '固定ドル価格'], ['rate', '仕入 × 倍率'], ['profit', '利益計算']] as [PriceMode, string][]).map(([m, label]) => (
+          <div className="flex flex-wrap gap-4 border-b pb-4">
+            {([
+              ['fixed', '固定ドル価格'],
+              ['rate', '仕入 × 倍率'],
+              ['profit', '利益計算'],
+              ['tiered', '価格帯別利益額'],
+            ] as [PriceMode, string][]).map(([m, label]) => (
               <label key={m} className="flex items-center gap-1.5 text-sm cursor-pointer">
                 <input type="radio" value={m} checked={mode === m} onChange={() => setMode(m)} />
                 {label}
@@ -151,25 +305,55 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
             </div>
           )}
 
-          {/* 利益計算モード */}
-          {mode === 'profit' && (
+          {/* 利益計算・価格帯別利益額モード */}
+          {(mode === 'profit' || mode === 'tiered') && (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-4">
                 <label className="block space-y-1">
                   <span className="text-xs text-gray-500">1ドルあたりの円レート</span>
-                  <input type="number" value={jpyPerUsd} onChange={(e) => setJpyPerUsd(e.target.value)} min="1" step="1"
+                  <input
+                    aria-label="1ドルあたりの円レート"
+                    type="number"
+                    value={jpyPerUsd}
+                    onChange={(e) => updateExchangeRate(e.target.value)}
+                    min="1"
+                    step="0.01"
                     className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                  <span className={`block text-[11px] ${
+                    exchangeRateStatus === 'error' ? 'text-amber-600' : 'text-gray-500'
+                  }`}>
+                    {exchangeRateStatus === 'loading' && '最新レートを取得中...'}
+                    {exchangeRateStatus === 'success' && (
+                      exchangeRateAdjusted
+                        ? `${exchangeRateDate}時点の取得値から手動調整中`
+                        : `${exchangeRateDate}時点の最新レートを自動取得`
+                    )}
+                    {exchangeRateStatus === 'error' && '自動取得できませんでした。手動入力値を使用します'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExchangeRateStatus('loading')
+                      void loadExchangeRate(true)
+                    }}
+                    disabled={exchangeRateStatus === 'loading'}
+                    className="text-[11px] text-blue-600 hover:underline disabled:opacity-50"
+                  >
+                    最新レートを再取得
+                  </button>
                 </label>
                 <label className="block space-y-1">
                   <span className="text-xs text-gray-500">eBay手数料率（例: 0.133 = 13.3%）</span>
                   <input type="number" value={ebayFeeRate} onChange={(e) => setEbayFeeRate(e.target.value)} min="0" max="0.99" step="0.001"
                     className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
                 </label>
-                <label className="block space-y-1">
-                  <span className="text-xs text-gray-500">目標利益率（例: 0.2 = 20%）</span>
-                  <input type="number" value={targetProfitRate} onChange={(e) => setTargetProfitRate(e.target.value)} min="0" max="0.99" step="0.001"
-                    className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
-                </label>
+                {mode === 'profit' && (
+                  <label className="block space-y-1">
+                    <span className="text-xs text-gray-500">目標利益率（例: 0.2 = 20%）</span>
+                    <input type="number" value={targetProfitRate} onChange={(e) => setTargetProfitRate(e.target.value)} min="0" max="0.99" step="0.001"
+                      className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                  </label>
+                )}
                 <label className="block space-y-1">
                   <span className="text-xs text-gray-500">海外送料（USD）</span>
                   <input type="number" value={shippingUsd} onChange={(e) => setShippingUsd(e.target.value)} min="0" step="0.5"
@@ -181,8 +365,77 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                     className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
                 </label>
               </div>
-              {profitValidationError && (
-                <p className="text-xs text-red-500">{profitValidationError}</p>
+
+              {mode === 'tiered' && (
+                <div className="border rounded-lg p-3 space-y-2 bg-gray-50">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-medium text-gray-700">仕入価格帯ごとの希望利益額</p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">
+                        手数料・送料・固定費を差し引いた後に残したい利益を円で設定します。
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={addTier}
+                      className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 shrink-0"
+                    >
+                      ＋価格帯を追加
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-[1fr_1fr_32px] gap-2 px-1 text-[11px] text-gray-500">
+                    <span>仕入価格の上限（円）</span>
+                    <span>希望利益額（円）</span>
+                    <span />
+                  </div>
+                  {profitTiers.map((tier, index) => {
+                    const isLast = index === profitTiers.length - 1
+                    return (
+                      <div key={tier.id} className="grid grid-cols-[1fr_1fr_32px] gap-2 items-center">
+                        {isLast ? (
+                          <div className="border rounded px-3 py-1.5 text-sm bg-white text-gray-500">上限なし</div>
+                        ) : (
+                          <input
+                            aria-label={`仕入上限 ${index + 1}`}
+                            type="number"
+                            min="1"
+                            step="100"
+                            value={tier.maxPurchaseJpy}
+                            onChange={(event) => updateTier(tier.id, 'maxPurchaseJpy', event.target.value)}
+                            placeholder="例: 10000"
+                            className="border rounded px-3 py-1.5 text-sm"
+                          />
+                        )}
+                        <input
+                          aria-label={`希望利益額 ${index + 1}`}
+                          type="number"
+                          min="0"
+                          step="100"
+                          value={tier.profitJpy}
+                          onChange={(event) => updateTier(tier.id, 'profitJpy', event.target.value)}
+                          placeholder="例: 3000"
+                          className="border rounded px-3 py-1.5 text-sm"
+                        />
+                        {!isLast && profitTiers.length > 2 ? (
+                          <button
+                            type="button"
+                            aria-label={`価格帯${index + 1}を削除`}
+                            onClick={() => removeTier(tier.id)}
+                            className="text-gray-400 hover:text-red-500 text-lg"
+                          >
+                            ×
+                          </button>
+                        ) : <span />}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              {(profitValidationError || tierValidationError) && (
+                <p className="text-xs text-red-500">
+                  {profitValidationError ?? tierValidationError}
+                </p>
               )}
             </div>
           )}
@@ -200,7 +453,7 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
             </label>
           </div>
 
-          {/* 仕入価格未設定の警告（倍率・利益計算モード） */}
+          {/* 仕入価格未設定の警告 */}
           {needsPurchasePrice && targetProducts.length > 0 && (
             <div className="text-xs space-y-0.5">
               <p className="text-gray-600">適用可能: <span className="font-medium text-blue-600">{applicableCount}件</span></p>
@@ -231,6 +484,23 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                     if (!validateProfitParams(params)) {
                       const r = calcProfit(params)
                       profitLine = ` / 利益 $${r.profitUsd.toFixed(2)}`
+                    }
+                  }
+                  if (mode === 'tiered' && jpy != null) {
+                    const profitJpy = findTierProfitJpy(jpy, parsedProfitTiers)
+                    if (profitJpy !== null) {
+                      const params = {
+                        purchasePriceJpy: jpy,
+                        profitJpy,
+                        jpyPerUsd: parseFloat(jpyPerUsd),
+                        ebayFeeRate: parseFloat(ebayFeeRate),
+                        shippingUsd: parseFloat(shippingUsd),
+                        fixedCostUsd: parseFloat(fixedCostUsd),
+                      }
+                      if (!validateTieredProfitParams(params)) {
+                        const result = calcTieredProfit(params)
+                        profitLine = ` / 利益 $${result.profitUsd.toFixed(2)}（目標 ¥${profitJpy.toLocaleString()}）`
+                      }
                     }
                   }
                   return (

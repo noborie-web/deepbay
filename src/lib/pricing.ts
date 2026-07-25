@@ -13,6 +13,20 @@ export interface ProfitCalcResult {
   profitUsd: number
 }
 
+export interface ProfitTier {
+  maxPurchaseJpy: number | null
+  profitJpy: number
+}
+
+export interface TieredProfitCalcParams {
+  purchasePriceJpy: number
+  profitJpy: number
+  jpyPerUsd: number
+  ebayFeeRate: number
+  shippingUsd: number
+  fixedCostUsd: number
+}
+
 export function validateProfitParams(p: ProfitCalcParams): string | null {
   if (!isFinite(p.purchasePriceJpy) || p.purchasePriceJpy <= 0) return '仕入価格は0より大きい値を入力してください'
   if (!isFinite(p.jpyPerUsd) || p.jpyPerUsd <= 0) return '為替レートは0より大きい値を入力してください'
@@ -31,6 +45,71 @@ export function calcProfit(p: ProfitCalcParams): ProfitCalcResult {
     (1 - p.ebayFeeRate - p.targetProfitRate),
   )
   const profitUsd = salePriceUsd * (1 - p.ebayFeeRate) - costUsd - p.shippingUsd - p.fixedCostUsd
+  return { salePriceUsd, costUsd, profitUsd }
+}
+
+export function validateProfitTiers(tiers: ProfitTier[]): string | null {
+  if (tiers.length === 0) return '価格帯を1件以上設定してください'
+
+  let previousMax = 0
+  for (let index = 0; index < tiers.length; index += 1) {
+    const tier = tiers[index]
+    const isLast = index === tiers.length - 1
+
+    if (!isFinite(tier.profitJpy) || tier.profitJpy < 0) {
+      return `${index + 1}段目の利益額は0以上にしてください`
+    }
+    if (isLast) {
+      if (tier.maxPurchaseJpy !== null) return '最後の価格帯は「上限なし」にしてください'
+      continue
+    }
+    if (
+      tier.maxPurchaseJpy === null
+      || !isFinite(tier.maxPurchaseJpy)
+      || tier.maxPurchaseJpy <= previousMax
+    ) {
+      return '仕入上限は小さい順に、0より大きい金額を入力してください'
+    }
+    previousMax = tier.maxPurchaseJpy
+  }
+  return null
+}
+
+export function findTierProfitJpy(
+  purchasePriceJpy: number,
+  tiers: ProfitTier[],
+): number | null {
+  if (validateProfitTiers(tiers)) return null
+  const tier = tiers.find((candidate) => (
+    candidate.maxPurchaseJpy === null
+    || purchasePriceJpy <= candidate.maxPurchaseJpy
+  ))
+  return tier?.profitJpy ?? null
+}
+
+export function validateTieredProfitParams(p: TieredProfitCalcParams): string | null {
+  if (!isFinite(p.purchasePriceJpy) || p.purchasePriceJpy <= 0) return '仕入価格は0より大きい値を入力してください'
+  if (!isFinite(p.profitJpy) || p.profitJpy < 0) return '利益額は0以上にしてください'
+  if (!isFinite(p.jpyPerUsd) || p.jpyPerUsd <= 0) return '為替レートは0より大きい値を入力してください'
+  if (!isFinite(p.ebayFeeRate) || p.ebayFeeRate < 0 || p.ebayFeeRate >= 1) {
+    return 'eBay手数料率は0以上100%未満にしてください'
+  }
+  if (!isFinite(p.shippingUsd) || p.shippingUsd < 0) return '海外送料は0以上にしてください'
+  if (!isFinite(p.fixedCostUsd) || p.fixedCostUsd < 0) return '固定費は0以上にしてください'
+  return null
+}
+
+export function calcTieredProfit(p: TieredProfitCalcParams): ProfitCalcResult {
+  const costUsd = p.purchasePriceJpy / p.jpyPerUsd
+  const targetProfitUsd = p.profitJpy / p.jpyPerUsd
+  const salePriceUsd = Math.ceil(
+    (costUsd + targetProfitUsd + p.shippingUsd + p.fixedCostUsd)
+    / (1 - p.ebayFeeRate),
+  )
+  const profitUsd = salePriceUsd * (1 - p.ebayFeeRate)
+    - costUsd
+    - p.shippingUsd
+    - p.fixedCostUsd
   return { salePriceUsd, costUsd, profitUsd }
 }
 

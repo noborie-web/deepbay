@@ -813,6 +813,10 @@ describe('ProductEditPanel: 画像枚数編集', () => {
 
 describe('PriceEditModal: 仕入価格未設定の処理', () => {
   it('倍率モードで仕入価格未設定商品があれば適用ボタンが無効', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ rate: 163.64, date: '2026-07-25' }),
+    })
     const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
     const products = [makeProduct('p1', { purchase_price_jpy: null, original_price: null })]
     const pagedIds = new Set(['p1'])
@@ -839,6 +843,10 @@ describe('PriceEditModal: 仕入価格未設定の処理', () => {
   })
 
   it('固定価格モードは仕入価格不要で適用できる', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ rate: 163.64, date: '2026-07-25' }),
+    })
     const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
     const products = [makeProduct('p1', { purchase_price_jpy: null, original_price: null })]
     const pagedIds = new Set(['p1'])
@@ -861,5 +869,87 @@ describe('PriceEditModal: 仕入価格未設定の処理', () => {
     await act(async () => { await userEvent.type(priceInput, '29.99') })
 
     expect(screen.getByRole('button', { name: /適用/ })).not.toBeDisabled()
+  })
+})
+
+describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
+  it('最新のUSD/JPYを自動取得し、手動調整もできる', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ rate: 163.64, date: '2026-07-25' }),
+    })
+    const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
+    const product = makeProduct('p1', { purchase_price_jpy: 6000 })
+
+    render(
+      <PriceEditModal
+        products={[product]}
+        pagedIds={new Set(['p1'])}
+        getPurchaseJpy={() => 6000}
+        onApply={vi.fn()}
+        onClose={vi.fn()}
+      />
+    )
+
+    const exchangeInput = await screen.findByRole('spinbutton', { name: '1ドルあたりの円レート' })
+    await waitFor(() => expect(exchangeInput).toHaveValue(163.64))
+    expect(screen.getByText(/2026-07-25時点の最新レートを自動取得/)).toBeTruthy()
+
+    await userEvent.clear(exchangeInput)
+    await userEvent.type(exchangeInput, '160')
+    expect(exchangeInput).toHaveValue(160)
+    expect(screen.getByText(/取得値から手動調整中/)).toBeTruthy()
+  })
+
+  it('価格帯に対応する利益額で販売価格を計算して適用する', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ rate: 150, date: '2026-07-25' }),
+    })
+    const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
+    const product = makeProduct('p1', { purchase_price_jpy: 6000 })
+    const onApply = vi.fn()
+
+    render(
+      <PriceEditModal
+        products={[product]}
+        pagedIds={new Set(['p1'])}
+        getPurchaseJpy={() => 6000}
+        onApply={onApply}
+        onClose={vi.fn()}
+      />
+    )
+
+    await userEvent.click(screen.getByLabelText('価格帯別利益額'))
+    await waitFor(() => expect(screen.getByText(/目標 ¥3,000/)).toBeTruthy())
+    await userEvent.click(screen.getByRole('button', { name: /適用/ }))
+
+    expect(onApply).toHaveBeenCalledTimes(1)
+    const getPrice = onApply.mock.calls[0][0] as (target: typeof product) => number | null
+    expect(getPrice(product)).toBe(87)
+  })
+
+  it('為替取得に失敗しても手動入力用の初期値を維持する', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({ error: 'failed' }),
+    })
+    const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
+    const product = makeProduct('p1', { purchase_price_jpy: 6000 })
+
+    render(
+      <PriceEditModal
+        products={[product]}
+        pagedIds={new Set(['p1'])}
+        getPurchaseJpy={() => 6000}
+        onApply={vi.fn()}
+        onClose={vi.fn()}
+      />
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText(/自動取得できませんでした/)).toBeTruthy()
+    })
+    expect(screen.getByRole('spinbutton', { name: '1ドルあたりの円レート' })).toHaveValue(150)
   })
 })
