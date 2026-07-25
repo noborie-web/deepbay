@@ -83,6 +83,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
     && products.length > 0
     && !sellerMismatch
     && sellerReady
+    && policiesReady
     && !downloading
 
   async function downloadCsv(kind: 'listing' | 'specifics') {
@@ -95,11 +96,9 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
         sellerId,
       })
       if (sellerAccountId) params.set('sellerAccountId', sellerAccountId)
-      if (kind === 'listing') {
-        params.set('shippingProfile', shippingProfile.trim())
-        params.set('paymentProfile', paymentProfile.trim())
-        params.set('returnProfile', returnProfile.trim())
-      }
+      params.set('shippingProfile', shippingProfile.trim())
+      params.set('paymentProfile', paymentProfile.trim())
+      params.set('returnProfile', returnProfile.trim())
       const path = kind === 'listing' ? '/api/csv' : '/api/csv/specifics'
       const response = await fetch(`${path}?${params.toString()}`)
       if (!response.ok) {

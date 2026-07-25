@@ -4,6 +4,7 @@ import {
   generateSpecificsCsv,
   getListingIssues,
   productCustomLabel,
+  specificsInFilename,
 } from '@/lib/listing-export'
 import type { Product } from '@/types/database'
 
@@ -64,11 +65,34 @@ describe('listing export', () => {
     expect(csv).toContain(',Tamiya,Plastic')
   })
 
-  it('Specifics CSVは商品ID由来の安定したCustomLabelを使う', () => {
+  it('Specifics-IN CSVは添付互換の出品列と日本語元データ列を持つ', () => {
     const product = makeProduct()
-    const csv = generateSpecificsCsv([product], '139973')
+    const csv = generateSpecificsCsv([product], OPTIONS)
+    const header = csv.split('\r\n')[0]
     expect(csv).toContain(productCustomLabel(product))
-    expect(csv).toContain('CustomLabel,Title,Category,C:Brand,C:Material')
+    expect(header).toContain('Action(CC=Cp1252),CustomLabel,StartPrice,ConditionID,Title,Description,C:Brand,PicURL,UPC,Category')
+    expect(header).toContain('C:Country,jp_desc,jp_title,jp_spec,C:Material')
+    expect(csv).toContain(',Original description,Original title,')
+    expect(csv).toContain(',eBay Payments,Returns Accepted,Japan Shipping,')
+  })
+
+  it('Specifics-IN CSVは空のSpecifics値をNAとして出力する', () => {
+    const csv = generateSpecificsCsv([
+      makeProduct({ ebay_item_specifics: { Material: ['Plastic'] } }),
+      makeProduct({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        ebay_item_specifics: {},
+      }),
+    ], OPTIONS)
+    expect(csv.split('\r\n')[2]).toContain(',NA')
+  })
+
+  it('Specifics-IN互換のファイル名を生成する', () => {
+    expect(specificsInFilename(
+      'miyabi-24',
+      '139973',
+      '4ad735a4-bb62-4343-81ab-d4189474eb0e',
+    )).toBe('miyabi-24_139973_4ad735a4_bb62_4343_81ab_d4189474eb0e.csv')
   })
 
   it('出品に必要なタイトル・価格・画像・カテゴリの不足を返す', () => {

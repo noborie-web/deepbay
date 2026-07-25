@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { generateSpecificsCsv, listingFilename } from '@/lib/listing-export'
+import { generateSpecificsCsv, specificsInFilename } from '@/lib/listing-export'
 import type { Product } from '@/types/database'
 
 export async function GET(req: NextRequest) {
@@ -12,8 +12,14 @@ export async function GET(req: NextRequest) {
   const extractionId = searchParams.get('extractionId')?.trim()
   const sellerAccountId = searchParams.get('sellerAccountId')?.trim()
   const requestedSellerId = searchParams.get('sellerId')?.trim()
+  const paymentProfile = searchParams.get('paymentProfile')?.trim() ?? ''
+  const returnProfile = searchParams.get('returnProfile')?.trim() ?? ''
+  const shippingProfile = searchParams.get('shippingProfile')?.trim() ?? ''
   if (!extractionId || (!sellerAccountId && !requestedSellerId)) {
     return NextResponse.json({ error: '抽出IDと出品セラーIDが必要です' }, { status: 400 })
+  }
+  if (!paymentProfile || !returnProfile || !shippingProfile) {
+    return NextResponse.json({ error: '配送・支払・返品ポリシーをすべて入力してください' }, { status: 400 })
   }
 
   const { data: extractionData } = await supabase
@@ -59,11 +65,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: '商品が見つかりません' }, { status: 404 })
   }
 
-  const csv = generateSpecificsCsv(products as Product[], extraction.category?.ebay_category_id ?? null)
+  const csv = generateSpecificsCsv(products as Product[], {
+    categoryId: extraction.category?.ebay_category_id ?? null,
+    sellerId: seller.seller_id,
+    paymentProfileName: paymentProfile,
+    returnProfileName: returnProfile,
+    shippingProfileName: shippingProfile,
+  })
   return new NextResponse(csv, {
     headers: {
       'Content-Type': 'text/csv; charset=utf-8',
-      'Content-Disposition': `attachment; filename="${listingFilename(seller.seller_id, 'specifics')}"`,
+      'Content-Disposition': `attachment; filename="${specificsInFilename(
+        seller.seller_id,
+        extraction.category?.ebay_category_id ?? null,
+        extractionId,
+      )}"`,
     },
   })
 }
