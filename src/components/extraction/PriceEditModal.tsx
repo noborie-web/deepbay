@@ -122,14 +122,21 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
     )))
   }
 
-  function addTier() {
+  function insertTierAfter(index: number) {
     const id = `tier-${nextTierIdRef.current}`
     nextTierIdRef.current += 1
-    setProfitTiers((current) => [
-      ...current.slice(0, -1),
-      { id, maxPurchaseJpy: '', profitJpy: '' },
-      current[current.length - 1],
-    ])
+    setProfitTiers((current) => {
+      const insertAt = Math.min(index + 1, current.length - 1)
+      return [
+        ...current.slice(0, insertAt),
+        { id, maxPurchaseJpy: '', profitJpy: '' },
+        ...current.slice(insertAt),
+      ]
+    })
+  }
+
+  function addTier() {
+    insertTierAfter(profitTiers.length - 2)
   }
 
   function removeTier(id: string) {
@@ -380,18 +387,18 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                       onClick={addTier}
                       className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 shrink-0"
                     >
-                      ＋価格帯を追加
+                      ＋末尾に行を追加
                     </button>
                   </div>
-                  <div className="grid grid-cols-[1fr_1fr_32px] gap-2 px-1 text-[11px] text-gray-500">
+                  <div className="grid grid-cols-[1fr_1fr_72px] gap-2 px-1 text-[11px] text-gray-500">
                     <span>仕入価格の上限（円）</span>
                     <span>希望利益額（円）</span>
-                    <span />
+                    <span className="text-center">行操作</span>
                   </div>
                   {profitTiers.map((tier, index) => {
                     const isLast = index === profitTiers.length - 1
                     return (
-                      <div key={tier.id} className="grid grid-cols-[1fr_1fr_32px] gap-2 items-center">
+                      <div key={tier.id} className="grid grid-cols-[1fr_1fr_72px] gap-2 items-center">
                         {isLast ? (
                           <div className="border rounded px-3 py-1.5 text-sm bg-white text-gray-500">上限なし</div>
                         ) : (
@@ -416,16 +423,30 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                           placeholder="例: 3000"
                           className="border rounded px-3 py-1.5 text-sm"
                         />
-                        {!isLast && profitTiers.length > 2 ? (
-                          <button
-                            type="button"
-                            aria-label={`価格帯${index + 1}を削除`}
-                            onClick={() => removeTier(tier.id)}
-                            className="text-gray-400 hover:text-red-500 text-lg"
-                          >
-                            ×
-                          </button>
-                        ) : <span />}
+                        <div className="flex items-center justify-center gap-1">
+                          {!isLast && (
+                            <button
+                              type="button"
+                              aria-label={`価格帯${index + 1}の下に行を追加`}
+                              title="この下に行を追加"
+                              onClick={() => insertTierAfter(index)}
+                              className="w-7 h-7 border border-blue-400 text-blue-600 rounded hover:bg-blue-50 text-base leading-none"
+                            >
+                              ＋
+                            </button>
+                          )}
+                          {!isLast && profitTiers.length > 2 ? (
+                            <button
+                              type="button"
+                              aria-label={`価格帯${index + 1}を削除`}
+                              title="この行を削除"
+                              onClick={() => removeTier(tier.id)}
+                              className="w-7 h-7 text-gray-400 hover:text-red-500 text-lg leading-none"
+                            >
+                              ×
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
                     )
                   })}
