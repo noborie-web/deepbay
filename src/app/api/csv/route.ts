@@ -15,42 +15,46 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const extractionId = searchParams.get('extractionId')?.trim()
   const sellerAccountId = searchParams.get('sellerAccountId')?.trim()
+  const requestedSellerId = searchParams.get('sellerId')?.trim()
   const paymentProfile = searchParams.get('paymentProfile')?.trim() ?? ''
   const returnProfile = searchParams.get('returnProfile')?.trim() ?? ''
   const shippingProfile = searchParams.get('shippingProfile')?.trim() ?? ''
 
-  if (!extractionId || !sellerAccountId) {
-    return NextResponse.json({ error: '抽出IDと出品セラーが必要です' }, { status: 400 })
+  if (!extractionId || (!sellerAccountId && !requestedSellerId)) {
+    return NextResponse.json({ error: '抽出IDと出品セラーIDが必要です' }, { status: 400 })
   }
   if (!paymentProfile || !returnProfile || !shippingProfile) {
     return NextResponse.json({ error: '配送・支払・返品ポリシーをすべて入力してください' }, { status: 400 })
   }
 
-  const [{ data: extractionData }, { data: sellerData }] = await Promise.all([
-    supabase
-      .from('extractions')
-      .select('id, seller_account_id, category:listing_categories(ebay_category_id)')
-      .eq('id', extractionId)
-      .eq('user_id', user.id)
-      .single(),
-    supabase
+  const { data: extractionData } = await supabase
+    .from('extractions')
+    .select('id, seller_account_id, category:listing_categories(ebay_category_id)')
+    .eq('id', extractionId)
+    .eq('user_id', user.id)
+    .single()
+  const { data: sellerData } = sellerAccountId
+    ? await supabase
       .from('seller_accounts')
       .select('id, seller_id')
       .eq('id', sellerAccountId)
       .eq('user_id', user.id)
-      .single(),
-  ])
+      .single()
+    : { data: null }
   const extraction = extractionData as unknown as {
     id: string
     seller_account_id: string | null
     category: { ebay_category_id: string | null } | null
   } | null
-  const seller = sellerData as unknown as { id: string; seller_id: string } | null
+  const registeredSeller = sellerData as unknown as { id: string; seller_id: string } | null
+  const seller = registeredSeller ?? (
+    requestedSellerId ? { id: '', seller_id: requestedSellerId } : null
+  )
 
   if (!extraction || !seller) {
     return NextResponse.json({ error: '抽出または出品セラーが見つかりません' }, { status: 404 })
   }
-  if (extraction.seller_account_id !== seller.id) {
+  if (extraction.seller_account_id && extraction.seller_account_id !== seller.id) {
     return NextResponse.json(
       { error: '抽出時に選択したセラーと同じ出品セラーを選択してください' },
       { status: 422 },

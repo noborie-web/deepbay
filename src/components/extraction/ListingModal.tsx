@@ -29,6 +29,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
     ?? sellers[0]?.id
     ?? ''
   const [sellerAccountId, setSellerAccountId] = useState(initialSellerId)
+  const [manualSellerId, setManualSellerId] = useState(extraction.seller_account?.seller_id ?? '')
   const [shippingProfile, setShippingProfile] = useState(DEFAULT_POLICIES.shipping)
   const [paymentProfile, setPaymentProfile] = useState(DEFAULT_POLICIES.payment)
   const [returnProfile, setReturnProfile] = useState(DEFAULT_POLICIES.returns)
@@ -65,6 +66,9 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
   const sellerMismatch = Boolean(
     extraction.seller_account_id && sellerAccountId !== extraction.seller_account_id,
   )
+  const selectedSeller = sellers.find((seller) => seller.id === sellerAccountId)
+  const sellerId = selectedSeller?.seller_id ?? manualSellerId.trim()
+  const sellerReady = Boolean(sellerId)
   const policiesReady = Boolean(
     shippingProfile.trim() && paymentProfile.trim() && returnProfile.trim(),
   )
@@ -72,11 +76,13 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
     && products.length > 0
     && invalidProducts.length === 0
     && !sellerMismatch
+    && sellerReady
     && policiesReady
     && !downloading
   const canDownloadSpecifics = !loadingProducts
     && products.length > 0
     && !sellerMismatch
+    && sellerReady
     && !downloading
 
   async function downloadCsv(kind: 'listing' | 'specifics') {
@@ -86,8 +92,9 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
     try {
       const params = new URLSearchParams({
         extractionId: extraction.id,
-        sellerAccountId,
+        sellerId,
       })
+      if (sellerAccountId) params.set('sellerAccountId', sellerAccountId)
       if (kind === 'listing') {
         params.set('shippingProfile', shippingProfile.trim())
         params.set('paymentProfile', paymentProfile.trim())
@@ -146,21 +153,37 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
             </p>
           </div>
 
-          <label className="block">
-            <span className="text-sm text-gray-500">出品セラー</span>
-            <select
-              aria-label="出品セラー"
-              value={sellerAccountId}
-              onChange={(event) => setSellerAccountId(event.target.value)}
-              className="mt-1 w-full border rounded-lg px-3 py-3"
-            >
-              {sellers.map((seller) => (
-                <option key={seller.id} value={seller.id}>
-                  {seller.display_name || seller.seller_id}
-                </option>
-              ))}
-            </select>
-          </label>
+          {sellers.length > 0 ? (
+            <label className="block">
+              <span className="text-sm text-gray-500">出品セラー</span>
+              <select
+                aria-label="出品セラー"
+                value={sellerAccountId}
+                onChange={(event) => setSellerAccountId(event.target.value)}
+                className="mt-1 w-full border rounded-lg px-3 py-3"
+              >
+                {sellers.map((seller) => (
+                  <option key={seller.id} value={seller.id}>
+                    {seller.display_name || seller.seller_id}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <label className="block">
+              <span className="text-sm text-gray-500">eBayセラーID</span>
+              <input
+                aria-label="eBayセラーID"
+                value={manualSellerId}
+                onChange={(event) => setManualSellerId(event.target.value)}
+                placeholder="例: miyabi-24"
+                className="mt-1 w-full border rounded-lg px-3 py-3"
+              />
+              <span className="text-xs text-amber-600">
+                登録済みセラーがないため手入力です。CSVをアップロードするeBayアカウントと一致させてください。
+              </span>
+            </label>
+          )}
 
           <label className="block">
             <span className="text-sm text-gray-500">出品ポリシー選択方法</span>
@@ -221,6 +244,9 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
             )}
             {sellerMismatch && (
               <p className="text-xs text-red-600 mt-2">抽出時に選択した出品セラーへ戻してください。</p>
+            )}
+            {!sellerReady && (
+              <p className="text-xs text-red-600 mt-2">eBayセラーIDを入力してください。</p>
             )}
           </section>
 

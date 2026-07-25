@@ -129,4 +129,14 @@ describe('ListingModal', () => {
     expect(screen.getByRole('button', { name: 'CSV出品' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'SPECIFICS用CSV出力' })).toBeEnabled()
   })
+
+  it('登録セラーがない場合はセラーID入力までCSV出力を無効化する', async () => {
+    render(<ListingModal extraction={{ ...extraction, seller_account_id: null, seller_account: undefined }} sellers={[]} onClose={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('対象商品:')).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'CSV出品' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'SPECIFICS用CSV出力' })).toBeDisabled()
+    await userEvent.type(screen.getByRole('textbox', { name: 'eBayセラーID' }), 'miyabi-24')
+    expect(screen.getByRole('button', { name: 'CSV出品' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'SPECIFICS用CSV出力' })).toBeEnabled()
+  })
 })
