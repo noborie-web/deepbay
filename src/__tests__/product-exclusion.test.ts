@@ -25,6 +25,7 @@ function makeProduct(id: string, overrides: Partial<Product> = {}): Product {
     ebay_price: null,
     ebay_description: null,
     ebay_images: [],
+    ebay_item_specifics: {},
     ebay_condition: null,
     ebay_category_id: null,
     listing_status: 'draft',

@@ -13,6 +13,12 @@ import DescriptionEditModal, { applyDescriptionOp, DESCRIPTION_MAX_LENGTH } from
 import type { DescriptionEditOp, DescriptionEditScope } from './DescriptionEditModal'
 import ImageCountEditModal, { limitImages } from './ImageCountEditModal'
 import type { ImageCountEditScope } from './ImageCountEditModal'
+import ItemSpecificsEditModal, { mergeItemSpecifics } from './ItemSpecificsEditModal'
+import type {
+  ItemSpecifics,
+  ItemSpecificsEditMode,
+  ItemSpecificsEditScope,
+} from './ItemSpecificsEditModal'
 import {
   findPriceTypeProductIds,
   findVeroProductIds,
@@ -95,6 +101,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [brandModalOpen, setBrandModalOpen] = useState(false)
   const [descriptionModalOpen, setDescriptionModalOpen] = useState(false)
   const [imageCountModalOpen, setImageCountModalOpen] = useState(false)
+  const [itemSpecificsModalOpen, setItemSpecificsModalOpen] = useState(false)
   const [priceModalOpen, setPriceModalOpen] = useState(false)
   const [conditionModalOpen, setConditionModalOpen] = useState(false)
 
@@ -372,6 +379,22 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     })
   }
 
+  // ---- 一括アイテムスペシフィック編集 ----
+  function applyItemSpecificsEdit(
+    specifics: ItemSpecifics,
+    mode: ItemSpecificsEditMode,
+    scope: ItemSpecificsEditScope,
+  ) {
+    const targets = scope === 'page' ? pagedProducts : products
+    targets.forEach((product) => {
+      updateEdit(
+        product.id,
+        'ebay_item_specifics',
+        mode === 'clear' ? {} : mergeItemSpecifics(getItemSpecifics(product), specifics),
+      )
+    })
+  }
+
   // ---- 一括価格編集 ----
   function applyPriceEdit(getPriceUsd: (p: Product) => number | null, scope: 'page' | 'all') {
     const targets = scope === 'page' ? pagedProducts : products
@@ -402,6 +425,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         if (fields.ebay_brand !== undefined) out.ebay_brand = fields.ebay_brand
         if (fields.ebay_description !== undefined) out.ebay_description = fields.ebay_description
         if (fields.ebay_images !== undefined) out.ebay_images = fields.ebay_images
+        if (fields.ebay_item_specifics !== undefined) out.ebay_item_specifics = fields.ebay_item_specifics
         // null = 明示的クリア; 保存ボタンは不正価格がある間は無効なので、ここに届くのは null か正の有限数のみ
         if (fields.ebay_price !== undefined) out.ebay_price = fields.ebay_price
         if (fields.ebay_condition !== undefined) out.ebay_condition = fields.ebay_condition
@@ -476,6 +500,10 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     edits[p.id]?.ebay_images !== undefined
       ? (edits[p.id].ebay_images as string[])
       : (p.ebay_images?.length ? p.ebay_images : (p.original_images ?? []))
+  const getItemSpecifics = (p: Product): ItemSpecifics =>
+    edits[p.id]?.ebay_item_specifics !== undefined
+      ? (edits[p.id].ebay_item_specifics as ItemSpecifics)
+      : (p.ebay_item_specifics ?? {})
   const getPrice = (p: Product): number | null =>
     edits[p.id]?.ebay_price !== undefined ? (edits[p.id].ebay_price as number | null) : p.ebay_price
 
@@ -894,10 +922,17 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <button onClick={() => setPriceModalOpen(true)}
                     className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50">編集</button>
                 </div>
-                {/* アイテムスペシフィック — Phase 2 */}
+                {/* アイテムスペシフィック — Phase 6 */}
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-gray-400">アイテムスペシフィック</span>
-                  <button disabled className="border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-300 cursor-not-allowed">準備中</button>
+                  <span className="text-sm text-gray-700">アイテムスペシフィック</span>
+                  <button
+                    type="button"
+                    aria-label="アイテムスペシフィックを編集"
+                    onClick={() => setItemSpecificsModalOpen(true)}
+                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50"
+                  >
+                    編集
+                  </button>
                 </div>
               </div>
               <div className="mt-4 flex items-center justify-end gap-3">
@@ -1189,6 +1224,15 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           getImages={getImages}
           onApply={applyImageCountEdit}
           onClose={() => setImageCountModalOpen(false)}
+        />
+      )}
+      {itemSpecificsModalOpen && (
+        <ItemSpecificsEditModal
+          products={products}
+          pagedIds={pagedIds}
+          getItemSpecifics={getItemSpecifics}
+          onApply={applyItemSpecificsEdit}
+          onClose={() => setItemSpecificsModalOpen(false)}
         />
       )}
       {priceModalOpen && (

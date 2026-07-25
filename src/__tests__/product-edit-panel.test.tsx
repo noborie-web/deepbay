@@ -55,6 +55,7 @@ function makeProduct(id: string, overrides: Record<string, unknown> = {}) {
     ebay_price: null,
     ebay_description: null,
     ebay_images: [],
+    ebay_item_specifics: {},
     ebay_condition: '中古',
     ebay_category_id: null,
     listing_status: 'draft' as const,
@@ -128,6 +129,45 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ productId: 'p2' })
     await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p2')).toBeNull())
     expect(screen.getByDisplayValue('eBay Title p1')).toBeTruthy()
+  })
+})
+
+describe('ProductEditPanel: アイテムスペシフィック編集', () => {
+  it('項目を一括適用してBulk APIへ保存する', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1', {
+          ebay_item_specifics: { Brand: ['Tamiya'] },
+        })],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, succeeded: ['p1'], failed: [] }),
+      })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^編集$/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'アイテムスペシフィックを編集' }))
+    await userEvent.type(screen.getByRole('textbox', { name: '項目名' }), 'Material')
+    await userEvent.type(screen.getByRole('textbox', { name: '項目値' }), 'Plastic, Metal')
+    await userEvent.click(screen.getByRole('button', { name: '適用（1件）' }))
+    await userEvent.click(screen.getByRole('button', { name: /編集保存/ }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const body = JSON.parse(fetchMock.mock.calls[1][1].body)
+    expect(body).toEqual({
+      updates: [{
+        productId: 'p1',
+        ebay_item_specifics: {
+          Brand: ['Tamiya'],
+          Material: ['Plastic', 'Metal'],
+        },
+      }],
+    })
   })
 })
 

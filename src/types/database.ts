@@ -86,6 +86,7 @@ export interface Product {
   ebay_price: number | null
   ebay_description: string | null
   ebay_images: string[]
+  ebay_item_specifics: Record<string, string[]>
   ebay_condition: string | null
   ebay_category_id: string | null
   listing_status: ListingStatus
