@@ -106,7 +106,7 @@ describe('ListingModal', () => {
     await waitFor(() => expect(screen.getByText('対象商品:')).toBeTruthy())
     expect(screen.getByText('出品必須項目未設定:').parentElement).toHaveTextContent('0件')
     expect(screen.getByRole('button', { name: 'CSV出品' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'SPECIFICS用CSV出力' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'SPECIFICS-IN 45列CSV出力' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'ダイレクト出品（準備中）' })).toBeDisabled()
   })
 
@@ -116,7 +116,7 @@ describe('ListingModal', () => {
     await userEvent.selectOptions(screen.getByRole('combobox', { name: '出品セラー' }), 'seller-2')
     expect(screen.getByText('抽出時に選択した出品セラーへ戻してください。')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'CSV出品' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'SPECIFICS用CSV出力' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'SPECIFICS-IN 45列CSV出力' })).toBeDisabled()
   })
 
   it('必須項目未設定の商品があれば出品CSVだけを無効化する', async () => {
@@ -127,16 +127,16 @@ describe('ListingModal', () => {
     render(<ListingModal extraction={extraction} sellers={sellers} onClose={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('出品必須項目未設定:').parentElement).toHaveTextContent('1件'))
     expect(screen.getByRole('button', { name: 'CSV出品' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'SPECIFICS用CSV出力' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'SPECIFICS-IN 45列CSV出力' })).toBeEnabled()
   })
 
   it('登録セラーがない場合はセラーID入力までCSV出力を無効化する', async () => {
     render(<ListingModal extraction={{ ...extraction, seller_account_id: null, seller_account: undefined }} sellers={[]} onClose={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('対象商品:')).toBeTruthy())
     expect(screen.getByRole('button', { name: 'CSV出品' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'SPECIFICS用CSV出力' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'SPECIFICS-IN 45列CSV出力' })).toBeDisabled()
     await userEvent.type(screen.getByRole('textbox', { name: 'eBayセラーID' }), 'miyabi-24')
     expect(screen.getByRole('button', { name: 'CSV出品' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'SPECIFICS用CSV出力' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'SPECIFICS-IN 45列CSV出力' })).toBeEnabled()
   })
 })

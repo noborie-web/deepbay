@@ -75,6 +75,8 @@ export async function GET(req: NextRequest) {
   return new NextResponse(csv, {
     headers: {
       'Content-Type': 'text/csv; charset=utf-8',
+      'Cache-Control': 'private, no-store, max-age=0',
+      'X-Specifics-In-Format': '45-columns-v1',
       'Content-Disposition': `attachment; filename="${specificsInFilename(
         seller.seller_id,
         extraction.category?.ebay_category_id ?? null,

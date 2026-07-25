@@ -99,6 +99,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
       params.set('shippingProfile', shippingProfile.trim())
       params.set('paymentProfile', paymentProfile.trim())
       params.set('returnProfile', returnProfile.trim())
+      if (kind === 'specifics') params.set('formatVersion', 'specificsin-45-v1')
       const path = kind === 'listing' ? '/api/csv' : '/api/csv/specifics'
       const response = await fetch(`${path}?${params.toString()}`)
       if (!response.ok) {
@@ -119,7 +120,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
       URL.revokeObjectURL(url)
       setNotice(kind === 'listing'
         ? '出品CSVを出力しました。選択したセラーのeBayへアップロードしてください。'
-        : 'Specifics用CSVを出力しました。')
+        : 'Specifics-IN 45列CSVを出力しました。')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'CSV出力に失敗しました')
     } finally {
@@ -275,7 +276,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
             disabled={!canDownloadSpecifics}
             className="border border-blue-500 text-blue-600 rounded-lg px-6 py-2.5 hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {downloading === 'specifics' ? 'CSV作成中...' : 'SPECIFICS用CSV出力'}
+            {downloading === 'specifics' ? '45列CSV作成中...' : 'SPECIFICS-IN 45列CSV出力'}
           </button>
         </div>
       </div>
