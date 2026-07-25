@@ -25,6 +25,11 @@ import {
   getProductPriceType,
 } from '@/lib/product-exclusion'
 import type { ProductPriceType } from '@/lib/product-exclusion'
+import {
+  DEFAULT_PRODUCT_SEARCH_FILTERS,
+  filterProducts,
+} from '@/lib/product-search'
+import type { ProductSearchFilters } from '@/lib/product-search'
 
 interface Props {
   extractionId: string
@@ -54,6 +59,9 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [editMode, setEditMode] = useState<EditMode>('簡易編集モード')
   const [pageSize, setPageSize] = useState(50)
   const [page, setPage] = useState(1)
+  const [searchFilters, setSearchFilters] = useState<ProductSearchFilters>(
+    DEFAULT_PRODUCT_SEARCH_FILTERS,
+  )
   const [collapsed, setCollapsed] = useState(false)
   const [autoScroll, setAutoScroll] = useState(false)
   const [scrollSpeed, setScrollSpeed] = useState(4)
@@ -104,6 +112,19 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [itemSpecificsModalOpen, setItemSpecificsModalOpen] = useState(false)
   const [priceModalOpen, setPriceModalOpen] = useState(false)
   const [conditionModalOpen, setConditionModalOpen] = useState(false)
+
+  function updateSearchFilter<K extends keyof ProductSearchFilters>(
+    key: K,
+    value: ProductSearchFilters[K],
+  ) {
+    setSearchFilters((current) => ({ ...current, [key]: value }))
+    setPage(1)
+  }
+
+  function resetSearchFilters() {
+    setSearchFilters(DEFAULT_PRODUCT_SEARCH_FILTERS)
+    setPage(1)
+  }
 
   function togglePanel(key: string) {
     setExcludePanel((v) => v === key ? null : key)
@@ -484,10 +505,6 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     }
   }
 
-  const totalPages = Math.ceil(products.length / pageSize)
-  const pagedProducts = products.slice((page - 1) * pageSize, page * pageSize)
-  const pagedIds = new Set(pagedProducts.map((p) => p.id))
-
   const getTitle = (p: Product) =>
     edits[p.id]?.ebay_title !== undefined ? (edits[p.id].ebay_title as string) : (p.ebay_title ?? '')
   const getBrand = (p: Product) =>
@@ -506,6 +523,16 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       : (p.ebay_item_specifics ?? {})
   const getPrice = (p: Product): number | null =>
     edits[p.id]?.ebay_price !== undefined ? (edits[p.id].ebay_price as number | null) : p.ebay_price
+
+  const productsForSearch = products.map((product) => (
+    edits[product.id] ? { ...product, ...edits[product.id] } : product
+  ))
+  const visibleProducts = tab === 'search'
+    ? filterProducts(productsForSearch, searchFilters)
+    : products
+  const totalPages = Math.max(1, Math.ceil(visibleProducts.length / pageSize))
+  const pagedProducts = visibleProducts.slice((page - 1) * pageSize, page * pageSize)
+  const pagedIds = new Set(pagedProducts.map((p) => p.id))
 
   // 不正価格: edits に入っているが null でもなく正の有限数でもない
   const hasPriceError = Object.values(edits).some((fields) => {
@@ -556,7 +583,10 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
             {([['main', 'メイン'], ['exclude', '除外'], ['edit', '編集'], ['search', '検索'], ['pokemon', 'ポケモン']] as [Tab, string][]).map(([key, label]) => (
               <button
                 key={key}
-                onClick={() => setTab(key)}
+                onClick={() => {
+                  setTab(key)
+                  setPage(1)
+                }}
                 className={`py-3 text-sm font-medium border-b-2 transition-colors -mb-px ${
                   tab === key ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
                 }`}
@@ -950,18 +980,164 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
             </div>
           )}
 
-          {/* 検索・ポケモンタブ（未実装プレースホルダー） */}
-          {(tab === 'search' || tab === 'pokemon') && (
+          {/* 検索タブ */}
+          {tab === 'search' && (
+            <div className="px-4 py-4 border-b bg-gray-50 space-y-3">
+              <div className="flex items-center gap-3">
+                <input
+                  type="search"
+                  aria-label="商品検索キーワード"
+                  value={searchFilters.query}
+                  onChange={(event) => updateSearchFilter('query', event.target.value)}
+                  placeholder="タイトル、ブランド、商品ID、URL、商品詳細、アイテムスペシフィック"
+                  className="flex-1 min-w-0 border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300"
+                />
+                <button
+                  type="button"
+                  onClick={resetSearchFilters}
+                  className="border border-gray-300 rounded px-3 py-2 text-xs text-gray-600 hover:bg-white"
+                >
+                  条件をリセット
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                <label className="space-y-1">
+                  <span className="block text-xs text-gray-500">サイト</span>
+                  <select
+                    aria-label="検索サイト"
+                    value={searchFilters.sourceSite}
+                    onChange={(event) => updateSearchFilter('sourceSite', event.target.value)}
+                    className="w-full border rounded px-2 py-1.5 text-xs bg-white"
+                  >
+                    <option value="all">すべて</option>
+                    {Array.from(new Set(products.map((product) => product.source_site))).sort().map((site) => (
+                      <option key={site} value={site}>{site}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="block text-xs text-gray-500">商品状態</span>
+                  <select
+                    aria-label="検索商品状態"
+                    value={searchFilters.condition}
+                    onChange={(event) => updateSearchFilter('condition', event.target.value)}
+                    className="w-full border rounded px-2 py-1.5 text-xs bg-white"
+                  >
+                    <option value="all">すべて</option>
+                    {['新品', '新品同様', '良い', '普通', '中古', 'ジャンク'].map((condition) => (
+                      <option key={condition} value={condition}>{condition}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="block text-xs text-gray-500">価格タイプ</span>
+                  <select
+                    aria-label="検索価格タイプ"
+                    value={searchFilters.priceType}
+                    onChange={(event) => updateSearchFilter('priceType', event.target.value)}
+                    className="w-full border rounded px-2 py-1.5 text-xs bg-white"
+                  >
+                    <option value="all">すべて</option>
+                    <option value="fixed">固定価格</option>
+                    <option value="auction">オークション</option>
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="block text-xs text-gray-500">eBay価格</span>
+                  <select
+                    aria-label="eBay価格設定状態"
+                    value={searchFilters.priceState}
+                    onChange={(event) => updateSearchFilter(
+                      'priceState',
+                      event.target.value as ProductSearchFilters['priceState'],
+                    )}
+                    className="w-full border rounded px-2 py-1.5 text-xs bg-white"
+                  >
+                    <option value="all">すべて</option>
+                    <option value="set">設定済み</option>
+                    <option value="unset">未設定</option>
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="block text-xs text-gray-500">価格の対象</span>
+                  <select
+                    aria-label="検索価格対象"
+                    value={searchFilters.priceTarget}
+                    onChange={(event) => updateSearchFilter(
+                      'priceTarget',
+                      event.target.value as ProductSearchFilters['priceTarget'],
+                    )}
+                    className="w-full border rounded px-2 py-1.5 text-xs bg-white"
+                  >
+                    <option value="original">仕入価格（円）</option>
+                    <option value="ebay">eBay価格（$）</option>
+                  </select>
+                </label>
+
+                <div className="space-y-1">
+                  <span className="block text-xs text-gray-500">価格範囲</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      aria-label="検索最低価格"
+                      min="0"
+                      value={searchFilters.priceMin}
+                      onChange={(event) => updateSearchFilter('priceMin', event.target.value)}
+                      placeholder="最小"
+                      className="w-full min-w-0 border rounded px-2 py-1.5 text-xs"
+                    />
+                    <span className="text-xs text-gray-400">〜</span>
+                    <input
+                      type="number"
+                      aria-label="検索最高価格"
+                      min="0"
+                      value={searchFilters.priceMax}
+                      onChange={(event) => updateSearchFilter('priceMax', event.target.value)}
+                      placeholder="最大"
+                      className="w-full min-w-0 border rounded px-2 py-1.5 text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-gray-600">
+                  {products.length}件中 <span className="font-semibold text-blue-600">{visibleProducts.length}件</span> を表示
+                </p>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={saveAll}
+                    disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError || hasDescriptionError}
+                    className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium"
+                  >
+                    💾 編集保存
+                  </button>
+                  {saveError && <span className="text-xs text-red-500">{saveError}</span>}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ポケモンタブ（未実装プレースホルダー） */}
+          {tab === 'pokemon' && (
             <div className="px-4 py-8 text-center text-sm text-gray-400 border-b">未実装</div>
           )}
 
           {/* 商品リスト */}
-          {(tab === 'main' || tab === 'exclude' || tab === 'edit') && (
+          {(tab === 'main' || tab === 'exclude' || tab === 'edit' || tab === 'search') && (
             <div ref={scrollRef} className="overflow-y-auto max-h-[70vh]">
               {loading ? (
                 <div className="py-12 text-center text-sm text-gray-400">読み込み中...</div>
               ) : pagedProducts.length === 0 ? (
-                <div className="py-12 text-center text-sm text-gray-400">商品がありません</div>
+                <div className="py-12 text-center text-sm text-gray-400">
+                  {tab === 'search' ? '検索条件に一致する商品がありません' : '商品がありません'}
+                </div>
               ) : (
                 pagedProducts.map((product) => (
                   <div key={product.id} className="border-b last:border-0 px-4 py-4">
@@ -1147,7 +1323,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           )}
 
           {/* ボトムバー */}
-          {(tab === 'main' || tab === 'exclude' || tab === 'edit') && (
+          {(tab === 'main' || tab === 'exclude' || tab === 'edit' || tab === 'search') && (
             <div className="flex items-center gap-3 px-4 py-3 border-t bg-gray-50 flex-wrap">
               <button
                 onClick={() => setAutoScroll((v) => !v)}
@@ -1175,7 +1351,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   </select>
                 </div>
                 <span className="text-xs text-gray-600">
-                  {(page - 1) * pageSize + 1}-{Math.min(page * pageSize, products.length)} of {products.length}
+                  {visibleProducts.length === 0 ? 0 : (page - 1) * pageSize + 1}-
+                  {Math.min(page * pageSize, visibleProducts.length)} of {visibleProducts.length}
                 </span>
                 <div className="flex items-center gap-1">
                   <button onClick={() => setPage(1)} disabled={page === 1} className="px-1.5 py-1 text-xs border rounded disabled:opacity-30 hover:bg-gray-100">|◀</button>

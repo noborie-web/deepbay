@@ -171,6 +171,78 @@ describe('ProductEditPanel: アイテムスペシフィック編集', () => {
   })
 })
 
+describe('ProductEditPanel: 商品検索', () => {
+  it('キーワードに一致する商品のみを表示する', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [
+        makeProduct('p1', { original_title: 'Tamiya Mini 4WD' }),
+        makeProduct('p2', { original_title: 'Nike Sneakers' }),
+      ],
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^検索$/ }))
+    await userEvent.type(screen.getByRole('searchbox', { name: '商品検索キーワード' }), 'Tamiya')
+
+    expect(screen.getByDisplayValue('eBay Title p1')).toBeTruthy()
+    expect(screen.queryByDisplayValue('eBay Title p2')).toBeNull()
+    expect(screen.getByText('1件', { selector: 'span' })).toBeTruthy()
+  })
+
+  it('複数条件を組み合わせ、リセットですべての商品へ戻す', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [
+        makeProduct('p1', { source_site: 'mercari', ebay_condition: '中古', ebay_price: 40 }),
+        makeProduct('p2', {
+          source_site: 'snkrdunk',
+          ebay_condition: '新品',
+          ebay_price: null,
+          price_type: 'auction',
+        }),
+      ],
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^検索$/ }))
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '検索サイト' }), 'snkrdunk')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '検索商品状態' }), '新品')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '検索価格タイプ' }), 'auction')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'eBay価格設定状態' }), 'unset')
+
+    expect(screen.queryByDisplayValue('eBay Title p1')).toBeNull()
+    expect(screen.getByDisplayValue('eBay Title p2')).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: '条件をリセット' }))
+    expect(screen.getByDisplayValue('eBay Title p1')).toBeTruthy()
+    expect(screen.getByDisplayValue('eBay Title p2')).toBeTruthy()
+  })
+
+  it('検索結果が0件のとき専用メッセージを表示する', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1')],
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^検索$/ }))
+    await userEvent.type(screen.getByRole('searchbox', { name: '商品検索キーワード' }), 'not-found')
+
+    expect(screen.getByText('検索条件に一致する商品がありません')).toBeTruthy()
+    expect(screen.getByText(/0-0 of 0/)).toBeTruthy()
+  })
+})
+
 // ---------- テスト ----------
 
 describe('ProductEditPanel: ebay_price 表示', () => {
