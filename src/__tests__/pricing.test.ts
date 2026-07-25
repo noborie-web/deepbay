@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { calcProfit, validateProfitParams, isSafePriceUsd, validateProductFields, PRODUCT_WRITE_WHITELIST } from '../lib/pricing'
+import {
+  mergeItemSpecifics,
+  parseSpecificValues,
+} from '../components/extraction/ItemSpecificsEditModal'
 import { applyOp } from '../components/extraction/TitleEditModal'
 import { applyDescriptionOp, DESCRIPTION_MAX_LENGTH } from '../components/extraction/DescriptionEditModal'
 import { limitImages } from '../components/extraction/ImageCountEditModal'
@@ -250,6 +254,10 @@ describe('ホワイトリスト: 許可されていないフィールドを拒�
   it('purchase_price_jpyはホワイトリストに含まれる', () => {
     expect(PRODUCT_WRITE_WHITELIST.has('purchase_price_jpy')).toBe(true)
   })
+
+  it('ebay_item_specificsはホワイトリストに含まれる', () => {
+    expect(PRODUCT_WRITE_WHITELIST.has('ebay_item_specifics')).toBe(true)
+  })
 })
 
 describe('商品詳細一括編集', () => {
@@ -302,5 +310,57 @@ describe('画像枚数一括編集', () => {
 
   it('HTTP(S)以外のURLを拒否する', () => {
     expect(validateProductFields({ ebay_images: ['javascript:alert(1)'] })).toMatch(/HTTP\(S\)/)
+  })
+})
+
+describe('アイテムスペシフィック編集', () => {
+  it('カンマ・読点・改行で値を分割し、重複を除く', () => {
+    expect(parseSpecificValues('Plastic, Metal、Plastic\nWood'))
+      .toEqual(['Plastic', 'Metal', 'Wood'])
+  })
+
+  it('既存項目を保持し、同名項目を上書きする', () => {
+    expect(mergeItemSpecifics(
+      { Brand: ['Tamiya'], Material: ['Metal'] },
+      { Material: ['Plastic'], Color: ['Red'] },
+    )).toEqual({
+      Brand: ['Tamiya'],
+      Material: ['Plastic'],
+      Color: ['Red'],
+    })
+  })
+
+  it('正しいオブジェクトを許可する', () => {
+    expect(validateProductFields({
+      ebay_item_specifics: {
+        Brand: ['Tamiya'],
+        Material: ['Plastic', 'Metal'],
+      },
+    })).toBeNull()
+  })
+
+  it('配列やnullを拒否する', () => {
+    expect(validateProductFields({ ebay_item_specifics: [] })).not.toBeNull()
+    expect(validateProductFields({ ebay_item_specifics: null })).not.toBeNull()
+  })
+
+  it('空の値配列を拒否する', () => {
+    expect(validateProductFields({ ebay_item_specifics: { Brand: [] } })).not.toBeNull()
+  })
+
+  it('50項目を超えるデータを拒否する', () => {
+    const specifics = Object.fromEntries(
+      Array.from({ length: 51 }, (_, index) => [`Field${index}`, ['Value']]),
+    )
+    expect(validateProductFields({ ebay_item_specifics: specifics })).toMatch(/最大50項目/)
+  })
+
+  it('65文字を超える項目名・値を拒否する', () => {
+    expect(validateProductFields({
+      ebay_item_specifics: { ['a'.repeat(66)]: ['Value'] },
+    })).not.toBeNull()
+    expect(validateProductFields({
+      ebay_item_specifics: { Brand: ['a'.repeat(66)] },
+    })).not.toBeNull()
   })
 })

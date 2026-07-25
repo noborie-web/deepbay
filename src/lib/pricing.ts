@@ -45,6 +45,7 @@ export const PRODUCT_WRITE_WHITELIST = new Set([
   'ebay_brand',
   'ebay_description',
   'ebay_images',
+  'ebay_item_specifics',
   'ebay_price',
   'ebay_condition',
   'purchase_price_jpy',
@@ -105,6 +106,33 @@ export function validateProductFields(fields: Record<string, unknown>): string |
       }
     })) {
       return 'ebay_images は最大12件のHTTP(S) URL配列にしてください'
+    }
+  }
+  if ('ebay_item_specifics' in fields) {
+    const specifics = fields.ebay_item_specifics
+    if (specifics === null || typeof specifics !== 'object' || Array.isArray(specifics)) {
+      return 'ebay_item_specifics はオブジェクトにしてください'
+    }
+    const entries = Object.entries(specifics as Record<string, unknown>)
+    if (entries.length > 50) {
+      return 'ebay_item_specifics は最大50項目にしてください'
+    }
+    for (const [name, values] of entries) {
+      if (name.trim().length === 0 || name.length > 65) {
+        return 'アイテムスペシフィックの項目名は1〜65文字にしてください'
+      }
+      if (
+        !Array.isArray(values)
+        || values.length === 0
+        || values.length > 10
+        || values.some((value) => (
+          typeof value !== 'string'
+          || value.trim().length === 0
+          || value.length > 65
+        ))
+      ) {
+        return `アイテムスペシフィック「${name}」の値は1〜10個、各1〜65文字にしてください`
+      }
     }
   }
   return null
