@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { calcProfit, validateProfitParams, isSafePriceUsd, validateProductFields, PRODUCT_WRITE_WHITELIST } from '../lib/pricing'
+import {
+  calcProfit,
+  calcTieredProfit,
+  findTierProfitJpy,
+  isSafePriceUsd,
+  PRODUCT_WRITE_WHITELIST,
+  validateProductFields,
+  validateProfitParams,
+  validateProfitTiers,
+  validateTieredProfitParams,
+} from '../lib/pricing'
 import {
   mergeItemSpecifics,
   parseSpecificValues,
@@ -85,6 +95,63 @@ describe('validateProfitParams', () => {
 
   it('手数料率 + 利益率 > 100% の場合はエラー', () => {
     expect(validateProfitParams({ ...BASE_PARAMS, ebayFeeRate: 0.6, targetProfitRate: 0.5 })).not.toBeNull()
+  })
+})
+
+describe('価格帯別利益額', () => {
+  const tiers = [
+    { maxPurchaseJpy: 5000, profitJpy: 2000 },
+    { maxPurchaseJpy: 10000, profitJpy: 3000 },
+    { maxPurchaseJpy: null, profitJpy: 5000 },
+  ]
+
+  it('仕入価格の境界を含めて該当する利益額を返す', () => {
+    expect(findTierProfitJpy(5000, tiers)).toBe(2000)
+    expect(findTierProfitJpy(5001, tiers)).toBe(3000)
+    expect(findTierProfitJpy(10000, tiers)).toBe(3000)
+    expect(findTierProfitJpy(10001, tiers)).toBe(5000)
+  })
+
+  it('価格帯は昇順かつ最後が上限なしの場合に有効', () => {
+    expect(validateProfitTiers(tiers)).toBeNull()
+    expect(validateProfitTiers([
+      { maxPurchaseJpy: 10000, profitJpy: 3000 },
+      { maxPurchaseJpy: 5000, profitJpy: 2000 },
+      { maxPurchaseJpy: null, profitJpy: 5000 },
+    ])).not.toBeNull()
+    expect(validateProfitTiers([
+      { maxPurchaseJpy: 5000, profitJpy: 2000 },
+      { maxPurchaseJpy: 10000, profitJpy: 3000 },
+    ])).not.toBeNull()
+  })
+
+  it('負の利益額と不正な手数料率を拒否する', () => {
+    expect(validateProfitTiers([
+      { maxPurchaseJpy: null, profitJpy: -1 },
+    ])).not.toBeNull()
+    expect(validateTieredProfitParams({
+      purchasePriceJpy: 5000,
+      profitJpy: 2000,
+      jpyPerUsd: 150,
+      ebayFeeRate: 1,
+      shippingUsd: 15,
+      fixedCostUsd: 0,
+    })).not.toBeNull()
+  })
+
+  it('手数料・送料控除後に設定した利益額以上が残る販売価格を計算する', () => {
+    const params = {
+      purchasePriceJpy: 5000,
+      profitJpy: 2000,
+      jpyPerUsd: 150,
+      ebayFeeRate: 0.133,
+      shippingUsd: 15,
+      fixedCostUsd: 0,
+    }
+    const result = calcTieredProfit(params)
+    expect(result.salePriceUsd).toBe(72)
+    expect(result.profitUsd).toBeGreaterThanOrEqual(2000 / 150)
+    expect(result.profitUsd).toBeLessThan(2000 / 150 + 1)
   })
 })
 
