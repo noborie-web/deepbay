@@ -30,6 +30,9 @@ import {
   filterProducts,
 } from '@/lib/product-search'
 import type { ProductSearchFilters } from '@/lib/product-search'
+import PokemonEditPanel from './PokemonEditPanel'
+import type { PokemonEditScope } from './PokemonEditPanel'
+import { isPokemonProduct } from '@/lib/pokemon'
 
 interface Props {
   extractionId: string
@@ -416,6 +419,23 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     })
   }
 
+  // ---- ポケモンカード専用設定 ----
+  function applyPokemonEdit(
+    specifics: ItemSpecifics,
+    setBrand: boolean,
+    scope: PokemonEditScope,
+  ) {
+    const targets = scope === 'page' ? pagedProducts : pokemonProducts
+    targets.forEach((product) => {
+      updateEdit(
+        product.id,
+        'ebay_item_specifics',
+        mergeItemSpecifics(getItemSpecifics(product), specifics),
+      )
+      if (setBrand) updateEdit(product.id, 'ebay_brand', 'Pokémon')
+    })
+  }
+
   // ---- 一括価格編集 ----
   function applyPriceEdit(getPriceUsd: (p: Product) => number | null, scope: 'page' | 'all') {
     const targets = scope === 'page' ? pagedProducts : products
@@ -527,9 +547,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const productsForSearch = products.map((product) => (
     edits[product.id] ? { ...product, ...edits[product.id] } : product
   ))
+  const pokemonProducts = productsForSearch.filter(isPokemonProduct)
   const visibleProducts = tab === 'search'
     ? filterProducts(productsForSearch, searchFilters)
-    : products
+    : tab === 'pokemon'
+      ? pokemonProducts
+      : products
   const totalPages = Math.max(1, Math.ceil(visibleProducts.length / pageSize))
   const pagedProducts = visibleProducts.slice((page - 1) * pageSize, page * pageSize)
   const pagedIds = new Set(pagedProducts.map((p) => p.id))
@@ -1124,19 +1147,40 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
             </div>
           )}
 
-          {/* ポケモンタブ（未実装プレースホルダー） */}
+          {/* ポケモンタブ */}
           {tab === 'pokemon' && (
-            <div className="px-4 py-8 text-center text-sm text-gray-400 border-b">未実装</div>
+            <>
+              <PokemonEditPanel
+                products={pokemonProducts}
+                pagedIds={pagedIds}
+                onApply={applyPokemonEdit}
+              />
+              <div className="flex items-center justify-end gap-3 px-4 py-3 border-b bg-gray-50">
+                <button
+                  type="button"
+                  onClick={saveAll}
+                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError || hasDescriptionError}
+                  className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium"
+                >
+                  💾 編集保存
+                </button>
+                {saveError && <span className="text-xs text-red-500">{saveError}</span>}
+              </div>
+            </>
           )}
 
           {/* 商品リスト */}
-          {(tab === 'main' || tab === 'exclude' || tab === 'edit' || tab === 'search') && (
+          {(tab === 'main' || tab === 'exclude' || tab === 'edit' || tab === 'search' || tab === 'pokemon') && (
             <div ref={scrollRef} className="overflow-y-auto max-h-[70vh]">
               {loading ? (
                 <div className="py-12 text-center text-sm text-gray-400">読み込み中...</div>
               ) : pagedProducts.length === 0 ? (
                 <div className="py-12 text-center text-sm text-gray-400">
-                  {tab === 'search' ? '検索条件に一致する商品がありません' : '商品がありません'}
+                  {tab === 'search'
+                    ? '検索条件に一致する商品がありません'
+                    : tab === 'pokemon'
+                      ? 'ポケモン商品がありません'
+                      : '商品がありません'}
                 </div>
               ) : (
                 pagedProducts.map((product) => (
@@ -1323,7 +1367,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           )}
 
           {/* ボトムバー */}
-          {(tab === 'main' || tab === 'exclude' || tab === 'edit' || tab === 'search') && (
+          {(tab === 'main' || tab === 'exclude' || tab === 'edit' || tab === 'search' || tab === 'pokemon') && (
             <div className="flex items-center gap-3 px-4 py-3 border-t bg-gray-50 flex-wrap">
               <button
                 onClick={() => setAutoScroll((v) => !v)}

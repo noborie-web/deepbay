@@ -243,6 +243,79 @@ describe('ProductEditPanel: 商品検索', () => {
   })
 })
 
+describe('ProductEditPanel: ポケモンカード専用設定', () => {
+  it('ポケモン商品だけを表示して専用項目を一括保存する', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          makeProduct('p1', {
+            original_title: 'ポケモンカード ピカチュウ',
+            ebay_item_specifics: { Character: ['Pikachu'] },
+          }),
+          makeProduct('p2', { original_title: 'Tamiya Mini 4WD' }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, succeeded: ['p1'], failed: [] }),
+      })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^ポケモン$/ }))
+
+    expect(screen.getByDisplayValue('eBay Title p1')).toBeTruthy()
+    expect(screen.queryByDisplayValue('eBay Title p2')).toBeNull()
+    expect(screen.getByText('1件', { selector: 'p' })).toBeTruthy()
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'ポケモンカード名' }), 'Pikachu')
+    await userEvent.type(screen.getByRole('textbox', { name: 'ポケモンセット' }), 'Scarlet & Violet')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'ポケモンカード鑑定' }), 'Yes')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'ポケモンカード鑑定会社' }), 'PSA')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'ポケモンカードグレード' }), '10')
+    await userEvent.click(screen.getByRole('button', { name: 'ポケモン設定を適用（1件）' }))
+    await userEvent.click(screen.getAllByRole('button', { name: /編集保存/ })[0])
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      updates: [{
+        productId: 'p1',
+        ebay_brand: 'Pokémon',
+        ebay_item_specifics: {
+          Character: ['Pikachu'],
+          Game: ['Pokémon TCG'],
+          Language: ['Japanese'],
+          Graded: ['Yes'],
+          'Card Name': ['Pikachu'],
+          Set: ['Scarlet & Violet'],
+          'Professional Grader': ['PSA'],
+          Grade: ['10'],
+        },
+      }],
+    })
+  })
+
+  it('対象商品がない場合は専用メッセージを表示して適用を無効にする', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1', { original_title: 'Tamiya Mini 4WD' })],
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^ポケモン$/ }))
+
+    expect(screen.getByText('この抽出にはポケモン商品が見つかりませんでした。')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'ポケモン設定を適用（0件）' })).toBeDisabled()
+    expect(screen.getByText('ポケモン商品がありません')).toBeTruthy()
+  })
+})
+
 // ---------- テスト ----------
 
 describe('ProductEditPanel: ebay_price 表示', () => {
