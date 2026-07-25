@@ -929,6 +929,41 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     expect(getPrice(product)).toBe(87)
   })
 
+  it('各価格帯の下へ行を追加して、利益設定を細分化できる', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ rate: 150, date: '2026-07-25' }),
+    })
+    const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
+    const product = makeProduct('p1', { purchase_price_jpy: 14500 })
+
+    render(
+      <PriceEditModal
+        products={[product]}
+        pagedIds={new Set(['p1'])}
+        getPurchaseJpy={() => 14500}
+        onApply={vi.fn()}
+        onClose={vi.fn()}
+      />
+    )
+
+    await userEvent.click(screen.getByLabelText('価格帯別利益額'))
+    await userEvent.click(screen.getByRole('button', { name: '価格帯2の下に行を追加' }))
+
+    expect(screen.getByRole('spinbutton', { name: '仕入上限 3' })).toHaveValue(null)
+    expect(screen.getByRole('spinbutton', { name: '希望利益額 3' })).toHaveValue(null)
+    expect(screen.getByRole('spinbutton', { name: '仕入上限 4' })).toHaveValue(20000)
+
+    await userEvent.type(screen.getByRole('spinbutton', { name: '仕入上限 3' }), '15000')
+    await userEvent.type(screen.getByRole('spinbutton', { name: '希望利益額 3' }), '4000')
+
+    expect(screen.getByText(/目標 ¥4,000/)).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: '価格帯3を削除' }))
+    expect(screen.queryByText(/目標 ¥4,000/)).toBeNull()
+    expect(screen.getByRole('spinbutton', { name: '仕入上限 3' })).toHaveValue(20000)
+  })
+
   it('為替取得に失敗しても手動入力用の初期値を維持する', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: false,
