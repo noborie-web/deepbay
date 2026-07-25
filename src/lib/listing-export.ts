@@ -209,8 +209,35 @@ const SPECIFICS_IN_HEADERS = [
   'jp_spec',
 ]
 
+const SPECIFICS_IN_CATEGORY_COLUMNS: Record<string, string[]> = {
+  '139973': [
+    'California Prop 65 Warning',
+    'Country/Region of Manufacture',
+    'Features',
+    'Game Name',
+    'Genre',
+    'MPN',
+    'Manufacturer Warranty',
+    'Platform',
+    'Publisher',
+    'Rating',
+    'Region Code',
+    'Release Year',
+    'Sub-Genre',
+    'Unit Quantity',
+    'Unit Type',
+    'Video Game Series',
+  ],
+}
+
 export function generateSpecificsCsv(products: Product[], options: ListingExportOptions): string {
-  const names = specificNames(products, ['Brand', 'Country', 'UPC'])
+  const categoryNames = options.categoryId
+    ? (SPECIFICS_IN_CATEGORY_COLUMNS[options.categoryId] ?? [])
+    : []
+  const names = [...new Set([
+    ...categoryNames,
+    ...specificNames(products, ['Brand', 'Country', 'UPC']),
+  ])]
   const headers = [...SPECIFICS_IN_HEADERS, ...names.map((name) => `C:${name}`)]
   const rows = products.map((product) => {
     const specifics = productSpecifics(product)

@@ -71,7 +71,8 @@ describe('listing export', () => {
     const header = csv.split('\r\n')[0]
     expect(csv).toContain(productCustomLabel(product))
     expect(header).toContain('Action(CC=Cp1252),CustomLabel,StartPrice,ConditionID,Title,Description,C:Brand,PicURL,UPC,Category')
-    expect(header).toContain('C:Country,jp_desc,jp_title,jp_spec,C:Material')
+    expect(header).toContain('C:Country,jp_desc,jp_title,jp_spec')
+    expect(header).toContain('C:Material')
     expect(csv).toContain(',Original description,Original title,')
     expect(csv).toContain(',eBay Payments,Returns Accepted,Japan Shipping,')
   })
@@ -85,6 +86,17 @@ describe('listing export', () => {
       }),
     ], OPTIONS)
     expect(csv.split('\r\n')[2]).toContain(',NA')
+  })
+
+  it('カテゴリ139973では見本と同じ45列を常に出力する', () => {
+    const csv = generateSpecificsCsv([
+      makeProduct({ ebay_item_specifics: {} }),
+    ], OPTIONS)
+    const [header, row] = csv.split('\r\n')
+    expect(header.split(',')).toHaveLength(45)
+    expect(header).toContain('C:California Prop 65 Warning')
+    expect(header).toContain('C:Video Game Series')
+    expect(row.endsWith(',NA')).toBe(true)
   })
 
   it('Specifics-IN互換のファイル名を生成する', () => {
