@@ -1,7 +1,13 @@
 export type PlanType = 'free' | 'basic' | 'pro' | 'enterprise'
-export type ExtractionStatus = 'pending' | 'processing' | 'completed' | 'failed'
+export type ExtractionStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'excluded'
 export type ListingStatus = 'draft' | 'listing' | 'listed' | 'sold' | 'delisted'
 export type ProductPriceType = 'fixed' | 'auction'
+export type ExtractionActivityType =
+  | 'edited'
+  | 'csv_exported'
+  | 'specifics_csv_exported'
+  | 'direct_listed'
+  | 'excluded'
 
 export interface Profile {
   id: string
@@ -70,6 +76,33 @@ export interface Extraction {
   category?: ListingCategory
   bulk_edit_setting?: BulkEditSetting
   products?: Product[]
+  activities?: ExtractionActivity[]
+}
+
+export interface ExtractionActivity {
+  id: string
+  extraction_id: string
+  user_id: string
+  activity_type: ExtractionActivityType
+  label: string
+  item_count: number
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
+export interface ExcludedProduct {
+  id: string
+  extraction_id: string
+  user_id: string
+  product_id: string
+  reason_code: string
+  reason_label: string
+  source_url: string
+  original_title: string
+  original_price: number | null
+  image_url: string | null
+  metadata: Record<string, unknown>
+  excluded_at: string
 }
 
 export interface Product {
@@ -121,6 +154,16 @@ export type SellerAccountInsert = Pick<SellerAccount, 'user_id' | 'seller_id'> &
 export type ListingCategoryInsert = Pick<ListingCategory, 'user_id' | 'name'> & Partial<ListingCategory>
 export type BulkEditSettingInsert = Pick<BulkEditSetting, 'user_id' | 'name'> & Partial<BulkEditSetting>
 export type ExtractionInsert = Pick<Extraction, 'user_id' | 'source_url' | 'source_site'> & Partial<Extraction>
+export type ExtractionActivityInsert =
+  Pick<ExtractionActivity, 'extraction_id' | 'user_id' | 'activity_type' | 'label'>
+  & Partial<ExtractionActivity>
+export type ExcludedProductInsert =
+  Pick<
+    ExcludedProduct,
+    'extraction_id' | 'user_id' | 'product_id' | 'reason_code' | 'reason_label'
+    | 'source_url' | 'original_title'
+  >
+  & Partial<ExcludedProduct>
 export type ProductInsert = Pick<Product, 'user_id' | 'source_url' | 'source_site' | 'original_title'> & Partial<Product>
 export type ScraperInsert = Pick<Scraper, 'name' | 'site_key' | 'url_pattern'> & Partial<Scraper>
 
@@ -132,6 +175,16 @@ export interface Database {
       listing_categories: { Row: ListingCategory; Insert: ListingCategoryInsert; Update: Partial<ListingCategory> }
       bulk_edit_settings: { Row: BulkEditSetting; Insert: BulkEditSettingInsert; Update: Partial<BulkEditSetting> }
       extractions: { Row: Extraction; Insert: ExtractionInsert; Update: Partial<Extraction> }
+      extraction_activities: {
+        Row: ExtractionActivity
+        Insert: ExtractionActivityInsert
+        Update: Partial<ExtractionActivity>
+      }
+      excluded_products: {
+        Row: ExcludedProduct
+        Insert: ExcludedProductInsert
+        Update: Partial<ExcludedProduct>
+      }
       products: { Row: Product; Insert: ProductInsert; Update: Partial<Product> }
       scrapers: { Row: Scraper; Insert: ScraperInsert; Update: Partial<Scraper> }
     }

@@ -233,11 +233,37 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  let activity = null
+  if (succeeded.length > 0) {
+    const { data, error } = await admin
+      .from('extraction_activities')
+      .insert({
+        extraction_id: extraction.id,
+        user_id: user.id,
+        activity_type: 'direct_listed',
+        label: 'eBayへダイレクト出品',
+        item_count: succeeded.length,
+        metadata: {
+          sellerAccountId: seller.id,
+          sellerId: seller.seller_id,
+          ebayItemIds: succeeded.map((item) => item.itemId),
+        },
+      })
+      .select('*')
+      .single()
+    if (error) {
+      console.error('Failed to record direct listing activity:', error)
+    } else {
+      activity = data
+    }
+  }
+
   const status = succeeded.length === 0 ? 422 : failed.length > 0 ? 207 : 200
   return NextResponse.json({
     ok: failed.length === 0,
     succeeded,
     failed,
     requested: productIds.length,
+    activity,
   }, { status })
 }

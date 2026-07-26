@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { scrapeUrl, findScraper, ScraperError } from '@/lib/scrapers'
+import { scrapeUrl, findScraper } from '@/lib/scrapers'
 import { translateTitles } from '@/lib/translate'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import type { Extraction, Profile } from '@/types/database'
@@ -126,10 +126,20 @@ async function runScrape(
     )
     const normalizedUrl = url.split('?')[0].trim().replace(/\/+$/, '')
     if (sellerUrls.some((s) => normalizedUrl.startsWith(s))) {
-      await supabase
-        .from('extractions')
-        .update({ status: 'excluded', progress: 0, extracted_at: new Date().toISOString() })
-        .eq('id', extractionId)
+      await Promise.all([
+        supabase
+          .from('extractions')
+          .update({ status: 'excluded', progress: 0, extracted_at: new Date().toISOString() })
+          .eq('id', extractionId),
+        supabase.from('extraction_activities').insert({
+          extraction_id: extractionId,
+          user_id: userId,
+          activity_type: 'excluded',
+          label: '危険セラー',
+          item_count: 0,
+          metadata: { reasonCode: 'danger_seller', phase: 'extraction', sourceUrl: url },
+        }),
+      ])
       return
     }
 
@@ -146,6 +156,12 @@ async function runScrape(
 
     // 危険単語フィルタ
     const wordList: string[] = (dangerWords ?? []).map((w: { word: string }) => w.word.toLowerCase())
+    const dangerWordExcluded = wordList.length === 0
+      ? []
+      : scrapedList.filter((scraped: { title: string }) => {
+          const lower = scraped.title.toLowerCase()
+          return wordList.some((word) => lower.includes(word))
+        })
     const filteredList = wordList.length === 0
       ? scrapedList
       : scrapedList.filter((scraped: { title: string }) => {
@@ -207,9 +223,9 @@ async function runScrape(
     const excludeTitle: boolean = extractionSettings?.exclude_title_duplicate ?? false
     const excludeTranslated: boolean = extractionSettings?.exclude_translated_duplicate ?? false
 
-    let existingSourceUrls = new Set<string>()
-    let existingOriginalTitles = new Set<string>()
-    let existingEbayTitles = new Set<string>()
+    const existingSourceUrls = new Set<string>()
+    const existingOriginalTitles = new Set<string>()
+    const existingEbayTitles = new Set<string>()
 
     if (excludeActive || excludeTitle || excludeTranslated) {
       const selectCols = [
@@ -248,6 +264,7 @@ async function runScrape(
       // (original_price をそのまま使うと円がドルになる)
       const ebayPrice: number | null = null
       return {
+        id: crypto.randomUUID(),
         user_id: userId,
         extraction_id: extractionId,
         source_url: scraped.sourceUrl,
@@ -279,14 +296,93 @@ async function runScrape(
     })
 
     // 重複除外フィルタ
+    const duplicateExcluded: Array<{
+      row: (typeof rows)[number]
+      reasonCode: string
+      reasonLabel: string
+    }> = []
     const deduped = rows.filter((row: {
       source_url: string; original_title: string; ebay_title: string
     }) => {
-      if (excludeActive && existingSourceUrls.has(row.source_url)) return false
-      if (excludeTitle && existingOriginalTitles.has(row.original_title)) return false
-      if (excludeTranslated && existingEbayTitles.has(row.ebay_title)) return false
+      if (excludeActive && existingSourceUrls.has(row.source_url)) {
+        duplicateExcluded.push({ row: row as (typeof rows)[number], reasonCode: 'active_duplicate', reasonLabel: 'active重複' })
+        return false
+      }
+      if (excludeTitle && existingOriginalTitles.has(row.original_title)) {
+        duplicateExcluded.push({ row: row as (typeof rows)[number], reasonCode: 'title_duplicate', reasonLabel: 'タイトル重複' })
+        return false
+      }
+      if (excludeTranslated && existingEbayTitles.has(row.ebay_title)) {
+        duplicateExcluded.push({ row: row as (typeof rows)[number], reasonCode: 'translated_title_duplicate', reasonLabel: '翻訳後タイトル重複' })
+        return false
+      }
       return true
     })
+
+    const excludedSnapshots = [
+      ...dangerWordExcluded.map((scraped: {
+        sourceUrl: string
+        title: string
+        price: number | null
+        images: string[]
+      }) => ({
+        extraction_id: extractionId,
+        user_id: userId,
+        product_id: crypto.randomUUID(),
+        reason_code: 'danger_word',
+        reason_label: '危険単語',
+        source_url: scraped.sourceUrl,
+        original_title: scraped.title,
+        original_price: scraped.price,
+        image_url: scraped.images[0] ?? null,
+      })),
+      ...duplicateExcluded.map(({ row, reasonCode, reasonLabel }) => ({
+        extraction_id: extractionId,
+        user_id: userId,
+        product_id: row.id,
+        reason_code: reasonCode,
+        reason_label: reasonLabel,
+        source_url: row.source_url,
+        original_title: row.original_title,
+        original_price: row.original_price,
+        image_url: row.original_images[0] ?? null,
+      })),
+    ]
+    if (excludedSnapshots.length > 0) {
+      for (let i = 0; i < excludedSnapshots.length; i += 100) {
+        const { error } = await supabase
+          .from('excluded_products')
+          .insert(excludedSnapshots.slice(i, i + 100))
+        if (error) throw new Error(`除外詳細の保存に失敗しました: ${error.message}`)
+      }
+      const reasonGroups = new Map<string, {
+        reasonCode: string
+        reasonLabel: string
+        count: number
+      }>()
+      for (const item of excludedSnapshots) {
+        const current = reasonGroups.get(item.reason_code)
+        if (current) current.count += 1
+        else {
+          reasonGroups.set(item.reason_code, {
+            reasonCode: item.reason_code,
+            reasonLabel: item.reason_label,
+            count: 1,
+          })
+        }
+      }
+      const { error } = await supabase.from('extraction_activities').insert(
+        [...reasonGroups.values()].map((group) => ({
+          extraction_id: extractionId,
+          user_id: userId,
+          activity_type: 'excluded',
+          label: group.reasonLabel,
+          item_count: group.count,
+          metadata: { reasonCode: group.reasonCode, phase: 'extraction' },
+        })),
+      )
+      if (error) throw new Error(`除外履歴の保存に失敗しました: ${error.message}`)
+    }
 
     // 100件ずつ分割してinsert
     const chunkSize = 100

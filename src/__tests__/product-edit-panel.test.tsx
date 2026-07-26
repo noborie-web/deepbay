@@ -26,6 +26,16 @@ vi.mock('@/lib/supabase/server', () => ({
 
 let fetchMock: ReturnType<typeof vi.fn>
 
+function callsTo(url: string) {
+  return fetchMock.mock.calls.filter(([input]) => String(input) === url)
+}
+
+function requestBody(url: string, index = 0) {
+  const call = callsTo(url)[index]
+  if (!call) throw new Error(`Request not found: ${url}`)
+  return JSON.parse(String(call[1]?.body))
+}
+
 beforeEach(() => {
   fetchMock = vi.fn()
   global.fetch = fetchMock as unknown as typeof fetch
@@ -86,7 +96,10 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
         ok: true,
         json: async () => ({ vero: [{ brand: 'Nintendo' }] }),
       })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, removedIds: ['p1'] }),
+      })
 
     const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
     render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
@@ -96,9 +109,13 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Veroを除外' }))
     await userEvent.click(screen.getByRole('button', { name: 'Vero除外を実行' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
-    expect(fetchMock.mock.calls[2][0]).toBe('/api/products/ext-1')
-    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ productId: 'p1' })
+    await waitFor(() => expect(callsTo('/api/extractions/ext-1/exclude')).toHaveLength(1))
+    expect(requestBody('/api/extractions/ext-1/exclude')).toEqual({
+      productIds: ['p1'],
+      reasonCode: 'vero',
+      reasonLabel: 'Veroブランド',
+      metadata: { brandCount: 1 },
+    })
     await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p1')).toBeNull())
     expect(screen.getByDisplayValue('eBay Title p2')).toBeTruthy()
   })
@@ -112,7 +129,10 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
           makeProduct('p2', { price_type: 'auction' }),
         ],
       })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, removedIds: ['p2'] }),
+      })
 
     const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
     render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
@@ -125,8 +145,13 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '価格タイプ除外を実行' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ productId: 'p2' })
+    await waitFor(() => expect(callsTo('/api/extractions/ext-1/exclude')).toHaveLength(1))
+    expect(requestBody('/api/extractions/ext-1/exclude')).toEqual({
+      productIds: ['p2'],
+      reasonCode: 'price_type',
+      reasonLabel: '価格タイプ',
+      metadata: { selectedTypes: ['auction'] },
+    })
     await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p2')).toBeNull())
     expect(screen.getByDisplayValue('eBay Title p1')).toBeTruthy()
   })
@@ -157,8 +182,8 @@ describe('ProductEditPanel: アイテムスペシフィック編集', () => {
     await userEvent.click(screen.getByRole('button', { name: '適用（1件）' }))
     await userEvent.click(screen.getByRole('button', { name: /編集保存/ }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    const body = JSON.parse(fetchMock.mock.calls[1][1].body)
+    await waitFor(() => expect(callsTo('/api/products/ext-1/bulk')).toHaveLength(1))
+    const body = requestBody('/api/products/ext-1/bulk')
     expect(body).toEqual({
       updates: [{
         productId: 'p1',
@@ -279,8 +304,8 @@ describe('ProductEditPanel: ポケモンカード専用設定', () => {
     await userEvent.click(screen.getByRole('button', { name: 'ポケモン設定を適用（1件）' }))
     await userEvent.click(screen.getAllByRole('button', { name: /編集保存/ })[0])
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+    await waitFor(() => expect(callsTo('/api/products/ext-1/bulk')).toHaveLength(1))
+    expect(requestBody('/api/products/ext-1/bulk')).toEqual({
       updates: [{
         productId: 'p1',
         ebay_brand: 'Pokémon',
@@ -460,28 +485,40 @@ describe('ProductEditPanel: saveAll の動作', () => {
   })
 
   it('部分失敗: p1の表示は更新値、p2の入力は編集値を保持、再保存はp2のみ送信', async () => {
-    // 初回ロード
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => [
-        makeProduct('p1', { ebay_title: 'Old Title 1' }),
-        makeProduct('p2', { ebay_title: 'Old Title 2' }),
-      ],
-    })
-    // 部分失敗レスポンス
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 422,
-      json: async () => ({
-        ok: false,
-        succeeded: ['p1'],
-        failed: [{ productId: 'p2', error: '権限がありません' }],
-      }),
-    })
-    // p2 のみの再保存
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ ok: true, succeeded: ['p2'], failed: [] }),
+    let bulkRequestCount = 0
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/products/ext-1') {
+        return {
+          ok: true,
+          json: async () => [
+            makeProduct('p1', { ebay_title: 'Old Title 1' }),
+            makeProduct('p2', { ebay_title: 'Old Title 2' }),
+          ],
+        }
+      }
+      if (url === '/api/products/ext-1/bulk') {
+        bulkRequestCount += 1
+        if (bulkRequestCount === 1) {
+          return {
+            ok: false,
+            status: 422,
+            json: async () => ({
+              ok: false,
+              succeeded: ['p1'],
+              failed: [{ productId: 'p2', error: '権限がありません' }],
+            }),
+          }
+        }
+        return {
+          ok: true,
+          json: async () => ({ ok: true, succeeded: ['p2'], failed: [] }),
+        }
+      }
+      if (url === '/api/extractions/ext-1/activity') {
+        return { ok: true, json: async () => ({ activity: null }) }
+      }
+      throw new Error(`Unexpected request: ${url}`)
     })
 
     const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
@@ -516,10 +553,9 @@ describe('ProductEditPanel: saveAll の動作', () => {
     await act(async () => { await userEvent.click(saveBtn) })
 
     await waitFor(() => {
-      // 3回目のfetch呼び出し（0=load, 1=first save, 2=second save）
-      const calls = fetchMock.mock.calls
-      expect(calls).toHaveLength(3)
-      const secondSaveBody = JSON.parse(calls[2][1].body as string)
+      const bulkCalls = callsTo('/api/products/ext-1/bulk')
+      expect(bulkCalls).toHaveLength(2)
+      const secondSaveBody = JSON.parse(String(bulkCalls[1][1]?.body))
       // p2 だけが送信される
       expect(secondSaveBody.updates).toHaveLength(1)
       expect(secondSaveBody.updates[0].productId).toBe('p2')
@@ -575,8 +611,8 @@ describe('ProductEditPanel: ブランド編集', () => {
       await userEvent.click(screen.getByText(/💾 編集保存/))
     })
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    const body = JSON.parse(fetchMock.mock.calls[1][1].body as string)
+    await waitFor(() => expect(callsTo('/api/products/ext-1/bulk')).toHaveLength(1))
+    const body = requestBody('/api/products/ext-1/bulk')
     expect(body.updates).toEqual([{ productId: 'p1', ebay_brand: 'SAILOR' }])
   })
 
@@ -599,8 +635,8 @@ describe('ProductEditPanel: ブランド編集', () => {
       await userEvent.click(screen.getByText(/💾 編集保存/))
     })
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    const body = JSON.parse(fetchMock.mock.calls[1][1].body as string)
+    await waitFor(() => expect(callsTo('/api/products/ext-1/bulk')).toHaveLength(1))
+    const body = requestBody('/api/products/ext-1/bulk')
     expect(body.updates).toEqual([{ productId: 'p1', ebay_brand: null }])
   })
 
@@ -677,8 +713,8 @@ describe('ProductEditPanel: 商品詳細編集', () => {
       await userEvent.click(screen.getByText(/💾 編集保存/))
     })
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    const body = JSON.parse(fetchMock.mock.calls[1][1].body as string)
+    await waitFor(() => expect(callsTo('/api/products/ext-1/bulk')).toHaveLength(1))
+    const body = requestBody('/api/products/ext-1/bulk')
     expect(body.updates).toEqual([{ productId: 'p1', ebay_description: 'New description' }])
   })
 
@@ -788,8 +824,8 @@ describe('ProductEditPanel: 画像枚数編集', () => {
       await userEvent.click(screen.getByText(/💾 編集保存/))
     })
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    const body = JSON.parse(fetchMock.mock.calls[1][1].body as string)
+    await waitFor(() => expect(callsTo('/api/products/ext-1/bulk')).toHaveLength(1))
+    const body = requestBody('/api/products/ext-1/bulk')
     expect(body.updates).toEqual([{ productId: 'p1', ebay_images: images.slice(0, 2) }])
   })
 

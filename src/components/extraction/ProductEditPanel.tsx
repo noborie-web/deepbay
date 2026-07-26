@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Trash2, Link, ChevronUp, ChevronDown } from 'lucide-react'
-import type { Product } from '@/types/database'
+import type { ExtractionActivity, Product } from '@/types/database'
 import TitleEditModal, { applyOp } from './TitleEditModal'
 import type { TitleEditOp, TitleEditScope } from './TitleEditModal'
 import PriceEditModal from './PriceEditModal'
@@ -37,6 +37,7 @@ import { isPokemonProduct } from '@/lib/pokemon'
 interface Props {
   extractionId: string
   onClose: () => void
+  onActivity?: (activity: ExtractionActivity) => void
 }
 
 type Tab = 'main' | 'exclude' | 'edit' | 'search' | 'pokemon'
@@ -51,7 +52,7 @@ const IMAGE_SIZE_MAP: Record<ImageSize, string> = {
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 
-export default function ProductEditPanel({ extractionId, onClose }: Props) {
+export default function ProductEditPanel({ extractionId, onClose, onActivity }: Props) {
   const [tab, setTab] = useState<Tab>('main')
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
@@ -152,6 +153,54 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     }
   }
 
+  async function excludeProducts(
+    targets: Product[],
+    reasonCode: string,
+    reasonLabel: string,
+    metadata: Record<string, unknown> = {},
+  ): Promise<string[]> {
+    if (targets.length === 0) return []
+    const removedIds: string[] = []
+    for (let offset = 0; offset < targets.length; offset += 500) {
+      const chunk = targets.slice(offset, offset + 500)
+      const response = await fetch(`/api/extractions/${extractionId}/exclude`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productIds: chunk.map((product) => product.id),
+          reasonCode,
+          reasonLabel,
+          metadata,
+        }),
+      })
+      const json = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(json.error ?? '除外に失敗しました')
+      removedIds.push(...(json.removedIds ?? []))
+      if (json.activity) onActivity?.(json.activity as ExtractionActivity)
+    }
+    return removedIds
+  }
+
+  async function recordEditActivity(itemCount: number) {
+    if (itemCount <= 0) return
+    try {
+      const response = await fetch(`/api/extractions/${extractionId}/activity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activityType: 'edited',
+          label: '商品編集を保存',
+          itemCount,
+        }),
+      })
+      if (!response?.ok) return
+      const json = await response.json()
+      if (json.activity) onActivity?.(json.activity as ExtractionActivity)
+    } catch {
+      // 商品保存自体は成功しているため、履歴記録の失敗で編集結果を失敗扱いにしない。
+    }
+  }
+
   async function excludeDangerSellers(): Promise<string[]> {
     const res = await fetch('/api/extraction-settings')
     const data = await res.json()
@@ -163,33 +212,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       const norm = p.source_url.split('?')[0].trim().replace(/\/+$/, '')
       return sellerUrls.some((s) => norm.startsWith(s))
     })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
-  }
-
-  async function deleteExcludedProducts(productIds: string[]): Promise<string[]> {
-    if (productIds.length === 0) return []
-
-    const results = await Promise.all(productIds.map(async (productId) => {
-      const response = await fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId }),
-      })
-      return { productId, ok: response.ok }
-    }))
-
-    const failed = results.filter((result) => !result.ok)
-    if (failed.length > 0) {
-      throw new Error(`${failed.length}件の除外に失敗しました`)
-    }
-    return productIds
+    return excludeProducts(toDelete, 'danger_seller', '危険セラー')
   }
 
   async function excludeVero(): Promise<string[]> {
@@ -199,14 +222,26 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     const brands: string[] = (data.vero ?? [])
       .map((item: { brand?: unknown }) => typeof item.brand === 'string' ? item.brand : '')
       .filter(Boolean)
-    return deleteExcludedProducts(findVeroProductIds(products, brands))
+    const ids = new Set(findVeroProductIds(products, brands))
+    return excludeProducts(
+      products.filter((product) => ids.has(product.id)),
+      'vero',
+      'Veroブランド',
+      { brandCount: brands.length },
+    )
   }
 
   async function excludeByPriceType(): Promise<string[]> {
     const selectedTypes = (Object.entries(priceTypesSelected) as [ProductPriceType, boolean][])
       .filter(([, selected]) => selected)
       .map(([type]) => type)
-    return deleteExcludedProducts(findPriceTypeProductIds(products, selectedTypes))
+    const ids = new Set(findPriceTypeProductIds(products, selectedTypes))
+    return excludeProducts(
+      products.filter((product) => ids.has(product.id)),
+      'price_type',
+      '価格タイプ',
+      { selectedTypes },
+    )
   }
 
   async function excludeSpotWords(): Promise<string[]> {
@@ -219,14 +254,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       const lower = p.original_title.toLowerCase()
       return keywords.some((w) => lower.includes(w))
     })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
+    return excludeProducts(toDelete, 'spot_word', 'スポット文字', { keywords })
   }
 
   async function excludeByPrice(): Promise<string[]> {
@@ -239,14 +267,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       if (max !== null && price > max) return true
       return false
     })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
+    return excludeProducts(toDelete, 'price_range', '価格範囲', {
+      min,
+      max,
+      target: priceTarget,
+    })
   }
 
   async function excludeByRating(): Promise<string[]> {
@@ -255,14 +280,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     const toDelete = products.filter((p) =>
       p.seller_rating_count !== null && p.seller_rating_count <= max
     )
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
+    return excludeProducts(toDelete, 'seller_rating', '評価数', { max })
   }
 
   async function excludeByShippingDays(): Promise<string[]> {
@@ -271,14 +289,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     const toDelete = products.filter((p) =>
       p.shipping_days !== null && p.shipping_days > max
     )
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
+    return excludeProducts(toDelete, 'shipping_days', '発送日数', { max })
   }
 
   async function excludeByUpdatedAt(): Promise<string[]> {
@@ -289,14 +300,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       if (!p.source_updated_at) return false
       return new Date(p.source_updated_at) < cutoff
     })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
+    return excludeProducts(toDelete, 'updated_at', '最終更新月', { months })
   }
 
   async function excludeQuick(): Promise<string[]> {
@@ -306,14 +310,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       const lower = p.original_title.toLowerCase()
       return keywords.some((w) => lower.includes(w))
     })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
+    return excludeProducts(toDelete, 'quick_keyword', '簡易除外', { keywords })
   }
 
   async function excludeDangerWords(): Promise<string[]> {
@@ -325,14 +322,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       const lower = p.original_title.toLowerCase()
       return words.some((w) => lower.includes(w))
     })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
+    return excludeProducts(toDelete, 'danger_word', '危険単語', { words })
   }
 
   useEffect(() => {
@@ -489,6 +479,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           prev.map((p) => (edits[p.id] ? { ...p, ...edits[p.id] } : p))
         )
         setEdits({})
+        await recordEditActivity(json.succeeded?.length ?? updates.length)
       } else if (json.succeeded && json.failed) {
         // 部分失敗 — 成功分だけ edits をクリア、失敗分は保持
         const succeededSet = new Set(json.succeeded)
@@ -503,6 +494,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         })
         const firstErrors = json.failed.slice(0, 3).map((f) => `${f.productId.slice(0, 8)}: ${f.error}`).join(' / ')
         setSaveError(`${failedSet.size}件の保存に失敗しました — ${firstErrors}`)
+        await recordEditActivity(succeededSet.size)
       } else {
         setSaveError('保存に失敗しました')
       }
@@ -515,13 +507,13 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
   async function deleteProduct(productId: string) {
     if (!confirm('この商品を削除しますか？')) return
-    const res = await fetch(`/api/products/${extractionId}`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ productId }),
-    })
-    if (res.ok) {
+    const product = products.find((item) => item.id === productId)
+    if (!product) return
+    try {
+      await excludeProducts([product], 'manual_delete', '手動削除')
       setProducts((prev) => prev.filter((p) => p.id !== productId))
+    } catch (caught) {
+      setSaveError(caught instanceof Error ? caught.message : '商品の削除に失敗しました')
     }
   }
 
