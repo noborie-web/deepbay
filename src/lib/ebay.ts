@@ -52,7 +52,12 @@ function getEbayCredentials() {
   const clientSecret = (process.env.EBAY_CLIENT_SECRET ?? '').trim()
   const redirectUriName = (process.env.EBAY_REDIRECT_URI_NAME ?? '').trim()
   if (!clientId || !clientSecret || !redirectUriName) {
-    throw new Error('eBay OAuth環境変数が未設定です')
+    const missing = [
+      !clientId && 'EBAY_CLIENT_ID',
+      !clientSecret && 'EBAY_CLIENT_SECRET',
+      !redirectUriName && 'EBAY_REDIRECT_URI_NAME',
+    ].filter(Boolean)
+    throw new Error(`eBay OAuth環境変数が未設定です: ${missing.join(', ')}`)
   }
   return { clientId, clientSecret, redirectUriName }
 }
