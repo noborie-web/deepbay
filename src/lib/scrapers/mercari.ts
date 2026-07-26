@@ -85,6 +85,24 @@ function getMultiNumberParam(params: URLSearchParams, key: string): number[] {
     .filter(Number.isFinite)
 }
 
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&#x27;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+}
+
+function getMetaContent(html: string, key: string): string {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const tag = html.match(
+    new RegExp(`<meta\\s+[^>]*(?:property|name)=["']${escapedKey}["'][^>]*>`, 'i'),
+  )?.[0]
+  const content = tag?.match(/\scontent=["']([^"']*)["']/i)?.[1]
+  return content ? decodeHtml(content) : ''
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function extractImages(item: any): string[] {
   const candidates = [
@@ -99,10 +117,17 @@ function extractImages(item: any): string[] {
       image_url?: string
       photoUrl?: string
       photo_url?: string
+      uri?: string
       url?: string
     }) => {
       if (typeof image === 'string') return image
-      return image.imageUrl ?? image.image_url ?? image.photoUrl ?? image.photo_url ?? image.url ?? ''
+      return image.imageUrl
+        ?? image.image_url
+        ?? image.photoUrl
+        ?? image.photo_url
+        ?? image.uri
+        ?? image.url
+        ?? ''
     })
     .filter((image: string) => /^https?:\/\//.test(image)))]
 }
@@ -378,13 +403,13 @@ export class MercariScraper {
   }
 
   private async scrapeItem(itemId: string, url: string): Promise<ScrapedProduct> {
-    const item = await this.fetchItemDetail(itemId)
-
-    if (!item?.name) {
-      throw new ScraperError('Item data not found', this.siteKey, url)
+    try {
+      const item = await this.fetchItemDetail(itemId)
+      if (item?.name) return toProduct(item, url)
+    } catch {
+      // Vercelなど一部の実行環境で詳細APIが404になる場合は商品ページへ切り替える。
     }
-
-    return toProduct(item, url)
+    return this.scrapeItemPage(itemId, url)
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -426,8 +451,11 @@ export class MercariScraper {
             ? { ...product, images: detailImages }
             : product
         } catch {
-          // 詳細APIが一時的に失敗しても、一覧APIのサムネイルで抽出を継続する。
-          return product
+          // 詳細APIが404でも、Mercari CDNの連番画像を確認して全画像を補完する。
+          const probedImages = await this.probeItemImages(product.sourceItemId)
+          return probedImages.length > 0
+            ? { ...product, images: probedImages }
+            : product
         }
       }))
       enriched.push(...results)
@@ -438,5 +466,49 @@ export class MercariScraper {
       throw new ScraperError('商品画像を取得できませんでした', this.siteKey, url)
     }
     return enriched
+  }
+
+  private async scrapeItemPage(itemId: string, url: string): Promise<ScrapedProduct> {
+    const pageUrl = `https://jp.mercari.com/item/${encodeURIComponent(itemId)}`
+    const res = await fetch(pageUrl, { headers: HEADERS })
+    if (!res.ok) {
+      throw new ScraperError(`Item page error: ${res.status}`, this.siteKey, url)
+    }
+
+    const html = await res.text()
+    const title = getMetaContent(html, 'og:title').replace(/\s+by メルカリ\s*$/, '')
+    const priceRaw = getMetaContent(html, 'product:price:amount')
+    if (!title) {
+      throw new ScraperError('Item data not found', this.siteKey, url)
+    }
+
+    const images = await this.probeItemImages(itemId)
+    const ogImage = getMetaContent(html, 'og:image')
+    return toProduct({
+      id: itemId,
+      name: title,
+      price: priceRaw || null,
+      description: '',
+      photos: images.length > 0 ? images : [ogImage].filter(Boolean),
+    }, url)
+  }
+
+  private async probeItemImages(itemId: string): Promise<string[]> {
+    const images: string[] = []
+    // eBay側のPicURL上限に合わせ、最大12枚まで連番画像の存在を確認する。
+    for (let index = 1; index <= 12; index += 1) {
+      const imageUrl = `https://static.mercdn.net/item/detail/orig/photos/${encodeURIComponent(itemId)}_${index}.jpg`
+      try {
+        const res = await fetch(imageUrl, {
+          method: 'HEAD',
+          headers: { 'User-Agent': HEADERS['User-Agent'] },
+        })
+        if (!res.ok) break
+        images.push(imageUrl)
+      } catch {
+        break
+      }
+    }
+    return images
   }
 }

@@ -164,7 +164,7 @@ describe('Mercari item images', () => {
       photos: [
         fullImages[0],
         { image_url: fullImages[1] },
-        { url: fullImages[2] },
+        { uri: fullImages[2] },
       ],
       thumbnails: [fullImages[0]],
     })).toEqual(fullImages)
@@ -236,6 +236,83 @@ describe('Mercari item images', () => {
         { limit: 1 },
       )
       expect(products[0].images).toEqual(['https://static.mercdn.net/thumb.jpg'])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('詳細APIが404でもCDN連番画像から複数画像を補完する', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(input)
+      if (requestUrl.includes('entities:search')) {
+        return new Response(JSON.stringify({
+          items: [{
+            id: 'm1',
+            name: 'Test item',
+            price: 1000,
+            thumbnails: ['https://static.mercdn.net/thumb.jpg'],
+          }],
+        }), { status: 200 })
+      }
+      if (requestUrl.includes('/items/get?id=m1')) {
+        return new Response(null, { status: 404 })
+      }
+      if (init?.method === 'HEAD' && requestUrl.includes('/m1_')) {
+        const imageNumber = Number(requestUrl.match(/_([0-9]+)\.jpg$/)?.[1])
+        return new Response(null, { status: imageNumber <= 2 ? 200 : 403 })
+      }
+      return new Response(null, { status: 404 })
+    }
+
+    try {
+      const products = await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 1 },
+      )
+      expect(products[0].images).toEqual([
+        'https://static.mercdn.net/item/detail/orig/photos/m1_1.jpg',
+        'https://static.mercdn.net/item/detail/orig/photos/m1_2.jpg',
+      ])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('単品詳細APIが404でも商品ページとCDNから商品と全画像を取得する', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(input)
+      if (requestUrl.includes('/items/get?id=m13676694000')) {
+        return new Response(null, { status: 404 })
+      }
+      if (requestUrl === 'https://jp.mercari.com/item/m13676694000') {
+        return new Response([
+          '<html><head>',
+          '<meta property="og:title" content="ポケモンコロシアム 拡張ディスク by メルカリ"/>',
+          '<meta name="product:price:amount" content="19800"/>',
+          '<meta property="og:image" content="https://static.mercdn.net/item/detail/orig/photos/m13676694000_1.jpg?1"/>',
+          '</head></html>',
+        ].join(''), { status: 200 })
+      }
+      if (init?.method === 'HEAD' && requestUrl.includes('/m13676694000_')) {
+        const imageNumber = Number(requestUrl.match(/_([0-9]+)\.jpg$/)?.[1])
+        return new Response(null, { status: imageNumber <= 6 ? 200 : 403 })
+      }
+      return new Response(null, { status: 404 })
+    }
+
+    try {
+      const products = await new MercariScraper().scrape(
+        'https://jp.mercari.com/item/m13676694000?deepbay_refresh=1',
+      )
+      expect(products).toHaveLength(1)
+      expect(products[0].title).toBe('ポケモンコロシアム 拡張ディスク')
+      expect(products[0].price).toBe(19800)
+      expect(products[0].images).toHaveLength(6)
+      expect(products[0].images[5]).toBe(
+        'https://static.mercdn.net/item/detail/orig/photos/m13676694000_6.jpg',
+      )
     } finally {
       globalThis.fetch = originalFetch
     }
