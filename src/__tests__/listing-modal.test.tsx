@@ -156,6 +156,7 @@ describe('ListingModal', () => {
     )
     expect(screen.getByRole('combobox', { name: '配送ポリシー' })).toHaveValue('Worldwide Shipping')
     expect(screen.getByRole('button', { name: 'CSV出品' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'ダイレクト出品' })).toBeEnabled()
   })
 
   it('eBay再同期ボタンはキャッシュを無視して取得する', async () => {
@@ -193,13 +194,84 @@ describe('ListingModal', () => {
     })
   })
 
+  it('ダイレクト出品は確認チェック後だけ実行する', async () => {
+    const connectedSeller: SellerAccount = {
+      ...sellers[0],
+      ebay_user_id: 'ebay-user-1',
+      ebay_marketplace_id: 'EBAY_US',
+      ebay_connected_at: '2026-07-26T00:00:00.000Z',
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.startsWith('/api/products/')) {
+        return { ok: true, json: async () => [makeProduct()] }
+      }
+      if (url.startsWith('/api/ebay/policies')) {
+        return {
+          ok: true,
+          json: async () => ({
+            marketplaceId: 'EBAY_US',
+            fulfillment: [{ id: 'f1', name: 'Shipping', marketplaceId: 'EBAY_US', categoryTypes: [] }],
+            payment: [{ id: 'p1', name: 'Payment', marketplaceId: 'EBAY_US', categoryTypes: [] }],
+            return: [{ id: 'r1', name: 'Returns', marketplaceId: 'EBAY_US', categoryTypes: [] }],
+            syncedAt: '2026-07-26T00:00:00.000Z',
+          }),
+        }
+      }
+      if (url === '/api/ebay/listings') {
+        expect(init?.method).toBe('POST')
+        const body = JSON.parse(String(init?.body))
+        expect(body).toMatchObject({
+          extractionId: 'ext-1',
+          sellerAccountId: 'seller-1',
+          productIds: ['product-1'],
+          confirmed: true,
+        })
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            succeeded: [{ productId: 'product-1', itemId: '1234567890', warnings: [] }],
+            failed: [],
+            requested: 1,
+          }),
+        }
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    render(
+      <ListingModal
+        extraction={{ ...extraction, seller_account: connectedSeller }}
+        sellers={[connectedSeller]}
+        onClose={vi.fn()}
+      />,
+    )
+    const directButton = await screen.findByRole('button', { name: 'ダイレクト出品' })
+    await waitFor(() => expect(directButton).toBeEnabled())
+    await userEvent.click(directButton)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/ebay/listings')).toHaveLength(0)
+
+    const finalButton = screen.getByRole('button', { name: 'eBayへ1件出品' })
+    expect(finalButton).toBeDisabled()
+    await userEvent.click(screen.getByRole('checkbox', {
+      name: '内容を確認し、eBayへ実際に出品することに同意します',
+    }))
+    expect(finalButton).toBeEnabled()
+    await userEvent.click(finalButton)
+
+    expect(await screen.findByText('1件をeBayへ出品しました。')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/ebay/listings')).toHaveLength(1)
+  })
+
   it('出品準備済みならCSV出品とSpecifics CSVを有効化する', async () => {
     render(<ListingModal extraction={extraction} sellers={sellers} onClose={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('対象商品:')).toBeTruthy())
     expect(screen.getByText('出品必須項目未設定:').parentElement).toHaveTextContent('0件')
     expect(screen.getByRole('button', { name: 'CSV出品' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'SPECIFICS-IN 45列CSV出力' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'ダイレクト出品（準備中）' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'ダイレクト出品' })).toBeDisabled()
   })
 
   it('抽出時と異なるセラーを選択するとCSV出力を無効化する', async () => {
@@ -254,6 +326,32 @@ describe('ListingModal', () => {
     )
     const [requestUrl, requestInit] = fetchMock.mock.calls[1]
     expect(String(requestUrl)).toContain('formatVersion=specificsin-45-v1')
+    expect(String(requestUrl)).toContain('requestId=')
+    expect(requestInit).toEqual({ cache: 'no-store' })
+  })
+
+  it('42列保証ヘッダーがない旧出品CSVはダウンロードしない', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct()],
+      })
+      .mockResolvedValueOnce(new Response('Action,Title\r\nAdd,T', {
+        status: 200,
+        headers: { 'Content-Type': 'text/csv' },
+      }))
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    render(<ListingModal extraction={extraction} sellers={sellers} onClose={vi.fn()} />)
+    const button = await screen.findByRole('button', { name: 'CSV出品' })
+    await waitFor(() => expect(button).toBeEnabled())
+    await userEvent.click(button)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '旧形式の出品CSVが返されたためダウンロードを中止しました',
+    )
+    const [requestUrl, requestInit] = fetchMock.mock.calls[1]
+    expect(String(requestUrl)).toContain('formatVersion=ebay-upload-42-v1')
     expect(String(requestUrl)).toContain('requestId=')
     expect(requestInit).toEqual({ cache: 'no-store' })
   })

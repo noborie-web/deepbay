@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  EBAY_UPLOAD_COLUMN_COUNT,
   generateListingCsv,
   generateSpecificsCsv,
   getListingIssues,
@@ -93,15 +94,60 @@ function parseCsv(csv: string): string[][] {
 describe('listing export', () => {
   it('編集済みeBay価格をUSDとしてそのままCSVへ出力する', () => {
     const csv = generateListingCsv([makeProduct()], OPTIONS)
-    expect(csv).toContain(',83.00,3000,Tamiya Mini 4WD,')
+    expect(csv).toContain(',83.00,5000,Tamiya Mini 4WD,')
     expect(csv).not.toContain('0.56')
     expect(csv).toContain(',eBay Payments,Returns Accepted,Japan Shipping,')
   })
 
-  it('ブランドと商品項目を動的なC列へ出力する', () => {
+  it('eBay添付見本と同じ42列を同じ順序で出力する', () => {
     const csv = generateListingCsv([makeProduct()], OPTIONS)
-    expect(csv.split('\r\n')[0]).toContain('C:Brand,C:Material')
-    expect(csv).toContain(',Tamiya,Plastic')
+    const rows = parseCsv(csv)
+    expect(EBAY_UPLOAD_COLUMN_COUNT).toBe(42)
+    expect(rows).toHaveLength(2)
+    expect(rows.every((row) => row.length === EBAY_UPLOAD_COLUMN_COUNT)).toBe(true)
+    expect(rows[0].slice(0, 26)).toEqual([
+      'Action(CC=Cp1252)',
+      'CustomLabel',
+      'StartPrice',
+      'ConditionID',
+      'Title',
+      'Description',
+      'C:Brand',
+      'PicURL',
+      'UPC',
+      'Category',
+      'PayPalAccepted',
+      'PayPalEmailAddress',
+      'PaymentProfileName',
+      'ReturnProfileName',
+      'ShippingProfileName',
+      'Country',
+      'Location',
+      'Apply Profile Domestic',
+      'Apply Profile International',
+      'BuyerRequirements:LinkedPayPalAccount',
+      'Duration',
+      'Format',
+      'Quantity',
+      'Currency',
+      'SiteID',
+      'C:Country',
+    ])
+    expect(rows[0].at(-1)).toBe('C:Video Game Series')
+    expect(rows[1][rows[0].indexOf('C:Brand')]).toBe('Tamiya')
+    expect(rows[1][rows[0].indexOf('Description')]).toMatch(/^<!\[CDATA\[[\s\S]*\]\]>$/)
+    expect(rows[1][rows[0].indexOf('C:Platform')]).toBe('NA')
+  })
+
+  it('eBay出品CSVのPicURLへ最大24枚をパイプ区切りで出力する', () => {
+    const images = Array.from(
+      { length: 25 },
+      (_, index) => `https://static.mercdn.net/item/detail/orig/photos/m1_${index + 1}.jpg`,
+    )
+    const rows = parseCsv(generateListingCsv([
+      makeProduct({ ebay_images: images }),
+    ], OPTIONS))
+    expect(rows[1][rows[0].indexOf('PicURL')]).toBe(images.slice(0, 24).join('|'))
   })
 
   it('Specifics-IN CSVは添付互換の出品列と日本語元データ列を持つ', () => {

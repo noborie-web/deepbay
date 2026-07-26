@@ -26,26 +26,55 @@ const CONDITION_ID_MAP: Record<string, string> = {
   '全体的に状態が悪い': '7000',
 }
 
-const LISTING_HEADERS = [
+const EBAY_UPLOAD_BASE_HEADERS = [
   'Action(CC=Cp1252)',
   'CustomLabel',
   'StartPrice',
   'ConditionID',
   'Title',
   'Description',
+  'C:Brand',
   'PicURL',
+  'UPC',
   'Category',
+  'PayPalAccepted',
+  'PayPalEmailAddress',
   'PaymentProfileName',
   'ReturnProfileName',
   'ShippingProfileName',
   'Country',
   'Location',
+  'Apply Profile Domestic',
+  'Apply Profile International',
+  'BuyerRequirements:LinkedPayPalAccount',
   'Duration',
   'Format',
   'Quantity',
   'Currency',
   'SiteID',
+  'C:Country',
 ]
+
+export const EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS = [
+  'California Prop 65 Warning',
+  'Country/Region of Manufacture',
+  'Features',
+  'Game Name',
+  'Genre',
+  'MPN',
+  'Manufacturer Warranty',
+  'Platform',
+  'Publisher',
+  'Rating',
+  'Region Code',
+  'Release Year',
+  'Sub-Genre',
+  'Unit Quantity',
+  'Unit Type',
+  'Video Game Series',
+] as const
+
+export const EBAY_UPLOAD_COLUMN_COUNT = 42
 
 function escapeCsv(value: string): string {
   if (/[",\r\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`
@@ -86,7 +115,7 @@ export function productCustomLabel(product: Pick<Product, 'id'>): string {
   return `deepbay_${product.id.replace(/-/g, '_')}`
 }
 
-function productSpecifics(product: Product): Record<string, string[]> {
+export function productSpecifics(product: Product): Record<string, string[]> {
   const specifics = { ...(product.ebay_item_specifics ?? {}) }
   if (product.ebay_brand?.trim() && !specifics.Brand?.length) {
     specifics.Brand = [product.ebay_brand.trim()]
@@ -94,14 +123,7 @@ function productSpecifics(product: Product): Record<string, string[]> {
   return specifics
 }
 
-function specificNames(products: Product[], excludedNames: string[] = []): string[] {
-  const excluded = new Set(excludedNames.map((name) => name.toLowerCase()))
-  return [...new Set(products.flatMap((product) => Object.keys(productSpecifics(product))))]
-    .filter((name) => !excluded.has(name.toLowerCase()))
-    .sort((a, b) => a.localeCompare(b, 'en'))
-}
-
-function listingDescription(product: Product): string {
+export function listingDescription(product: Product): string {
   const description = product.ebay_description ?? product.original_description ?? ''
   const condition = product.ebay_condition ?? product.original_condition ?? 'Pre-owned / Used'
   return [
@@ -118,6 +140,10 @@ function listingDescription(product: Product): string {
   ].join('')
 }
 
+function listingCsvDescription(product: Product): string {
+  return `<![CDATA[${listingDescription(product).replace(/]]>/g, ']]&gt;')}]]>`
+}
+
 export function getListingIssues(product: Product, fallbackCategoryId: string | null): string[] {
   const issues: string[] = []
   const title = product.ebay_title?.trim()
@@ -130,34 +156,74 @@ export function getListingIssues(product: Product, fallbackCategoryId: string | 
   return issues
 }
 
+export function getDirectListingIssues(product: Product, fallbackCategoryId: string | null): string[] {
+  const issues = getListingIssues(product, fallbackCategoryId)
+  if (product.price_type === 'auction') issues.push('オークション形式')
+  return issues
+}
+
+export function conditionIdForProduct(product: Product, categoryId?: string | null): string {
+  const condition = product.ebay_condition ?? product.original_condition ?? ''
+  // eBayのコンディションIDはカテゴリ依存。添付テンプレートの
+  // Video Games（139973）では中古品が5000として定義される。
+  if (
+    categoryId === '139973'
+    && ['良い', '普通', '中古', '目立った傷や汚れなし', 'やや傷や汚れあり', '傷や汚れあり'].includes(condition)
+  ) {
+    return '5000'
+  }
+  return CONDITION_ID_MAP[condition] ?? '3000'
+}
+
 export function generateListingCsv(products: Product[], options: ListingExportOptions): string {
-  const names = specificNames(products)
-  const headers = [...LISTING_HEADERS, ...names.map((name) => `C:${name}`)]
-  const rows = products.map((product) => {
+  // eBayのCSVアップロードテンプレートは列位置で判定されるため、
+  // 添付された実運用ファイルと同じ42列を常に同じ順序で出力する。
+  const names = EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS
+  const headers = [...EBAY_UPLOAD_BASE_HEADERS, ...names.map((name) => `C:${name}`)]
+  if (headers.length !== EBAY_UPLOAD_COLUMN_COUNT) {
+    throw new Error(`eBay出品CSVヘッダーは${EBAY_UPLOAD_COLUMN_COUNT}列である必要があります`)
+  }
+  const rows = products.map((product, index) => {
     const specifics = productSpecifics(product)
-    const condition = product.ebay_condition ?? product.original_condition ?? ''
     const category = product.ebay_category_id ?? options.categoryId ?? ''
+    const brand = product.ebay_brand?.trim() || specifics.Brand?.join('|') || 'NO BRAND'
+    const country = specifics.Country?.join('|') || 'Japan'
+    const upc = specifics.UPC?.join('|') || 'NA'
+    const price = Number(product.ebay_price)
     const row = [
       'Add',
       productCustomLabel(product),
-      Number(product.ebay_price).toFixed(2),
-      CONDITION_ID_MAP[condition] ?? '3000',
+      Number.isFinite(price) && price > 0 ? price.toFixed(2) : '',
+      conditionIdForProduct(product, category),
       (product.ebay_title ?? product.original_title).slice(0, 80),
-      listingDescription(product),
-      productImages(product).slice(0, 12).join('|'),
+      listingCsvDescription(product),
+      brand,
+      productImages(product).slice(0, 24).join('|'),
+      upc,
       category,
+      '1',
+      'payAddress',
       options.paymentProfileName,
       options.returnProfileName,
       options.shippingProfileName,
       'JP',
       'Japan',
+      '0.0',
+      '0.0',
+      '0.0',
       'GTC',
       product.price_type === 'auction' ? 'Auction' : 'FixedPriceItem',
       '1',
       'USD',
       'US',
-      ...names.map((name) => (specifics[name] ?? []).join('|')),
+      country,
+      ...names.map((name) => (specifics[name] ?? []).join('|') || 'NA'),
     ]
+    if (row.length !== EBAY_UPLOAD_COLUMN_COUNT) {
+      throw new Error(
+        `eBay出品CSVの${index + 2}行目が${row.length}列です（必要: ${EBAY_UPLOAD_COLUMN_COUNT}列）`,
+      )
+    }
     return row.map((value) => escapeCsv(String(value))).join(',')
   })
 
@@ -177,7 +243,7 @@ function sourceSnapshot(product: Product): string {
   })
 }
 
-function productImages(product: Product): string[] {
+export function productImages(product: Product): string[] {
   return product.ebay_images?.length
     ? product.ebay_images
     : (product.original_images ?? [])
@@ -215,31 +281,12 @@ const SPECIFICS_IN_HEADERS = [
   'jp_spec',
 ]
 
-const SPECIFICS_IN_ITEM_SPECIFIC_COLUMNS = [
-  'California Prop 65 Warning',
-  'Country/Region of Manufacture',
-  'Features',
-  'Game Name',
-  'Genre',
-  'MPN',
-  'Manufacturer Warranty',
-  'Platform',
-  'Publisher',
-  'Rating',
-  'Region Code',
-  'Release Year',
-  'Sub-Genre',
-  'Unit Quantity',
-  'Unit Type',
-  'Video Game Series',
-]
-
 export const SPECIFICS_IN_COLUMN_COUNT = 45
 
 export function generateSpecificsCsv(products: Product[], options: ListingExportOptions): string {
   // Specifics-INの取込テンプレートは列位置で判定するため、商品データや
   // カテゴリの有無にかかわらず必ず同じ45列を出力する。
-  const names = SPECIFICS_IN_ITEM_SPECIFIC_COLUMNS
+  const names = EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS
   const headers = [...SPECIFICS_IN_HEADERS, ...names.map((name) => `C:${name}`)]
   if (headers.length !== SPECIFICS_IN_COLUMN_COUNT) {
     throw new Error(`Specifics-INヘッダーは${SPECIFICS_IN_COLUMN_COUNT}列である必要があります`)
@@ -260,7 +307,7 @@ export function generateSpecificsCsv(products: Product[], options: ListingExport
       (product.ebay_title ?? product.original_title).slice(0, 80),
       listingDescription(product),
       brand,
-      productImages(product).slice(0, 12).join('|'),
+      productImages(product).slice(0, 24).join('|'),
       upc,
       product.ebay_category_id ?? options.categoryId ?? '',
       '1',

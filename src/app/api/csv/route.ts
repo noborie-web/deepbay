@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import {
+  EBAY_UPLOAD_COLUMN_COUNT,
   generateListingCsv,
   getListingIssues,
   listingFilename,
@@ -19,12 +20,16 @@ export async function GET(req: NextRequest) {
   const paymentProfile = searchParams.get('paymentProfile')?.trim() ?? ''
   const returnProfile = searchParams.get('returnProfile')?.trim() ?? ''
   const shippingProfile = searchParams.get('shippingProfile')?.trim() ?? ''
+  const formatVersion = searchParams.get('formatVersion')
 
   if (!extractionId || (!sellerAccountId && !requestedSellerId)) {
     return NextResponse.json({ error: '抽出IDと出品セラーIDが必要です' }, { status: 400 })
   }
   if (!paymentProfile || !returnProfile || !shippingProfile) {
     return NextResponse.json({ error: '配送・支払・返品ポリシーをすべて入力してください' }, { status: 400 })
+  }
+  if (formatVersion !== 'ebay-upload-42-v1') {
+    return NextResponse.json({ error: 'eBay出品CSVの形式指定が不正です' }, { status: 400 })
   }
 
   const { data: extractionData } = await supabase
@@ -96,6 +101,9 @@ export async function GET(req: NextRequest) {
     headers: {
       'Content-Type': 'text/csv; charset=utf-8',
       'Content-Disposition': `attachment; filename="${listingFilename(seller.seller_id, 'listing')}"`,
+      'Cache-Control': 'no-store, max-age=0',
+      'X-Ebay-Upload-Format': '42-columns-v1',
+      'X-Ebay-Upload-Columns': String(EBAY_UPLOAD_COLUMN_COUNT),
     },
   })
 }
