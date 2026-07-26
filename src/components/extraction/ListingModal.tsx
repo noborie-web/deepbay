@@ -99,12 +99,27 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
       params.set('shippingProfile', shippingProfile.trim())
       params.set('paymentProfile', paymentProfile.trim())
       params.set('returnProfile', returnProfile.trim())
-      if (kind === 'specifics') params.set('formatVersion', 'specificsin-45-v1')
+      if (kind === 'specifics') {
+        params.set('formatVersion', 'specificsin-45-v1')
+        // 過去の3列レスポンスがブラウザや中継キャッシュに残っていても再利用させない。
+        params.set('requestId', crypto.randomUUID())
+      }
       const path = kind === 'listing' ? '/api/csv' : '/api/csv/specifics'
-      const response = await fetch(`${path}?${params.toString()}`)
+      const response = await fetch(`${path}?${params.toString()}`, {
+        cache: 'no-store',
+      })
       if (!response.ok) {
         const json = await response.json().catch(() => ({}))
         throw new Error(json.error ?? 'CSV出力に失敗しました')
+      }
+      if (kind === 'specifics') {
+        const format = response.headers.get('X-Specifics-In-Format')
+        const columns = response.headers.get('X-Specifics-In-Columns')
+        if (format !== '45-columns-v1' || columns !== '45') {
+          throw new Error(
+            '旧形式のCSVが返されたためダウンロードを中止しました。画面を再読み込みしてください。',
+          )
+        }
       }
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)

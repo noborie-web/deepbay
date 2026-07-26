@@ -139,4 +139,30 @@ describe('ListingModal', () => {
     expect(screen.getByRole('button', { name: 'CSV出品' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'SPECIFICS-IN 45列CSV出力' })).toBeEnabled()
   })
+
+  it('45列保証ヘッダーがない旧CSVはダウンロードせずエラーにする', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct()],
+      })
+      .mockResolvedValueOnce(new Response('CustomLabel,Title,Category\r\n1,T,C', {
+        status: 200,
+        headers: { 'Content-Type': 'text/csv' },
+      }))
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    render(<ListingModal extraction={extraction} sellers={sellers} onClose={vi.fn()} />)
+    const button = await screen.findByRole('button', { name: 'SPECIFICS-IN 45列CSV出力' })
+    await waitFor(() => expect(button).toBeEnabled())
+    await userEvent.click(button)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '旧形式のCSVが返されたためダウンロードを中止しました',
+    )
+    const [requestUrl, requestInit] = fetchMock.mock.calls[1]
+    expect(String(requestUrl)).toContain('formatVersion=specificsin-45-v1')
+    expect(String(requestUrl)).toContain('requestId=')
+    expect(requestInit).toEqual({ cache: 'no-store' })
+  })
 })

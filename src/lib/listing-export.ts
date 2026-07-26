@@ -215,37 +215,37 @@ const SPECIFICS_IN_HEADERS = [
   'jp_spec',
 ]
 
-const SPECIFICS_IN_CATEGORY_COLUMNS: Record<string, string[]> = {
-  '139973': [
-    'California Prop 65 Warning',
-    'Country/Region of Manufacture',
-    'Features',
-    'Game Name',
-    'Genre',
-    'MPN',
-    'Manufacturer Warranty',
-    'Platform',
-    'Publisher',
-    'Rating',
-    'Region Code',
-    'Release Year',
-    'Sub-Genre',
-    'Unit Quantity',
-    'Unit Type',
-    'Video Game Series',
-  ],
-}
+const SPECIFICS_IN_ITEM_SPECIFIC_COLUMNS = [
+  'California Prop 65 Warning',
+  'Country/Region of Manufacture',
+  'Features',
+  'Game Name',
+  'Genre',
+  'MPN',
+  'Manufacturer Warranty',
+  'Platform',
+  'Publisher',
+  'Rating',
+  'Region Code',
+  'Release Year',
+  'Sub-Genre',
+  'Unit Quantity',
+  'Unit Type',
+  'Video Game Series',
+]
+
+export const SPECIFICS_IN_COLUMN_COUNT = 45
 
 export function generateSpecificsCsv(products: Product[], options: ListingExportOptions): string {
-  const categoryNames = options.categoryId
-    ? (SPECIFICS_IN_CATEGORY_COLUMNS[options.categoryId] ?? [])
-    : []
-  const names = [...new Set([
-    ...categoryNames,
-    ...specificNames(products, ['Brand', 'Country', 'UPC']),
-  ])]
+  // Specifics-INの取込テンプレートは列位置で判定するため、商品データや
+  // カテゴリの有無にかかわらず必ず同じ45列を出力する。
+  const names = SPECIFICS_IN_ITEM_SPECIFIC_COLUMNS
   const headers = [...SPECIFICS_IN_HEADERS, ...names.map((name) => `C:${name}`)]
-  const rows = products.map((product) => {
+  if (headers.length !== SPECIFICS_IN_COLUMN_COUNT) {
+    throw new Error(`Specifics-INヘッダーは${SPECIFICS_IN_COLUMN_COUNT}列である必要があります`)
+  }
+
+  const rows = products.map((product, index) => {
     const specifics = productSpecifics(product)
     const condition = product.ebay_condition ?? product.original_condition ?? ''
     const brand = product.ebay_brand?.trim() || specifics.Brand?.join('|') || 'NA'
@@ -284,6 +284,11 @@ export function generateSpecificsCsv(products: Product[], options: ListingExport
       sourceSnapshot(product),
       ...names.map((name) => (specifics[name] ?? []).join('|') || 'NA'),
     ]
+    if (row.length !== SPECIFICS_IN_COLUMN_COUNT) {
+      throw new Error(
+        `Specifics-INの${index + 2}行目が${row.length}列です（必要: ${SPECIFICS_IN_COLUMN_COUNT}列）`,
+      )
+    }
     return row.map((value) => escapeCsv(String(value))).join(',')
   })
   return `\uFEFF${[headers.join(','), ...rows].join('\r\n')}`
