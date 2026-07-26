@@ -92,11 +92,13 @@ export default async function InventoryPage() {
               {/* ステータス */}
               <div>
                 <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                  product.listing_status === 'listing' ? 'bg-amber-100 text-amber-700' :
                   product.listing_status === 'listed' ? 'bg-blue-100 text-blue-700' :
                   product.listing_status === 'sold' ? 'bg-green-100 text-green-700' :
                   'bg-gray-100 text-gray-600'
                 }`}>
                   {product.listing_status === 'draft' ? '下書き' :
+                   product.listing_status === 'listing' ? '出品処理中' :
                    product.listing_status === 'listed' ? '出品中' :
                    product.listing_status === 'sold' ? '売却済み' : '取下げ'}
                 </span>

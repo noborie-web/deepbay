@@ -1,6 +1,6 @@
 export type PlanType = 'free' | 'basic' | 'pro' | 'enterprise'
 export type ExtractionStatus = 'pending' | 'processing' | 'completed' | 'failed'
-export type ListingStatus = 'draft' | 'listed' | 'sold' | 'delisted'
+export type ListingStatus = 'draft' | 'listing' | 'listed' | 'sold' | 'delisted'
 export type ProductPriceType = 'fixed' | 'auction'
 
 export interface Profile {
@@ -93,6 +93,7 @@ export interface Product {
   ebay_condition: string | null
   ebay_category_id: string | null
   listing_status: ListingStatus
+  ebay_item_id?: string | null
   listed_at: string | null
   sold_at: string | null
   seller_rating_count: number | null

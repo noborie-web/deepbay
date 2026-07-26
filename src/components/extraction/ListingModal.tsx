@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RefreshCw, X } from 'lucide-react'
-import { getListingIssues } from '@/lib/listing-export'
+import { getDirectListingIssues, getListingIssues } from '@/lib/listing-export'
 import type { EbayPolicySet } from '@/lib/ebay'
 import type { Extraction, Product, SellerAccount } from '@/types/database'
 
@@ -16,6 +16,13 @@ const DEFAULT_POLICIES = {
   shipping: '3area excluded ver.',
   payment: 'eBay Payments',
   returns: 'Returns Accepted,Buyer,60 Days,Money Back',
+}
+
+interface DirectListingResponse {
+  ok: boolean
+  succeeded: Array<{ productId: string; itemId: string; warnings: string[] }>
+  failed: Array<{ productId: string; error: string }>
+  requested: number
 }
 
 function filenameFromResponse(response: Response, fallback: string): string {
@@ -46,6 +53,10 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
   const [downloading, setDownloading] = useState<'listing' | 'specifics' | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [showDirectConfirmation, setShowDirectConfirmation] = useState(false)
+  const [directConfirmed, setDirectConfirmed] = useState(false)
+  const [directRunning, setDirectRunning] = useState(false)
+  const [directProgress, setDirectProgress] = useState({ completed: 0, total: 0 })
 
   useEffect(() => {
     let active = true
@@ -70,6 +81,17 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
       .map((product) => ({ product, issues: getListingIssues(product, categoryId) }))
       .filter((item) => item.issues.length > 0),
     [products, categoryId],
+  )
+  const directInvalidProducts = useMemo(
+    () => products
+      .filter((product) => product.listing_status === 'draft')
+      .map((product) => ({ product, issues: getDirectListingIssues(product, categoryId) }))
+      .filter((item) => item.issues.length > 0),
+    [products, categoryId],
+  )
+  const directTargetProducts = useMemo(
+    () => products.filter((product) => product.listing_status === 'draft'),
+    [products],
   )
   const sellerMismatch = Boolean(
     extraction.seller_account_id && sellerAccountId !== extraction.seller_account_id,
@@ -97,6 +119,12 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
     && sellerReady
     && policiesReady
     && !downloading
+    && !directRunning
+  const canDirectListing = canDownloadListing
+    && sellerConnected
+    && policyMode === 'ebay'
+    && directTargetProducts.length > 0
+    && directInvalidProducts.length === 0
 
   const loadEbayPolicies = useCallback(async (forceRefresh = false) => {
     if (!sellerAccountId || !sellerConnected) return
@@ -203,7 +231,10 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
       params.set('shippingProfile', shippingProfile.trim())
       params.set('paymentProfile', paymentProfile.trim())
       params.set('returnProfile', returnProfile.trim())
-      if (kind === 'specifics') {
+      if (kind === 'listing') {
+        params.set('formatVersion', 'ebay-upload-42-v1')
+        params.set('requestId', crypto.randomUUID())
+      } else {
         params.set('formatVersion', 'specificsin-45-v1')
         // 過去の3列レスポンスがブラウザや中継キャッシュに残っていても再利用させない。
         params.set('requestId', crypto.randomUUID())
@@ -216,7 +247,15 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
         const json = await response.json().catch(() => ({}))
         throw new Error(json.error ?? 'CSV出力に失敗しました')
       }
-      if (kind === 'specifics') {
+      if (kind === 'listing') {
+        const format = response.headers.get('X-Ebay-Upload-Format')
+        const columns = response.headers.get('X-Ebay-Upload-Columns')
+        if (format !== '42-columns-v1' || columns !== '42') {
+          throw new Error(
+            '旧形式の出品CSVが返されたためダウンロードを中止しました。画面を再読み込みしてください。',
+          )
+        }
+      } else {
         const format = response.headers.get('X-Specifics-In-Format')
         const columns = response.headers.get('X-Specifics-In-Columns')
         if (format !== '45-columns-v1' || columns !== '45') {
@@ -244,6 +283,69 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
       setError(err instanceof Error ? err.message : 'CSV出力に失敗しました')
     } finally {
       setDownloading(null)
+    }
+  }
+
+  async function publishDirectly() {
+    if (!canDirectListing || !directConfirmed) return
+    setError('')
+    setNotice('')
+    setDirectRunning(true)
+    setDirectProgress({ completed: 0, total: directTargetProducts.length })
+    const succeeded: DirectListingResponse['succeeded'] = []
+    const failed: DirectListingResponse['failed'] = []
+    try {
+      for (let offset = 0; offset < directTargetProducts.length; offset += 20) {
+        const chunk = directTargetProducts.slice(offset, offset + 20)
+        const response = await fetch('/api/ebay/listings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            extractionId: extraction.id,
+            sellerAccountId,
+            productIds: chunk.map((product) => product.id),
+            shippingProfile,
+            paymentProfile,
+            returnProfile,
+            confirmed: true,
+          }),
+        })
+        const json = await response.json() as Partial<DirectListingResponse> & { error?: string }
+        if (!response.ok && !Array.isArray(json.failed)) {
+          throw new Error(json.error ?? 'eBayへのダイレクト出品に失敗しました')
+        }
+        succeeded.push(...(json.succeeded ?? []))
+        failed.push(...(json.failed ?? []))
+        setDirectProgress({
+          completed: Math.min(offset + chunk.length, directTargetProducts.length),
+          total: directTargetProducts.length,
+        })
+      }
+      const succeededIds = new Set(succeeded.map((item) => item.productId))
+      setProducts((current) => current.map((product) => (
+        succeededIds.has(product.id)
+          ? {
+            ...product,
+            listing_status: 'listed',
+            listed_at: new Date().toISOString(),
+            ebay_item_id: succeeded.find((item) => item.productId === product.id)?.itemId ?? null,
+          }
+          : product
+      )))
+      if (failed.length > 0) {
+        setError(
+          `${succeeded.length}件を出品、${failed.length}件が失敗しました。`
+          + ` ${failed.slice(0, 3).map((item) => item.error).join(' / ')}`,
+        )
+      } else {
+        setNotice(`${succeeded.length}件をeBayへ出品しました。`)
+      }
+      setShowDirectConfirmation(false)
+      setDirectConfirmed(false)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'eBayへのダイレクト出品に失敗しました')
+    } finally {
+      setDirectRunning(false)
     }
   }
 
@@ -450,7 +552,65 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
             {!sellerReady && (
               <p className="text-xs text-red-600 mt-2">eBayセラーIDを入力してください。</p>
             )}
+            {directInvalidProducts.some(({ issues }) => issues.includes('オークション形式')) && (
+              <p className="text-xs text-amber-600 mt-2">
+                ダイレクト出品は固定価格商品のみ対応しています。オークション商品はCSV出品を使用してください。
+              </p>
+            )}
           </section>
+
+          {showDirectConfirmation && (
+            <section className="border-2 border-red-300 bg-red-50 rounded-lg px-4 py-4 space-y-3">
+              <h3 className="font-bold text-red-700">eBayへの実出品を確認</h3>
+              <p className="text-sm text-gray-800">
+                <strong>{sellerId}</strong> に <strong>{directTargetProducts.length}件</strong>を
+                固定価格で公開します。eBayの出品手数料が発生する場合があります。
+              </p>
+              <dl className="text-xs text-gray-700 grid sm:grid-cols-3 gap-2">
+                <div><dt className="text-gray-500">配送</dt><dd>{shippingProfile}</dd></div>
+                <div><dt className="text-gray-500">支払</dt><dd>{paymentProfile}</dd></div>
+                <div><dt className="text-gray-500">返品</dt><dd>{returnProfile}</dd></div>
+              </dl>
+              <label className="flex items-start gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  checked={directConfirmed}
+                  onChange={(event) => setDirectConfirmed(event.target.checked)}
+                  disabled={directRunning}
+                  className="mt-1"
+                />
+                内容を確認し、eBayへ実際に出品することに同意します
+              </label>
+              {directRunning && (
+                <p className="text-sm text-blue-700">
+                  出品中: {directProgress.completed} / {directProgress.total}件
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDirectConfirmation(false)
+                    setDirectConfirmed(false)
+                  }}
+                  disabled={directRunning}
+                  className="border rounded-lg px-4 py-2 disabled:opacity-50"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="button"
+                  onClick={publishDirectly}
+                  disabled={!directConfirmed || directRunning}
+                  className="bg-red-600 text-white rounded-lg px-4 py-2 disabled:opacity-40"
+                >
+                  {directRunning
+                    ? `eBayへ出品中（${directProgress.completed}/${directProgress.total}）`
+                    : `eBayへ${directTargetProducts.length}件出品`}
+                </button>
+              </div>
+            </section>
+          )}
 
           {error && <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</p>}
           {notice && <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">{notice}</p>}
@@ -461,10 +621,19 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
             閉じる
           </button>
           <div className="mr-auto text-xs text-gray-500">
-            ダイレクト出品はeBay OAuth接続後に利用できます。
+            ダイレクト出品はeBay接続・ポリシー同期後に利用できます。
           </div>
-          <button disabled className="border border-gray-300 text-gray-400 rounded-lg px-6 py-2.5 cursor-not-allowed">
-            ダイレクト出品（準備中）
+          <button
+            onClick={() => {
+              setError('')
+              setNotice('')
+              setDirectConfirmed(false)
+              setShowDirectConfirmation(true)
+            }}
+            disabled={!canDirectListing}
+            className="border border-red-500 text-red-600 rounded-lg px-6 py-2.5 hover:bg-red-50 disabled:border-gray-300 disabled:text-gray-400 disabled:cursor-not-allowed"
+          >
+            ダイレクト出品
           </button>
           <button
             onClick={() => downloadCsv('listing')}
