@@ -6,7 +6,7 @@ import '@testing-library/jest-dom'
 import ListingModal from '@/components/extraction/ListingModal'
 import type { Extraction, Product, SellerAccount } from '@/types/database'
 
-vi.mock('lucide-react', () => ({ X: () => null }))
+vi.mock('lucide-react', () => ({ X: () => null, RefreshCw: () => null }))
 
 const sellers: SellerAccount[] = [
   {
@@ -101,6 +101,98 @@ afterEach(() => {
 })
 
 describe('ListingModal', () => {
+  it('eBay接続済みセラーのビジネスポリシーを取得して選択できる', async () => {
+    const connectedSeller: SellerAccount = {
+      ...sellers[0],
+      ebay_user_id: 'ebay-user-1',
+      ebay_marketplace_id: 'EBAY_US',
+      ebay_connected_at: '2026-07-26T00:00:00.000Z',
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/products/')) {
+        return { ok: true, json: async () => [makeProduct()] }
+      }
+      if (url.startsWith('/api/ebay/policies')) {
+        return {
+          ok: true,
+          json: async () => ({
+            marketplaceId: 'EBAY_US',
+            fulfillment: [
+              { id: 'f1', name: 'US Shipping', marketplaceId: 'EBAY_US', categoryTypes: [] },
+              { id: 'f2', name: 'Worldwide Shipping', marketplaceId: 'EBAY_US', categoryTypes: [] },
+            ],
+            payment: [
+              { id: 'p1', name: 'eBay Managed Payments', marketplaceId: 'EBAY_US', categoryTypes: [] },
+            ],
+            return: [
+              { id: 'r1', name: 'Returns 60 Days', marketplaceId: 'EBAY_US', categoryTypes: [] },
+            ],
+            syncedAt: '2026-07-26T00:00:00.000Z',
+          }),
+        }
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    render(
+      <ListingModal
+        extraction={{ ...extraction, seller_account: connectedSeller }}
+        sellers={[connectedSeller]}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: '出品ポリシー選択方法' })).toHaveValue('ebay')
+      expect(screen.getByRole('combobox', { name: '配送ポリシー' })).toHaveValue('US Shipping')
+    })
+    expect(screen.getByRole('combobox', { name: '支払ポリシー' })).toHaveValue('eBay Managed Payments')
+    expect(screen.getByRole('combobox', { name: '返品ポリシー' })).toHaveValue('Returns 60 Days')
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: '配送ポリシー' }),
+      'Worldwide Shipping',
+    )
+    expect(screen.getByRole('combobox', { name: '配送ポリシー' })).toHaveValue('Worldwide Shipping')
+    expect(screen.getByRole('button', { name: 'CSV出品' })).toBeEnabled()
+  })
+
+  it('eBay再同期ボタンはキャッシュを無視して取得する', async () => {
+    const connectedSeller: SellerAccount = {
+      ...sellers[0],
+      ebay_connected_at: '2026-07-26T00:00:00.000Z',
+    }
+    const policyResponse = {
+      marketplaceId: 'EBAY_US',
+      fulfillment: [{ id: 'f1', name: 'Shipping', marketplaceId: 'EBAY_US', categoryTypes: [] }],
+      payment: [{ id: 'p1', name: 'Payment', marketplaceId: 'EBAY_US', categoryTypes: [] }],
+      return: [{ id: 'r1', name: 'Returns', marketplaceId: 'EBAY_US', categoryTypes: [] }],
+      syncedAt: '2026-07-26T00:00:00.000Z',
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      return url.startsWith('/api/products/')
+        ? { ok: true, json: async () => [makeProduct()] }
+        : { ok: true, json: async () => policyResponse }
+    })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    render(
+      <ListingModal
+        extraction={{ ...extraction, seller_account: connectedSeller }}
+        sellers={[connectedSeller]}
+        onClose={vi.fn()}
+      />,
+    )
+    const syncButton = await screen.findByRole('button', { name: 'eBayと再同期' })
+    await waitFor(() => expect(syncButton).toBeEnabled())
+    await userEvent.click(syncButton)
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('refresh=1'))).toBe(true)
+    })
+  })
+
   it('出品準備済みならCSV出品とSpecifics CSVを有効化する', async () => {
     render(<ListingModal extraction={extraction} sellers={sellers} onClose={vi.fn()} />)
     await waitFor(() => expect(screen.getByText('対象商品:')).toBeTruthy())

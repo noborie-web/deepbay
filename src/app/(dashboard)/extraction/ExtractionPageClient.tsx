@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Search } from 'lucide-react'
 import ExtractionStats from '@/components/extraction/ExtractionStats'
@@ -30,8 +30,35 @@ export default function ExtractionPageClient({
   const [search, setSearch] = useState('')
   const [extractions, setExtractions] = useState(initialExtractions)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [listingId, setListingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      const params = new URLSearchParams(window.location.search)
+      const connectedSeller = params.get('ebayConnected')
+      const ebayError = params.get('ebayError')
+      const openListing = params.get('openListing')
+      if (connectedSeller) setNotice(`${connectedSeller} をeBayに接続しました。`)
+      if (ebayError) setError(ebayError)
+      if (openListing && initialExtractions.some((item) => item.id === openListing)) {
+        setListingId(openListing)
+      }
+      if (connectedSeller || ebayError || openListing) {
+        params.delete('ebayConnected')
+        params.delete('ebayError')
+        params.delete('openListing')
+        const query = params.toString()
+        window.history.replaceState(
+          {},
+          '',
+          `${window.location.pathname}${query ? `?${query}` : ''}`,
+        )
+      }
+    }, 0)
+    return () => window.clearTimeout(timeout)
+  }, [initialExtractions])
 
   const filtered = extractions.filter((e) => {
     if (!search) return true
@@ -115,6 +142,11 @@ export default function ExtractionPageClient({
       {error && (
         <div className="mb-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
           {error}
+        </div>
+      )}
+      {notice && (
+        <div className="mb-3 text-sm text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">
+          {notice}
         </div>
       )}
       <ExtractionForm
