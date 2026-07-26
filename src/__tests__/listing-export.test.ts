@@ -150,6 +150,22 @@ describe('listing export', () => {
     expect(rows[1][rows[0].indexOf('PicURL')]).toBe(images.slice(0, 24).join('|'))
   })
 
+  it('メルカリのオリジナル画像がある場合は重複サムネイルを除外する', () => {
+    const originals = [
+      'https://static.mercdn.net/item/detail/orig/photos/m1_1.jpg?1',
+      'https://static.mercdn.net/item/detail/orig/photos/m1_2.jpg?2',
+    ]
+    const rows = parseCsv(generateListingCsv([
+      makeProduct({
+        ebay_images: [
+          ...originals,
+          'https://static.mercdn.net/thumb/item/jpeg/m1_1.jpg?1',
+        ],
+      }),
+    ], OPTIONS))
+    expect(rows[1][rows[0].indexOf('PicURL')]).toBe(originals.join('|'))
+  })
+
   it('Specifics-IN CSVは添付互換の出品列と日本語元データ列を持つ', () => {
     const product = makeProduct()
     const csv = generateSpecificsCsv([product], OPTIONS)

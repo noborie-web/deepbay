@@ -244,9 +244,12 @@ function sourceSnapshot(product: Product): string {
 }
 
 export function productImages(product: Product): string[] {
-  return product.ebay_images?.length
+  const images = product.ebay_images?.length
     ? product.ebay_images
     : (product.original_images ?? [])
+  const unique = [...new Set(images.filter((url) => url.trim()))]
+  const mercariOriginals = unique.filter((url) => url.includes('/item/detail/orig/'))
+  return mercariOriginals.length > 0 ? mercariOriginals : unique
 }
 
 const SPECIFICS_IN_HEADERS = [
