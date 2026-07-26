@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { _getDPoPContext, _generateDPoP, _toProduct, _getMultiNumberParam } from '../lib/scrapers/mercari'
+import {
+  _extractImages,
+  _generateDPoP,
+  _getDPoPContext,
+  _getMultiNumberParam,
+  _toProduct,
+  MercariScraper,
+} from '../lib/scrapers/mercari'
 
 describe('DPoP JWT generation', () => {
   it('produces a 3-segment JWT string', async () => {
@@ -142,6 +149,96 @@ describe('toProduct() date handling', () => {
   it('returns null when date field is absent', () => {
     const p = _toProduct({ id: 'x1', name: 'T', price: 1, description: '', thumbnails: [] }, 'https://jp.mercari.com/item/x1')
     expect(p.sourceUpdatedAt).toBeNull()
+  })
+})
+
+describe('Mercari item images', () => {
+  const fullImages = [
+    'https://static.mercdn.net/item/detail/orig/photos/m1_1.jpg?1',
+    'https://static.mercdn.net/item/detail/orig/photos/m1_2.jpg?2',
+    'https://static.mercdn.net/item/detail/orig/photos/m1_3.jpg?3',
+  ]
+
+  it('商品詳細の全画像を順番どおり抽出し、重複を除外する', () => {
+    expect(_extractImages({
+      photos: [
+        fullImages[0],
+        { image_url: fullImages[1] },
+        { url: fullImages[2] },
+      ],
+      thumbnails: [fullImages[0]],
+    })).toEqual(fullImages)
+  })
+
+  it('検索結果の商品を詳細APIで補完して全画像を返す', async () => {
+    const originalFetch = globalThis.fetch
+    const detailRequests: Array<{ url: string; dpop: string | null }> = []
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(input)
+      if (requestUrl.includes('entities:search')) {
+        return new Response(JSON.stringify({
+          items: [{
+            id: 'm1',
+            name: 'Test item',
+            price: 1000,
+            thumbnails: ['https://static.mercdn.net/thumb.jpg'],
+          }],
+        }), { status: 200 })
+      }
+      if (requestUrl.includes('/items/get?id=m1')) {
+        const headers = new Headers(init?.headers)
+        detailRequests.push({ url: requestUrl, dpop: headers.get('DPoP') })
+        return new Response(JSON.stringify({
+          data: {
+            id: 'm1',
+            name: 'Test item',
+            price: 1000,
+            photos: fullImages,
+          },
+        }), { status: 200 })
+      }
+      return new Response(null, { status: 404 })
+    }
+
+    try {
+      const products = await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 1 },
+      )
+      expect(products[0].images).toEqual(fullImages)
+      expect(detailRequests).toHaveLength(1)
+      expect(detailRequests[0].dpop).toBeTruthy()
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('詳細APIが失敗した商品は一覧画像を残して抽出を継続する', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const requestUrl = String(input)
+      if (requestUrl.includes('entities:search')) {
+        return new Response(JSON.stringify({
+          items: [{
+            id: 'm1',
+            name: 'Test item',
+            price: 1000,
+            thumbnails: ['https://static.mercdn.net/thumb.jpg'],
+          }],
+        }), { status: 200 })
+      }
+      return new Response(null, { status: 503 })
+    }
+
+    try {
+      const products = await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 1 },
+      )
+      expect(products[0].images).toEqual(['https://static.mercdn.net/thumb.jpg'])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
 

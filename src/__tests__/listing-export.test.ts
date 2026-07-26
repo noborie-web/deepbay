@@ -77,6 +77,29 @@ describe('listing export', () => {
     expect(csv).toContain(',eBay Payments,Returns Accepted,Japan Shipping,')
   })
 
+  it('PicURLへ全画像をパイプ区切りで出力する', () => {
+    const images = [
+      'https://static.mercdn.net/item/detail/orig/photos/m1_1.jpg?1',
+      'https://static.mercdn.net/item/detail/orig/photos/m1_2.jpg?2',
+      'https://static.mercdn.net/item/detail/orig/photos/m1_3.jpg?3',
+    ]
+    const csv = generateSpecificsCsv([
+      makeProduct({ ebay_images: images, original_images: images }),
+    ], OPTIONS)
+    expect(csv).toContain(images.join('|'))
+  })
+
+  it('編集画像が空なら元の全画像をPicURLへ出力する', () => {
+    const images = [
+      'https://static.mercdn.net/item/detail/orig/photos/m1_1.jpg?1',
+      'https://static.mercdn.net/item/detail/orig/photos/m1_2.jpg?2',
+    ]
+    const csv = generateSpecificsCsv([
+      makeProduct({ ebay_images: [], original_images: images }),
+    ], OPTIONS)
+    expect(csv).toContain(images.join('|'))
+  })
+
   it('Specifics-IN CSVは空のSpecifics値をNAとして出力する', () => {
     const csv = generateSpecificsCsv([
       makeProduct({ ebay_item_specifics: { Material: ['Plastic'] } }),

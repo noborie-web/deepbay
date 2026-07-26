@@ -53,6 +53,8 @@ export async function _getDPoPContext(): Promise<DPoPContext> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function _toProduct(item: any, url: string) { return toProduct(item, url) }
 export function _getMultiNumberParam(params: URLSearchParams, key: string) { return getMultiNumberParam(params, key) }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function _extractImages(item: any) { return extractImages(item) }
 
 async function generateDPoP(htu: string, htm: string, ctx: DPoPContext): Promise<string> {
   const header = { typ: 'dpop+jwt', alg: 'ES256', jwk: ctx.publicJwk }
@@ -84,13 +86,31 @@ function getMultiNumberParam(params: URLSearchParams, key: string): number[] {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractImages(item: any): string[] {
+  const candidates = [
+    ...(Array.isArray(item.photos) ? item.photos : []),
+    ...(Array.isArray(item.images) ? item.images : []),
+    ...(Array.isArray(item.thumbnails) ? item.thumbnails : []),
+  ]
+
+  return [...new Set(candidates
+    .map((image: string | {
+      imageUrl?: string
+      image_url?: string
+      photoUrl?: string
+      photo_url?: string
+      url?: string
+    }) => {
+      if (typeof image === 'string') return image
+      return image.imageUrl ?? image.image_url ?? image.photoUrl ?? image.photo_url ?? image.url ?? ''
+    })
+    .filter((image: string) => /^https?:\/\//.test(image)))]
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toProduct(item: any, url: string): ScrapedProduct {
   const itemId: string = item.id ?? item.item_id ?? ''
-  const images: string[] = (item.thumbnails ?? item.photos ?? [])
-    .map((p: string | { imageUrl?: string; image_url?: string }) =>
-      typeof p === 'string' ? p : (p.imageUrl ?? p.image_url ?? '')
-    )
-    .filter(Boolean)
+  const images = extractImages(item)
 
   // 評価数: seller情報から複数パスを試みる
   const seller = item.seller ?? item.sellerInfo ?? null
@@ -139,7 +159,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
   }
 
   return {
-    sourceUrl: `https://jp.mercari.com/item/${itemId}`,
+    sourceUrl: itemId ? `https://jp.mercari.com/item/${itemId}` : url,
     sourceSite: 'mercari',
     sourceItemId: itemId,
     title: item.name ?? '',
@@ -298,7 +318,7 @@ export class MercariScraper {
       throw new ScraperError('検索結果が0件です', this.siteKey, url)
     }
 
-    return allProducts.slice(0, limit)
+    return this.enrichImages(allProducts.slice(0, limit), url, _options)
   }
 
   private async scrapeSellerPage(sellerId: string, url: string, limit: number): Promise<ScrapedProduct[]> {
@@ -325,7 +345,7 @@ export class MercariScraper {
       return this.scrapeSellerViaSearch(sellerId, url, limit)
     }
 
-    return items.map((item) => toProduct(item, url))
+    return this.enrichImages(items.map((item) => toProduct(item, url)).slice(0, limit), url)
   }
 
   private async scrapeSellerViaSearch(sellerId: string, url: string, limit: number): Promise<ScrapedProduct[]> {
@@ -354,26 +374,69 @@ export class MercariScraper {
       throw new ScraperError('No items found for this seller', this.siteKey, url)
     }
 
-    return items.map((item) => toProduct(item, url))
+    return this.enrichImages(items.map((item) => toProduct(item, url)).slice(0, limit), url)
   }
 
   private async scrapeItem(itemId: string, url: string): Promise<ScrapedProduct> {
-    const res = await fetch(`https://api.mercari.jp/v1/items/get_items_by_id?id=${itemId}`, {
-      headers: HEADERS,
-    })
-
-    if (!res.ok) {
-      throw new ScraperError(`Item API error: ${res.status}`, this.siteKey, url)
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const json: any = await res.json()
-    const item = json?.data ?? json?.item ?? json
+    const item = await this.fetchItemDetail(itemId)
 
     if (!item?.name) {
       throw new ScraperError('Item data not found', this.siteKey, url)
     }
 
     return toProduct(item, url)
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async fetchItemDetail(itemId: string): Promise<any> {
+    const itemUrl = new URL('https://api.mercari.jp/items/get')
+    itemUrl.searchParams.set('id', itemId)
+    const endpoint = itemUrl.toString()
+    const dpop = await generateDPoP(endpoint, 'GET', await getDPoPContext())
+    const res = await fetch(endpoint, {
+      headers: { ...HEADERS, 'DPoP': dpop },
+    })
+
+    if (!res.ok) {
+      throw new Error(`Item API error: ${res.status}`)
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const json: any = await res.json()
+    return json?.data ?? json?.item ?? json
+  }
+
+  private async enrichImages(
+    products: ScrapedProduct[],
+    url: string,
+    options: ScraperOptions = {},
+  ): Promise<ScrapedProduct[]> {
+    const enriched: ScrapedProduct[] = []
+    const concurrency = 8
+
+    for (let index = 0; index < products.length; index += concurrency) {
+      const chunk = products.slice(index, index + concurrency)
+      const results = await Promise.all(chunk.map(async (product) => {
+        if (!product.sourceItemId) return product
+
+        try {
+          const detail = await this.fetchItemDetail(product.sourceItemId)
+          const detailImages = extractImages(detail)
+          return detailImages.length > 0
+            ? { ...product, images: detailImages }
+            : product
+        } catch {
+          // 詳細APIが一時的に失敗しても、一覧APIのサムネイルで抽出を継続する。
+          return product
+        }
+      }))
+      enriched.push(...results)
+      options.onPage?.(enriched.length, products.length)
+    }
+
+    if (enriched.length === 0) {
+      throw new ScraperError('商品画像を取得できませんでした', this.siteKey, url)
+    }
+    return enriched
   }
 }

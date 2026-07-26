@@ -144,7 +144,7 @@ export function generateListingCsv(products: Product[], options: ListingExportOp
       CONDITION_ID_MAP[condition] ?? '3000',
       (product.ebay_title ?? product.original_title).slice(0, 80),
       listingDescription(product),
-      (product.ebay_images ?? product.original_images ?? []).slice(0, 12).join('|'),
+      productImages(product).slice(0, 12).join('|'),
       category,
       options.paymentProfileName,
       options.returnProfileName,
@@ -175,6 +175,12 @@ function sourceSnapshot(product: Product): string {
     images: product.original_images,
     condition: product.original_condition,
   })
+}
+
+function productImages(product: Product): string[] {
+  return product.ebay_images?.length
+    ? product.ebay_images
+    : (product.original_images ?? [])
 }
 
 const SPECIFICS_IN_HEADERS = [
@@ -254,7 +260,7 @@ export function generateSpecificsCsv(products: Product[], options: ListingExport
       (product.ebay_title ?? product.original_title).slice(0, 80),
       listingDescription(product),
       brand,
-      (product.ebay_images ?? product.original_images ?? []).slice(0, 12).join('|'),
+      productImages(product).slice(0, 12).join('|'),
       upc,
       product.ebay_category_id ?? options.categoryId ?? '',
       '1',
