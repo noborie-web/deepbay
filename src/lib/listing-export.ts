@@ -70,6 +70,18 @@ export function listingFilename(sellerId: string, kind: 'listing' | 'specifics')
   return `ebay_${kind}_${normalizeFilenamePart(sellerId)}_${date}.csv`
 }
 
+export function specificsInFilename(
+  sellerId: string,
+  categoryId: string | null,
+  extractionId: string,
+): string {
+  return [
+    normalizeFilenamePart(sellerId),
+    normalizeFilenamePart(categoryId ?? 'category'),
+    normalizeFilenamePart(extractionId.replace(/-/g, '_')),
+  ].join('_') + '.csv'
+}
+
 export function productCustomLabel(product: Pick<Product, 'id'>): string {
   return `deepbay_${product.id.replace(/-/g, '_')}`
 }
@@ -82,8 +94,10 @@ function productSpecifics(product: Product): Record<string, string[]> {
   return specifics
 }
 
-function specificNames(products: Product[]): string[] {
+function specificNames(products: Product[], excludedNames: string[] = []): string[] {
+  const excluded = new Set(excludedNames.map((name) => name.toLowerCase()))
   return [...new Set(products.flatMap((product) => Object.keys(productSpecifics(product))))]
+    .filter((name) => !excluded.has(name.toLowerCase()))
     .sort((a, b) => a.localeCompare(b, 'en'))
 }
 
@@ -130,7 +144,7 @@ export function generateListingCsv(products: Product[], options: ListingExportOp
       CONDITION_ID_MAP[condition] ?? '3000',
       (product.ebay_title ?? product.original_title).slice(0, 80),
       listingDescription(product),
-      (product.ebay_images ?? product.original_images ?? []).slice(0, 12).join('|'),
+      productImages(product).slice(0, 12).join('|'),
       category,
       options.paymentProfileName,
       options.returnProfileName,
@@ -150,17 +164,131 @@ export function generateListingCsv(products: Product[], options: ListingExportOp
   return `\uFEFF${[headers.join(','), ...rows].join('\r\n')}`
 }
 
-export function generateSpecificsCsv(products: Product[], categoryId: string | null): string {
-  const names = specificNames(products)
-  const headers = ['CustomLabel', 'Title', 'Category', ...names.map((name) => `C:${name}`)]
-  const rows = products.map((product) => {
+function sourceSnapshot(product: Product): string {
+  return JSON.stringify({
+    id: product.source_item_id,
+    url: product.source_url,
+    site: product.source_site,
+    title: product.original_title,
+    description: product.original_description,
+    price: product.original_price,
+    images: product.original_images,
+    condition: product.original_condition,
+  })
+}
+
+function productImages(product: Product): string[] {
+  return product.ebay_images?.length
+    ? product.ebay_images
+    : (product.original_images ?? [])
+}
+
+const SPECIFICS_IN_HEADERS = [
+  'Action(CC=Cp1252)',
+  'CustomLabel',
+  'StartPrice',
+  'ConditionID',
+  'Title',
+  'Description',
+  'C:Brand',
+  'PicURL',
+  'UPC',
+  'Category',
+  'PayPalAccepted',
+  'PayPalEmailAddress',
+  'PaymentProfileName',
+  'ReturnProfileName',
+  'ShippingProfileName',
+  'Country',
+  'Location',
+  'Apply Profile Domestic',
+  'Apply Profile International',
+  'BuyerRequirements:LinkedPayPalAccount',
+  'Duration',
+  'Format',
+  'Quantity',
+  'Currency',
+  'SiteID',
+  'C:Country',
+  'jp_desc',
+  'jp_title',
+  'jp_spec',
+]
+
+const SPECIFICS_IN_ITEM_SPECIFIC_COLUMNS = [
+  'California Prop 65 Warning',
+  'Country/Region of Manufacture',
+  'Features',
+  'Game Name',
+  'Genre',
+  'MPN',
+  'Manufacturer Warranty',
+  'Platform',
+  'Publisher',
+  'Rating',
+  'Region Code',
+  'Release Year',
+  'Sub-Genre',
+  'Unit Quantity',
+  'Unit Type',
+  'Video Game Series',
+]
+
+export const SPECIFICS_IN_COLUMN_COUNT = 45
+
+export function generateSpecificsCsv(products: Product[], options: ListingExportOptions): string {
+  // Specifics-INの取込テンプレートは列位置で判定するため、商品データや
+  // カテゴリの有無にかかわらず必ず同じ45列を出力する。
+  const names = SPECIFICS_IN_ITEM_SPECIFIC_COLUMNS
+  const headers = [...SPECIFICS_IN_HEADERS, ...names.map((name) => `C:${name}`)]
+  if (headers.length !== SPECIFICS_IN_COLUMN_COUNT) {
+    throw new Error(`Specifics-INヘッダーは${SPECIFICS_IN_COLUMN_COUNT}列である必要があります`)
+  }
+
+  const rows = products.map((product, index) => {
     const specifics = productSpecifics(product)
+    const condition = product.ebay_condition ?? product.original_condition ?? ''
+    const brand = product.ebay_brand?.trim() || specifics.Brand?.join('|') || 'NA'
+    const country = specifics.Country?.join('|') || 'Japan'
+    const upc = specifics.UPC?.join('|') || 'NA'
+    const price = Number(product.ebay_price)
     const row = [
+      'Add',
       productCustomLabel(product),
-      product.ebay_title ?? product.original_title,
-      product.ebay_category_id ?? categoryId ?? '',
-      ...names.map((name) => (specifics[name] ?? []).join('|')),
+      Number.isFinite(price) && price > 0 ? price.toFixed(2) : '',
+      CONDITION_ID_MAP[condition] ?? '3000',
+      (product.ebay_title ?? product.original_title).slice(0, 80),
+      listingDescription(product),
+      brand,
+      productImages(product).slice(0, 12).join('|'),
+      upc,
+      product.ebay_category_id ?? options.categoryId ?? '',
+      '1',
+      'payAddress',
+      options.paymentProfileName,
+      options.returnProfileName,
+      options.shippingProfileName,
+      'JP',
+      'Japan',
+      '0.0',
+      '0.0',
+      '0.0',
+      'GTC',
+      product.price_type === 'auction' ? 'Auction' : 'FixedPriceItem',
+      '1',
+      'USD',
+      'US',
+      country,
+      product.original_description ?? '',
+      product.original_title,
+      sourceSnapshot(product),
+      ...names.map((name) => (specifics[name] ?? []).join('|') || 'NA'),
     ]
+    if (row.length !== SPECIFICS_IN_COLUMN_COUNT) {
+      throw new Error(
+        `Specifics-INの${index + 2}行目が${row.length}列です（必要: ${SPECIFICS_IN_COLUMN_COUNT}列）`,
+      )
+    }
     return row.map((value) => escapeCsv(String(value))).join(',')
   })
   return `\uFEFF${[headers.join(','), ...rows].join('\r\n')}`

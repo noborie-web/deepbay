@@ -21,6 +21,9 @@ export interface SellerAccount {
   seller_id: string
   display_name: string | null
   is_default: boolean
+  ebay_user_id?: string | null
+  ebay_marketplace_id?: string
+  ebay_connected_at?: string | null
   created_at: string
 }
 
