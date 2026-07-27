@@ -111,8 +111,13 @@ export function specificsInFilename(
   ].join('_') + '.csv'
 }
 
-export function productCustomLabel(product: Pick<Product, 'id'>): string {
-  return `deepbay_${product.id.replace(/-/g, '_')}`
+export function productCustomLabel(
+  product: Pick<Product, 'source_lookup_code'>,
+): string {
+  if (!product.source_lookup_code) {
+    throw new Error('仕入れ先URL用のDBK-IDが未発行です')
+  }
+  return product.source_lookup_code
 }
 
 export function productSpecifics(product: Product): Record<string, string[]> {

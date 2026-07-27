@@ -7,6 +7,10 @@ import {
   listingFilename,
 } from '@/lib/listing-export'
 import type { Product } from '@/types/database'
+import {
+  attachSourceLookupCodes,
+  ensureSourceLookupCodes,
+} from '@/lib/source-lookup'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -89,7 +93,16 @@ export async function GET(req: NextRequest) {
     )
   }
 
-  const csv = generateListingCsv(typedProducts, {
+  let lookupCodes: Map<string, string>
+  try {
+    lookupCodes = await ensureSourceLookupCodes(supabase, user.id, typedProducts)
+  } catch (caught) {
+    return NextResponse.json({
+      error: caught instanceof Error ? caught.message : 'DBK-IDの発行に失敗しました',
+    }, { status: 500 })
+  }
+  const exportProducts = attachSourceLookupCodes(typedProducts, lookupCodes)
+  const csv = generateListingCsv(exportProducts, {
     categoryId,
     sellerId: seller.seller_id,
     paymentProfileName: paymentProfile,

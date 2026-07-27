@@ -6,6 +6,10 @@ import {
   specificsInFilename,
 } from '@/lib/listing-export'
 import type { Product } from '@/types/database'
+import {
+  attachSourceLookupCodes,
+  ensureSourceLookupCodes,
+} from '@/lib/source-lookup'
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -76,7 +80,17 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: '商品が見つかりません' }, { status: 404 })
   }
 
-  const csv = generateSpecificsCsv(products as Product[], {
+  const typedProducts = products as Product[]
+  let lookupCodes: Map<string, string>
+  try {
+    lookupCodes = await ensureSourceLookupCodes(supabase, user.id, typedProducts)
+  } catch (caught) {
+    return NextResponse.json({
+      error: caught instanceof Error ? caught.message : 'DBK-IDの発行に失敗しました',
+    }, { status: 500 })
+  }
+  const exportProducts = attachSourceLookupCodes(typedProducts, lookupCodes)
+  const csv = generateSpecificsCsv(exportProducts, {
     categoryId: extraction.category?.ebay_category_id ?? null,
     sellerId: seller.seller_id,
     paymentProfileName: paymentProfile,

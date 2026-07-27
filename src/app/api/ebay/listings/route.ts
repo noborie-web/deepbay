@@ -8,6 +8,10 @@ import {
 import { publishFixedPriceItem } from '@/lib/ebay-listing'
 import { getDirectListingIssues } from '@/lib/listing-export'
 import type { Product } from '@/types/database'
+import {
+  attachSourceLookupCodes,
+  ensureSourceLookupCodes,
+} from '@/lib/source-lookup'
 
 const MAX_PRODUCTS_PER_REQUEST = 20
 const CONCURRENCY = 3
@@ -143,7 +147,7 @@ export async function POST(request: NextRequest) {
     .map((productId) => ({ productId, error: '商品が見つかりません' }))
   const categoryRelation = extraction.category as unknown as { ebay_category_id: string | null } | null
   const categoryId = categoryRelation?.ebay_category_id ?? null
-  const validProducts = typedProducts.filter((product) => {
+  const validProductsWithoutCodes = typedProducts.filter((product) => {
     if (product.listing_status !== 'draft') {
       failed.push({ productId: product.id, error: '出品中または出品済みの商品です' })
       return false
@@ -155,6 +159,15 @@ export async function POST(request: NextRequest) {
     }
     return true
   })
+  let validProducts: Product[]
+  try {
+    const lookupCodes = await ensureSourceLookupCodes(admin, user.id, validProductsWithoutCodes)
+    validProducts = attachSourceLookupCodes(validProductsWithoutCodes, lookupCodes)
+  } catch (caught) {
+    return NextResponse.json({
+      error: caught instanceof Error ? caught.message : 'DBK-IDの発行に失敗しました',
+    }, { status: 500 })
+  }
 
   let accessToken: string
   try {

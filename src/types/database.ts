@@ -134,8 +134,20 @@ export interface Product {
   source_updated_at: string | null
   purchase_price_jpy: number | null
   price_type: ProductPriceType
+  source_lookup_code?: string | null
   created_at: string
   updated_at: string
+}
+
+export interface SourceUrlLookupCode {
+  id: string
+  user_id: string
+  product_id: string | null
+  lookup_code: string
+  source_url: string
+  source_site: string
+  source_title: string
+  created_at: string
 }
 
 export interface Scraper {
@@ -186,6 +198,11 @@ export interface Database {
         Update: Partial<ExcludedProduct>
       }
       products: { Row: Product; Insert: ProductInsert; Update: Partial<Product> }
+      source_url_lookup_codes: {
+        Row: SourceUrlLookupCode
+        Insert: Omit<SourceUrlLookupCode, 'id' | 'created_at'>
+        Update: Partial<SourceUrlLookupCode>
+      }
       scrapers: { Row: Scraper; Insert: ScraperInsert; Update: Partial<Scraper> }
     }
   }
