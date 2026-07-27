@@ -369,3 +369,84 @@ describe('scrapeSearch excludeKeyword', () => {
     expect(body.searchCondition.excludeKeyword).toBe('まとめ売り')
   })
 })
+
+describe('scrapeSearch pagination', () => {
+  it('要求件数より少ないページでもnextPageTokenがあれば次ページを取得する', async () => {
+    const originalFetch = globalThis.fetch
+    const requestBodies: Array<{ pageSize: number; pageToken: string }> = []
+    let searchRequestCount = 0
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(input)
+      if (!requestUrl.includes('entities:search')) {
+        return new Response(null, { status: 404 })
+      }
+
+      requestBodies.push(JSON.parse(String(init?.body)))
+      searchRequestCount += 1
+
+      if (searchRequestCount === 1) {
+        return new Response(JSON.stringify({
+          items: Array.from({ length: 118 }, (_, index) => ({
+            name: `Item ${index + 1}`,
+            price: 1000,
+            thumbnails: [],
+          })),
+          meta: { nextPageToken: 'page-2' },
+        }), { status: 200 })
+      }
+
+      return new Response(JSON.stringify({
+        items: Array.from({ length: 2 }, (_, index) => ({
+          name: `Item ${119 + index}`,
+          price: 1000,
+          thumbnails: [],
+        })),
+      }), { status: 200 })
+    }
+
+    try {
+      const products = await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 120 },
+      )
+
+      expect(products).toHaveLength(120)
+      expect(requestBodies).toHaveLength(2)
+      expect(requestBodies[0]).toMatchObject({ pageSize: 120, pageToken: '' })
+      expect(requestBodies[1]).toMatchObject({ pageSize: 120, pageToken: 'page-2' })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('同じnextPageTokenが繰り返された場合は安全に停止する', async () => {
+    const originalFetch = globalThis.fetch
+    let searchRequestCount = 0
+
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const requestUrl = String(input)
+      if (!requestUrl.includes('entities:search')) {
+        return new Response(null, { status: 404 })
+      }
+
+      searchRequestCount += 1
+      return new Response(JSON.stringify({
+        items: [{ name: `Item ${searchRequestCount}`, price: 1000, thumbnails: [] }],
+        meta: { nextPageToken: 'same-token' },
+      }), { status: 200 })
+    }
+
+    try {
+      const products = await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 120 },
+      )
+
+      expect(products).toHaveLength(2)
+      expect(searchRequestCount).toBe(2)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})

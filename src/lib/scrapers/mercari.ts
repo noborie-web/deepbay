@@ -297,6 +297,7 @@ export class MercariScraper {
     const dpopCtx = await getDPoPContext()
     const allProducts: ScrapedProduct[] = []
     let pageToken: string | undefined
+    const seenPageTokens = new Set<string>()
     const pageSize = Math.min(limit, 120)
     // searchSessionId は検索1セッション単位で固定（mercapiに準拠）
     const searchSessionId = crypto.randomUUID().replace(/-/g, '')
@@ -335,8 +336,15 @@ export class MercariScraper {
 
       allProducts.push(...items.map((item) => toProduct(item, url)))
 
-      pageToken = json?.meta?.nextPageToken ?? json?.nextPageToken
-      if (!pageToken || items.length < pageSize) break
+      const nextPageToken = json?.meta?.nextPageToken ?? json?.nextPageToken
+      if (
+        !nextPageToken
+        || nextPageToken === pageToken
+        || seenPageTokens.has(nextPageToken)
+      ) break
+
+      seenPageTokens.add(nextPageToken)
+      pageToken = nextPageToken
     }
 
     if (allProducts.length === 0) {
