@@ -9,6 +9,7 @@ import ExtractionRow from '@/components/extraction/ExtractionRow'
 import ProductEditPanel from '@/components/extraction/ProductEditPanel'
 import ListingModal from '@/components/extraction/ListingModal'
 import ExclusionDetailsModal from '@/components/extraction/ExclusionDetailsModal'
+import ExtractionResultModal from '@/components/extraction/ExtractionResultModal'
 import type {
   SellerAccount,
   ListingCategory,
@@ -41,6 +42,7 @@ export default function ExtractionPageClient({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [listingId, setListingId] = useState<string | null>(null)
   const [exclusionId, setExclusionId] = useState<string | null>(null)
+  const [resultId, setResultId] = useState<string | null>(null)
 
   function addActivity(extractionId: string, activity: ExtractionActivity) {
     setExtractions((current) => current.map((extraction) => (
@@ -205,7 +207,7 @@ export default function ExtractionPageClient({
             <ExtractionRow
               key={extraction.id}
               extraction={extraction}
-              onViewResult={(id) => router.push(`/extraction/${id}`)}
+              onViewResult={(id) => setResultId(id)}
               onDelete={(id) => setExtractions((prev) => prev.filter((e) => e.id !== id))}
               onEdit={(id) => setEditingId((prev) => prev === id ? null : id)}
               onList={(id) => setListingId(id)}
@@ -237,6 +239,14 @@ export default function ExtractionPageClient({
         <ExclusionDetailsModal
           extraction={extractions.find((item) => item.id === exclusionId)!}
           onClose={() => setExclusionId(null)}
+        />
+      )}
+
+      {resultId && (
+        <ExtractionResultModal
+          extraction={extractions.find((item) => item.id === resultId)!}
+          onClose={() => setResultId(null)}
+          onOpenProducts={() => router.push(`/extraction/${resultId}`)}
         />
       )}
     </div>

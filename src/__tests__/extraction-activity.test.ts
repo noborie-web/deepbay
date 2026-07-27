@@ -3,6 +3,7 @@ import {
   activityBadges,
   latestActivitiesByType,
   latestActivityAt,
+  buildExtractionResultSummary,
   summarizeExclusions,
 } from '@/lib/extraction-activity'
 import type { ExcludedProduct, ExtractionActivity } from '@/types/database'
@@ -24,7 +25,12 @@ function activity(
   }
 }
 
-function excluded(reasonCode: string, reasonLabel: string, id: string): ExcludedProduct {
+function excluded(
+  reasonCode: string,
+  reasonLabel: string,
+  id: string,
+  metadata: Record<string, unknown> = {},
+): ExcludedProduct {
   return {
     id,
     extraction_id: 'ext-1',
@@ -36,7 +42,7 @@ function excluded(reasonCode: string, reasonLabel: string, id: string): Excluded
     original_title: `商品 ${id}`,
     original_price: 1000,
     image_url: null,
-    metadata: {},
+    metadata,
     excluded_at: '2026-07-26T09:00:00.000Z',
   }
 }
@@ -81,5 +87,31 @@ describe('extraction activity helpers', () => {
       { reasonCode: 'sold_out', reasonLabel: '売り切れ', count: 2 },
       { reasonCode: 'danger_seller', reasonLabel: '危険セラー', count: 1 },
     ])
+  })
+
+  it('現在の商品と除外履歴から旧画面順の抽出結果集計を作る', () => {
+    const rows = buildExtractionResultSummary(120, [
+      excluded('title_duplicate', 'タイトル重複', '1'),
+      excluded('title_duplicate', 'タイトル重複', '2'),
+      excluded('shipping_days', '発送日数', '3'),
+      excluded('seller_rating', '評価数', '4'),
+      excluded('updated_at', '最終更新月', '5'),
+    ])
+    const byKey = Object.fromEntries(rows.map((row) => [row.key, row.count]))
+
+    expect(rows[0].label).toBe('初回取得件数')
+    expect(byKey.initial_count).toBe(125)
+    expect(byKey.title_duplicate).toBe(2)
+    expect(byKey.detail_count).toBe(123)
+    expect(byKey.shipping_days).toBe(1)
+    expect(byKey.seller_rating).toBe(1)
+    expect(byKey.updated_at).toBe(1)
+    expect(byKey.completed_count).toBe(120)
+  })
+
+  it('件数が負にならない', () => {
+    const rows = buildExtractionResultSummary(-1, [])
+    expect(rows.find((row) => row.key === 'initial_count')?.count).toBe(0)
+    expect(rows.find((row) => row.key === 'completed_count')?.count).toBe(0)
   })
 })

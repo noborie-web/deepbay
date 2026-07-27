@@ -41,7 +41,11 @@ export async function GET(
   if ('error' in authenticated) return authenticated.error
   const { user, admin } = authenticated
 
-  const [{ data: activities, error: activityError }, { data: excluded, error: excludedError }] =
+  const [
+    { data: activities, error: activityError },
+    { data: excluded, error: excludedError },
+    { count: currentProductCount, error: productCountError },
+  ] =
     await Promise.all([
       admin
         .from('extraction_activities')
@@ -55,11 +59,20 @@ export async function GET(
         .eq('extraction_id', id)
         .eq('user_id', user.id)
         .order('excluded_at', { ascending: false }),
+      admin
+        .from('products')
+        .select('id', { count: 'exact', head: true })
+        .eq('extraction_id', id)
+        .eq('user_id', user.id),
     ])
 
-  const error = activityError ?? excludedError
+  const error = activityError ?? excludedError ?? productCountError
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ activities: activities ?? [], excludedProducts: excluded ?? [] })
+  return NextResponse.json({
+    activities: activities ?? [],
+    excludedProducts: excluded ?? [],
+    currentProductCount: currentProductCount ?? 0,
+  })
 }
 
 export async function POST(
