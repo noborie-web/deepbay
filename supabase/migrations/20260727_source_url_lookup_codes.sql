@@ -17,9 +17,19 @@ CREATE INDEX IF NOT EXISTS idx_source_url_lookup_codes_user_code
 
 ALTER TABLE source_url_lookup_codes ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "users_own_source_url_lookup_codes"
-  ON source_url_lookup_codes;
-CREATE POLICY "users_own_source_url_lookup_codes"
-  ON source_url_lookup_codes FOR ALL
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'source_url_lookup_codes'
+      AND policyname = 'users_own_source_url_lookup_codes'
+  ) THEN
+    CREATE POLICY "users_own_source_url_lookup_codes"
+      ON source_url_lookup_codes FOR ALL
+      USING (auth.uid() = user_id)
+      WITH CHECK (auth.uid() = user_id);
+  END IF;
+END
+$$;
