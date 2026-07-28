@@ -66,6 +66,13 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
         </div>
       )}
 
+      {extraction.status === 'failed' && extraction.error_message && (
+        <div className="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          <div className="font-medium">抽出を完了できませんでした</div>
+          <div className="mt-1">{extraction.error_message}</div>
+        </div>
+      )}
+
       <div className="grid grid-cols-3 gap-4 mb-6">
         <div className="border rounded p-3">
           <div className="text-xs text-gray-500">抽出サイト</div>

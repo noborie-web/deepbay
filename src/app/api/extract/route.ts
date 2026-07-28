@@ -149,7 +149,7 @@ async function runScrape(
         const pct = Math.min(Math.round((fetched / total) * 90), 90)
         await supabase
           .from('extractions')
-          .update({ progress: pct })
+          .update({ progress: pct, updated_at: new Date().toISOString() })
           .eq('id', extractionId)
       },
     })
@@ -393,7 +393,12 @@ async function runScrape(
     await Promise.all([
       supabase
         .from('extractions')
-        .update({ status: 'completed', progress: 100, extracted_at: new Date().toISOString() })
+        .update({
+          status: 'completed',
+          progress: 100,
+          extracted_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', extractionId),
       supabase.rpc('increment_extraction_used', { user_id: userId }),
     ])
@@ -402,7 +407,12 @@ async function runScrape(
     console.error('Scrape failed:', message)
     await supabase
       .from('extractions')
-      .update({ status: 'failed', progress: 0, error_message: message })
+      .update({
+        status: 'failed',
+        progress: 0,
+        error_message: message,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', extractionId)
   }
 }

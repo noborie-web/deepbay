@@ -10,6 +10,21 @@ const HEADERS = {
   'X-Platform': 'web',
 }
 
+const SEARCH_TIMEOUT_MS = 10_000
+const DETAIL_TIMEOUT_MS = 3_500
+const IMAGE_TIMEOUT_MS = 1_500
+
+function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs: number,
+): Promise<Response> {
+  return fetch(input, {
+    ...init,
+    signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+  })
+}
+
 // ---- DPoP utility ----
 
 function base64url(data: Uint8Array): string {
@@ -317,11 +332,11 @@ export class MercariScraper {
         serviceFrom: 'suruga',
       }
 
-      const res = await fetch(SEARCH_URL, {
+      const res = await fetchWithTimeout(SEARCH_URL, {
         method: 'POST',
         headers: { ...HEADERS, 'Content-Type': 'application/json', 'DPoP': dpop },
         body: JSON.stringify(reqBody),
-      })
+      }, _options.timeoutMs ?? SEARCH_TIMEOUT_MS)
 
       if (!res.ok) {
         const text = (await res.text().catch(() => '')).slice(0, 500)
@@ -362,9 +377,9 @@ export class MercariScraper {
       offset: '0',
     })
 
-    const res = await fetch(`https://api.mercari.jp/v2/entities/@${sellerId}/items?${params}`, {
+    const res = await fetchWithTimeout(`https://api.mercari.jp/v2/entities/@${sellerId}/items?${params}`, {
       headers: HEADERS,
-    })
+    }, SEARCH_TIMEOUT_MS)
 
     if (!res.ok) {
       // フォールバック: 検索APIで試す
@@ -389,11 +404,11 @@ export class MercariScraper {
       offset: 0,
     })
 
-    const res = await fetch('https://api.mercari.jp/v2/entities/search', {
+    const res = await fetchWithTimeout('https://api.mercari.jp/v2/entities/search', {
       method: 'POST',
       headers: { ...HEADERS, 'Content-Type': 'application/json' },
       body,
-    })
+    }, SEARCH_TIMEOUT_MS)
 
     if (!res.ok) {
       throw new ScraperError(`Seller API error: ${res.status}`, this.siteKey, url)
@@ -421,14 +436,14 @@ export class MercariScraper {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async fetchItemDetail(itemId: string): Promise<any> {
+  private async fetchItemDetail(itemId: string, timeoutMs = DETAIL_TIMEOUT_MS): Promise<any> {
     const itemUrl = new URL('https://api.mercari.jp/items/get')
     itemUrl.searchParams.set('id', itemId)
     const endpoint = itemUrl.toString()
     const dpop = await generateDPoP(endpoint, 'GET', await getDPoPContext())
-    const res = await fetch(endpoint, {
+    const res = await fetchWithTimeout(endpoint, {
       headers: { ...HEADERS, 'DPoP': dpop },
-    })
+    }, timeoutMs)
 
     if (!res.ok) {
       throw new Error(`Item API error: ${res.status}`)
@@ -445,7 +460,9 @@ export class MercariScraper {
     options: ScraperOptions = {},
   ): Promise<ScrapedProduct[]> {
     const enriched: ScrapedProduct[] = []
-    const concurrency = 8
+    // Vercelの実行時間内に最大600件を処理できるよう、適度な並列数で実行する。
+    const concurrency = 24
+    const detailTimeoutMs = Math.min(options.timeoutMs ?? DETAIL_TIMEOUT_MS, DETAIL_TIMEOUT_MS)
 
     for (let index = 0; index < products.length; index += concurrency) {
       const chunk = products.slice(index, index + concurrency)
@@ -453,7 +470,7 @@ export class MercariScraper {
         if (!product.sourceItemId) return product
 
         try {
-          const detail = await this.fetchItemDetail(product.sourceItemId)
+          const detail = await this.fetchItemDetail(product.sourceItemId, detailTimeoutMs)
           const detailImages = extractImages(detail)
           return detailImages.length > 0
             ? { ...product, images: detailImages }
@@ -478,7 +495,7 @@ export class MercariScraper {
 
   private async scrapeItemPage(itemId: string, url: string): Promise<ScrapedProduct> {
     const pageUrl = `https://jp.mercari.com/item/${encodeURIComponent(itemId)}`
-    const res = await fetch(pageUrl, { headers: HEADERS })
+    const res = await fetchWithTimeout(pageUrl, { headers: HEADERS }, SEARCH_TIMEOUT_MS)
     if (!res.ok) {
       throw new ScraperError(`Item page error: ${res.status}`, this.siteKey, url)
     }
@@ -504,17 +521,27 @@ export class MercariScraper {
   private async probeItemImages(itemId: string): Promise<string[]> {
     const images: string[] = []
     // eBay側のPicURL上限に合わせ、最大12枚まで連番画像の存在を確認する。
-    for (let index = 1; index <= 12; index += 1) {
-      const imageUrl = `https://static.mercdn.net/item/detail/orig/photos/${encodeURIComponent(itemId)}_${index}.jpg`
-      try {
-        const res = await fetch(imageUrl, {
-          method: 'HEAD',
-          headers: { 'User-Agent': HEADERS['User-Agent'] },
-        })
-        if (!res.ok) break
-        images.push(imageUrl)
-      } catch {
-        break
+    // 4枚ずつ確認して、通信が遅い商品1件が全体を止めないようにする。
+    for (let start = 1; start <= 12; start += 4) {
+      const candidates = Array.from({ length: Math.min(4, 13 - start) }, (_, offset) => {
+        const index = start + offset
+        return `https://static.mercdn.net/item/detail/orig/photos/${encodeURIComponent(itemId)}_${index}.jpg`
+      })
+      const results = await Promise.all(candidates.map(async (imageUrl) => {
+        try {
+          const res = await fetchWithTimeout(imageUrl, {
+            method: 'HEAD',
+            headers: { 'User-Agent': HEADERS['User-Agent'] },
+          }, IMAGE_TIMEOUT_MS)
+          return res.ok
+        } catch {
+          return false
+        }
+      }))
+
+      for (let index = 0; index < results.length; index += 1) {
+        if (!results[index]) return images
+        images.push(candidates[index])
       }
     }
     return images
