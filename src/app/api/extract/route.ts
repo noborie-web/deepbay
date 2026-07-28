@@ -212,7 +212,13 @@ async function runScrape(
     let translatedTitles: string[] = originalTitles
     if (titleEnabled && process.env.OPENAI_API_KEY) {
       try {
-        translatedTitles = await translateTitles(originalTitles, titleEngine)
+        translatedTitles = await translateTitles(originalTitles, titleEngine, async (completed, total) => {
+          const pct = 91 + Math.min(Math.round((completed / total) * 5), 5)
+          await supabase
+            .from('extractions')
+            .update({ progress: pct, updated_at: new Date().toISOString() })
+            .eq('id', extractionId)
+        })
       } catch (e) {
         console.error('Translation failed, using original titles:', e)
       }
