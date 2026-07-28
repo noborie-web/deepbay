@@ -33,6 +33,10 @@ import type { ProductSearchFilters } from '@/lib/product-search'
 import PokemonEditPanel from './PokemonEditPanel'
 import type { PokemonEditScope } from './PokemonEditPanel'
 import { isPokemonProduct } from '@/lib/pokemon'
+import {
+  saveProductUpdatesInBatches,
+  type ProductBulkUpdate,
+} from '@/lib/product-bulk-save'
 
 interface Props {
   extractionId: string
@@ -451,7 +455,7 @@ export default function ProductEditPanel({ extractionId, onClose, onActivity }: 
         const ebay_title = typeof fields.ebay_title === 'string'
           ? fields.ebay_title.slice(0, 80)
           : fields.ebay_title
-        const out: Record<string, unknown> = { productId }
+        const out: ProductBulkUpdate = { productId }
         if (ebay_title !== undefined) out.ebay_title = ebay_title
         if (fields.ebay_brand !== undefined) out.ebay_brand = fields.ebay_brand
         if (fields.ebay_description !== undefined) out.ebay_description = fields.ebay_description
@@ -464,26 +468,11 @@ export default function ProductEditPanel({ extractionId, onClose, onActivity }: 
         return out
       })
 
-      const res = await fetch(`/api/products/${extractionId}/bulk`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ updates }),
-      })
+      const result = await saveProductUpdatesInBatches(extractionId, updates)
+      const succeededSet = new Set(result.succeeded)
 
-      const json: { ok?: boolean; succeeded?: string[]; failed?: { productId: string; error: string }[] }
-        = await res.json().catch(() => ({}))
-
-      if (json.ok === true) {
+      if (result.failed.length === 0) {
         // 全成功
-        setProducts((prev) =>
-          prev.map((p) => (edits[p.id] ? { ...p, ...edits[p.id] } : p))
-        )
-        setEdits({})
-        await recordEditActivity(json.succeeded?.length ?? updates.length)
-      } else if (json.succeeded && json.failed) {
-        // 部分失敗 — 成功分だけ edits をクリア、失敗分は保持
-        const succeededSet = new Set(json.succeeded)
-        const failedSet = new Set(json.failed.map((f) => f.productId))
         setProducts((prev) =>
           prev.map((p) => (succeededSet.has(p.id) ? { ...p, ...edits[p.id] } : p))
         )
@@ -492,11 +481,24 @@ export default function ProductEditPanel({ extractionId, onClose, onActivity }: 
           for (const id of succeededSet) delete next[id]
           return next
         })
-        const firstErrors = json.failed.slice(0, 3).map((f) => `${f.productId.slice(0, 8)}: ${f.error}`).join(' / ')
-        setSaveError(`${failedSet.size}件の保存に失敗しました — ${firstErrors}`)
         await recordEditActivity(succeededSet.size)
       } else {
-        setSaveError('保存に失敗しました')
+        // 部分失敗 — 成功分だけ edits をクリア、失敗分は保持
+        const failedSet = new Set(result.failed.map((failure) => failure.productId))
+        setProducts((prev) =>
+          prev.map((p) => (succeededSet.has(p.id) ? { ...p, ...edits[p.id] } : p))
+        )
+        setEdits((prev) => {
+          const next = { ...prev }
+          for (const id of succeededSet) delete next[id]
+          return next
+        })
+        const firstErrors = result.failed
+          .slice(0, 3)
+          .map((failure) => `${failure.productId.slice(0, 8)}: ${failure.error}`)
+          .join(' / ')
+        setSaveError(`${failedSet.size}件の保存に失敗しました — ${firstErrors}`)
+        await recordEditActivity(succeededSet.size)
       }
     } catch (e) {
       setSaveError(`通信エラー: ${e instanceof Error ? e.message : '不明なエラー'}`)
