@@ -154,6 +154,19 @@ function toProduct(item: any, url: string): ScrapedProduct {
 
   // 評価数: seller情報から複数パスを試みる
   const seller = item.seller ?? item.sellerInfo ?? null
+  const sellerIdRaw = seller?.id
+    ?? seller?.user_id
+    ?? seller?.userId
+    ?? item.seller_id
+    ?? item.sellerId
+    ?? null
+  const sellerId = sellerIdRaw == null ? null : String(sellerIdRaw).trim() || null
+  const suppliedSellerUrl = seller?.url ?? seller?.profile_url ?? seller?.profileUrl ?? null
+  const sellerUrl = typeof suppliedSellerUrl === 'string' && suppliedSellerUrl.trim()
+    ? suppliedSellerUrl.trim()
+    : sellerId
+      ? `https://jp.mercari.com/user/profile/${encodeURIComponent(sellerId)}`
+      : null
   let sellerRatingCount: number | null = null
   if (seller) {
     // num_ratings が直接ある場合
@@ -208,6 +221,8 @@ function toProduct(item: any, url: string): ScrapedProduct {
     images,
     condition: item.item_condition?.name ?? item.itemCondition?.name ?? null,
     category: item.item_category?.name ?? item.itemCategory?.name ?? null,
+    sellerId,
+    sellerUrl,
     sellerRatingCount,
     shippingDays,
     sourceUpdatedAt,

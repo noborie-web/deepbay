@@ -4,7 +4,9 @@ import { createClient } from '@/lib/supabase/server'
 import { scrapeUrl, findScraper } from '@/lib/scrapers'
 import { translateTitles } from '@/lib/translate'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
+import { matchesDangerSeller, normalizeSellerUrl } from '@/lib/danger-seller'
 import type { Extraction, Profile } from '@/types/database'
+import type { ScrapedProduct } from '@/lib/scrapers/types'
 
 export const maxDuration = 300
 
@@ -121,11 +123,18 @@ async function runScrape(
     }
 
     // 危険セラーチェック: 抽出URLが危険セラーと一致する場合はスキップ
-    const sellerUrls: string[] = (dangerSellers ?? []).map((s: { seller_url: string }) =>
-      s.seller_url.split('?')[0].trim().replace(/\/+$/, ''),
-    )
-    const normalizedUrl = url.split('?')[0].trim().replace(/\/+$/, '')
-    if (sellerUrls.some((s) => normalizedUrl.startsWith(s))) {
+    const sellerUrls: string[] = (dangerSellers ?? [])
+      .map((s: { seller_url: string }) => s.seller_url.trim())
+      .filter(Boolean)
+    const normalizedUrl = normalizeSellerUrl(url)
+    if (
+      matchesDangerSeller({ sellerUrl: url }, sellerUrls)
+      || sellerUrls.some((sellerUrl) => {
+        const normalizedSellerUrl = normalizeSellerUrl(sellerUrl)
+        return normalizedUrl === normalizedSellerUrl
+          || normalizedUrl.startsWith(`${normalizedSellerUrl}/`)
+      })
+    ) {
       await Promise.all([
         supabase
           .from('extractions')
@@ -137,7 +146,7 @@ async function runScrape(
           activity_type: 'excluded',
           label: '危険セラー',
           item_count: 0,
-          metadata: { reasonCode: 'danger_seller', phase: 'extraction', sourceUrl: url },
+          metadata: { reasonCode: 'initial_danger_seller', phase: 'extraction', sourceUrl: url },
         }),
       ])
       return
@@ -154,17 +163,25 @@ async function runScrape(
       },
     })
 
+    // 検索結果に混在する危険セラーを商品単位で除外する
+    const dangerSellerExcluded = sellerUrls.length === 0
+      ? []
+      : scrapedList.filter((scraped) => matchesDangerSeller(scraped, sellerUrls))
+    const sellerFilteredList = sellerUrls.length === 0
+      ? scrapedList
+      : scrapedList.filter((scraped) => !matchesDangerSeller(scraped, sellerUrls))
+
     // 危険単語フィルタ
     const wordList: string[] = (dangerWords ?? []).map((w: { word: string }) => w.word.toLowerCase())
     const dangerWordExcluded = wordList.length === 0
       ? []
-      : scrapedList.filter((scraped: { title: string }) => {
+      : sellerFilteredList.filter((scraped: { title: string }) => {
           const lower = scraped.title.toLowerCase()
           return wordList.some((word) => lower.includes(word))
         })
     const filteredList = wordList.length === 0
-      ? scrapedList
-      : scrapedList.filter((scraped: { title: string }) => {
+      ? sellerFilteredList
+      : sellerFilteredList.filter((scraped: { title: string }) => {
           const lower = scraped.title.toLowerCase()
           return !wordList.some((word) => lower.includes(word))
         })
@@ -256,12 +273,7 @@ async function runScrape(
       }
     }
 
-    const rows = filteredList.map((scraped: {
-      sourceUrl: string; sourceSite: string; sourceItemId: string | null
-      title: string; price: number | null; description: string
-      images: string[]; condition: string | null
-      sellerRatingCount: number | null; shippingDays: number | null; sourceUpdatedAt: string | null
-    }, idx: number) => {
+    const rows = filteredList.map((scraped: ScrapedProduct, idx: number) => {
       let ebayTitle = applyReplaces(translatedTitles[idx] ?? scraped.title)
       if (setting) {
         ebayTitle = `${setting.title_prefix}${ebayTitle}${setting.title_suffix}`.slice(0, 80)
@@ -326,6 +338,21 @@ async function runScrape(
     })
 
     const excludedSnapshots = [
+      ...dangerSellerExcluded.map((scraped) => ({
+        extraction_id: extractionId,
+        user_id: userId,
+        product_id: crypto.randomUUID(),
+        reason_code: 'initial_danger_seller',
+        reason_label: '個別危険Seller',
+        source_url: scraped.sourceUrl,
+        original_title: scraped.title,
+        original_price: scraped.price,
+        image_url: scraped.images[0] ?? null,
+        metadata: {
+          sellerId: scraped.sellerId ?? null,
+          sellerUrl: scraped.sellerUrl ?? null,
+        },
+      })),
       ...dangerWordExcluded.map((scraped: {
         sourceUrl: string
         title: string

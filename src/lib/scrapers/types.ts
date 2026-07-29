@@ -8,6 +8,8 @@ export interface ScrapedProduct {
   images: string[]
   condition: string | null
   category: string | null
+  sellerId?: string | null        // 出品元サイトのセラー識別子
+  sellerUrl?: string | null       // 出品元サイトのセラーページURL
   sellerRatingCount: number | null  // 評価数
   shippingDays: number | null       // 発送日数（最短日数）
   sourceUpdatedAt: string | null    // 最終更新日（ISO文字列）

@@ -117,6 +117,39 @@ describe('toProduct() price handling', () => {
   })
 })
 
+describe('toProduct() seller handling', () => {
+  it('seller.idからセラーIDとプロフィールURLを保持する', () => {
+    const product = _toProduct({
+      id: 'x1',
+      name: 'Test',
+      price: 100,
+      description: '',
+      thumbnails: [],
+      seller: { id: 12345 },
+    }, 'https://jp.mercari.com/item/x1')
+
+    expect(product.sellerId).toBe('12345')
+    expect(product.sellerUrl).toBe('https://jp.mercari.com/user/profile/12345')
+  })
+
+  it('APIが返したプロフィールURLを優先する', () => {
+    const product = _toProduct({
+      id: 'x1',
+      name: 'Test',
+      price: 100,
+      description: '',
+      thumbnails: [],
+      sellerInfo: {
+        userId: 'abc',
+        profileUrl: 'https://jp.mercari.com/s/abc',
+      },
+    }, 'https://jp.mercari.com/item/x1')
+
+    expect(product.sellerId).toBe('abc')
+    expect(product.sellerUrl).toBe('https://jp.mercari.com/s/abc')
+  })
+})
+
 describe('toProduct() date handling', () => {
   function makeItemWithDate(updated: unknown) {
     return {
