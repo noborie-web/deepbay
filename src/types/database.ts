@@ -112,6 +112,8 @@ export interface Product {
   source_url: string
   source_site: string
   source_item_id: string | null
+  source_seller_id?: string | null
+  source_seller_url?: string | null
   original_title: string
   original_price: number | null
   original_description: string | null

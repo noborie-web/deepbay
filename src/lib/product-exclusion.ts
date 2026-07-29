@@ -1,4 +1,5 @@
 import type { Product } from '@/types/database'
+import { matchesDangerSeller } from '@/lib/danger-seller'
 
 export type ProductPriceType = 'fixed' | 'auction'
 
@@ -38,6 +39,7 @@ export function matchesVeroBrand(product: Product, brands: string[]): boolean {
 
     return (
       textContainsBrand(product.original_title, brand)
+      || textContainsBrand(product.original_description, brand)
       || textContainsBrand(product.ebay_title, brand)
     )
   })
@@ -61,10 +63,6 @@ export function findPriceTypeProductIds(
     .map((product) => product.id)
 }
 
-function normalizeUrl(value: string): string {
-  return value.split('?')[0].trim().replace(/\/+$/, '')
-}
-
 function normalizeKeywords(keywords: string[]): string[] {
   return keywords.map((keyword) => keyword.trim().toLowerCase()).filter(Boolean)
 }
@@ -73,12 +71,15 @@ export function findDangerSellerProductIds(
   products: Product[],
   sellerUrls: string[],
 ): string[] {
-  const normalizedSellers = sellerUrls.map(normalizeUrl).filter(Boolean)
   return products
-    .filter((product) => {
-      const sourceUrl = normalizeUrl(product.source_url)
-      return normalizedSellers.some((sellerUrl) => sourceUrl.startsWith(sellerUrl))
-    })
+    .filter((product) => (
+      matchesDangerSeller({
+        sellerId: product.source_seller_id,
+        sellerUrl: product.source_seller_url,
+      }, sellerUrls)
+      // 移行前データで商品URL内にセラーパスが保存されている場合の互換対応。
+      || matchesDangerSeller({ sellerUrl: product.source_url }, sellerUrls)
+    ))
     .map((product) => product.id)
 }
 
@@ -91,8 +92,11 @@ export function findTitleKeywordProductIds(
 
   return products
     .filter((product) => {
-      const title = product.original_title.toLowerCase()
-      return normalizedKeywords.some((keyword) => title.includes(keyword))
+      const detailedText = [
+        product.original_title,
+        product.original_description ?? '',
+      ].join('\n').normalize('NFKC').toLowerCase()
+      return normalizedKeywords.some((keyword) => detailedText.includes(keyword))
     })
     .map((product) => product.id)
 }

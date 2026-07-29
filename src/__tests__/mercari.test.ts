@@ -224,9 +224,13 @@ describe('Mercari item images', () => {
         return new Response(JSON.stringify({
           data: {
             id: 'm1',
-            name: 'Test item',
-            price: 1000,
+            name: 'Detailed item title',
+            price: 2200,
+            description: '個別商品ページの説明',
             photos: fullImages,
+            seller: { id: 'seller-123', num_ratings: 45 },
+            shipping_duration: { min: 2, max: 3 },
+            updated: 1719548737,
           },
         }), { status: 200 })
       }
@@ -239,6 +243,15 @@ describe('Mercari item images', () => {
         { limit: 1 },
       )
       expect(products[0].images).toEqual(fullImages)
+      expect(products[0]).toMatchObject({
+        title: 'Detailed item title',
+        price: 2200,
+        description: '個別商品ページの説明',
+        sellerId: 'seller-123',
+        sellerRatingCount: 45,
+        shippingDays: 2,
+        detailFetched: true,
+      })
       expect(detailRequests).toHaveLength(1)
       expect(detailRequests[0].dpop).toBeTruthy()
     } finally {
@@ -269,6 +282,7 @@ describe('Mercari item images', () => {
         { limit: 1 },
       )
       expect(products[0].images).toEqual(['https://static.mercdn.net/thumb.jpg'])
+      expect(products[0].detailFetched).toBe(false)
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -307,6 +321,7 @@ describe('Mercari item images', () => {
         'https://static.mercdn.net/item/detail/orig/photos/m1_1.jpg',
         'https://static.mercdn.net/item/detail/orig/photos/m1_2.jpg',
       ])
+      expect(products[0].detailFetched).toBe(false)
     } finally {
       globalThis.fetch = originalFetch
     }

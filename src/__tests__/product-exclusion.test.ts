@@ -59,6 +59,14 @@ describe('Vero除外判定', () => {
     expect(matchesVeroBrand(product, ['Sony'])).toBe(true)
   })
 
+  it('個別商品詳細の説明文内のVeroブランドを照合する', () => {
+    const product = makeProduct('p1', {
+      original_title: 'Vintage console',
+      original_description: 'Made by Nintendo',
+    })
+    expect(matchesVeroBrand(product, ['Nintendo'])).toBe(true)
+  })
+
   it('英数字ブランドは単語の途中に誤一致しない', () => {
     const product = makeProduct('p1', { original_title: 'Space Adventure' })
     expect(matchesVeroBrand(product, ['ACE'])).toBe(false)
@@ -115,6 +123,8 @@ describe('除外対象件数の事前判定', () => {
   const products = [
     makeProduct('p1', {
       source_url: 'https://jp.mercari.com/user/profile/123/items/p1?tracking=1',
+      source_seller_id: '123',
+      source_seller_url: 'https://jp.mercari.com/user/profile/123',
       original_title: 'ジャンク Nintendo 本体',
       original_price: 500,
       ebay_price: 10,
@@ -144,6 +154,16 @@ describe('除外対象件数の事前判定', () => {
     expect(findTitleKeywordProductIds(products, ['ジャンク'])).toEqual(['p1'])
     expect(findTitleKeywordProductIds(products, ['NINTENDO'])).toEqual(['p1'])
     expect(findTitleKeywordProductIds(products, [])).toEqual([])
+  })
+
+  it('個別商品詳細の説明文に含まれる危険単語も数える', () => {
+    const detailed = [
+      makeProduct('p3', {
+        original_title: '通常商品',
+        original_description: '説明欄にジャンクの記載があります',
+      }),
+    ]
+    expect(findTitleKeywordProductIds(detailed, ['ジャンク'])).toEqual(['p3'])
   })
 
   it('価格範囲外の商品を数える', () => {

@@ -163,28 +163,34 @@ async function runScrape(
       },
     })
 
+    // 個別商品詳細を取得できなかった商品は、全除外条件を安全に判定できないため除外する。
+    const detailFailedExcluded = scrapedList.filter((scraped) => scraped.detailFetched === false)
+    const detailedList = scrapedList.filter((scraped) => scraped.detailFetched !== false)
+
     // 検索結果に混在する危険セラーを商品単位で除外する
     const dangerSellerExcluded = sellerUrls.length === 0
       ? []
-      : scrapedList.filter((scraped) => matchesDangerSeller(scraped, sellerUrls))
+      : detailedList.filter((scraped) => matchesDangerSeller(scraped, sellerUrls))
     const sellerFilteredList = sellerUrls.length === 0
-      ? scrapedList
-      : scrapedList.filter((scraped) => !matchesDangerSeller(scraped, sellerUrls))
+      ? detailedList
+      : detailedList.filter((scraped) => !matchesDangerSeller(scraped, sellerUrls))
 
     // 危険単語フィルタ
-    const wordList: string[] = (dangerWords ?? []).map((w: { word: string }) => w.word.toLowerCase())
+    const wordList: string[] = (dangerWords ?? [])
+      .map((w: { word: string }) => w.word.normalize('NFKC').trim().toLowerCase())
+      .filter(Boolean)
+    const containsDangerWord = (scraped: ScrapedProduct) => {
+      const detailedText = `${scraped.title}\n${scraped.description}`
+        .normalize('NFKC')
+        .toLowerCase()
+      return wordList.some((word) => detailedText.includes(word))
+    }
     const dangerWordExcluded = wordList.length === 0
       ? []
-      : sellerFilteredList.filter((scraped: { title: string }) => {
-          const lower = scraped.title.toLowerCase()
-          return wordList.some((word) => lower.includes(word))
-        })
+      : sellerFilteredList.filter(containsDangerWord)
     const filteredList = wordList.length === 0
       ? sellerFilteredList
-      : sellerFilteredList.filter((scraped: { title: string }) => {
-          const lower = scraped.title.toLowerCase()
-          return !wordList.some((word) => lower.includes(word))
-        })
+      : sellerFilteredList.filter((scraped) => !containsDangerWord(scraped))
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let setting: any = null
@@ -288,6 +294,8 @@ async function runScrape(
         source_url: scraped.sourceUrl,
         source_site: scraped.sourceSite,
         source_item_id: scraped.sourceItemId,
+        source_seller_id: scraped.sellerId ?? null,
+        source_seller_url: scraped.sellerUrl ?? null,
         original_title: scraped.title,
         original_price: scraped.price,
         original_description: scraped.description,
@@ -338,6 +346,18 @@ async function runScrape(
     })
 
     const excludedSnapshots = [
+      ...detailFailedExcluded.map((scraped) => ({
+        extraction_id: extractionId,
+        user_id: userId,
+        product_id: crypto.randomUUID(),
+        reason_code: 'detail_failed',
+        reason_label: '詳細取得失敗',
+        source_url: scraped.sourceUrl,
+        original_title: scraped.title,
+        original_price: scraped.price,
+        image_url: scraped.images[0] ?? null,
+        metadata: { sourceItemId: scraped.sourceItemId },
+      })),
       ...dangerSellerExcluded.map((scraped) => ({
         extraction_id: extractionId,
         user_id: userId,

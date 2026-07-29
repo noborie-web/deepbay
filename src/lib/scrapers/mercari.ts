@@ -229,6 +229,27 @@ function toProduct(item: any, url: string): ScrapedProduct {
   }
 }
 
+function mergeProductDetail(
+  summary: ScrapedProduct,
+  detail: ScrapedProduct,
+): ScrapedProduct {
+  return {
+    ...summary,
+    title: detail.title || summary.title,
+    price: detail.price ?? summary.price,
+    description: detail.description || summary.description,
+    images: detail.images.length > 0 ? detail.images : summary.images,
+    condition: detail.condition ?? summary.condition,
+    category: detail.category ?? summary.category,
+    sellerId: detail.sellerId ?? summary.sellerId ?? null,
+    sellerUrl: detail.sellerUrl ?? summary.sellerUrl ?? null,
+    sellerRatingCount: detail.sellerRatingCount ?? summary.sellerRatingCount,
+    shippingDays: detail.shippingDays ?? summary.shippingDays,
+    sourceUpdatedAt: detail.sourceUpdatedAt ?? summary.sourceUpdatedAt,
+    detailFetched: true,
+  }
+}
+
 export class MercariScraper {
   name = 'メルカリ'
   siteKey = 'mercari'
@@ -443,7 +464,7 @@ export class MercariScraper {
   private async scrapeItem(itemId: string, url: string): Promise<ScrapedProduct> {
     try {
       const item = await this.fetchItemDetail(itemId)
-      if (item?.name) return toProduct(item, url)
+      if (item?.name) return { ...toProduct(item, url), detailFetched: true }
     } catch {
       // Vercelなど一部の実行環境で詳細APIが404になる場合は商品ページへ切り替える。
     }
@@ -486,16 +507,15 @@ export class MercariScraper {
 
         try {
           const detail = await this.fetchItemDetail(product.sourceItemId, detailTimeoutMs)
-          const detailImages = extractImages(detail)
-          return detailImages.length > 0
-            ? { ...product, images: detailImages }
-            : product
+          return mergeProductDetail(product, toProduct(detail, url))
         } catch {
           // 詳細APIが404でも、Mercari CDNの連番画像を確認して全画像を補完する。
           const probedImages = await this.probeItemImages(product.sourceItemId)
-          return probedImages.length > 0
-            ? { ...product, images: probedImages }
-            : product
+          return {
+            ...product,
+            images: probedImages.length > 0 ? probedImages : product.images,
+            detailFetched: false,
+          }
         }
       }))
       enriched.push(...results)
@@ -524,13 +544,16 @@ export class MercariScraper {
 
     const images = await this.probeItemImages(itemId)
     const ogImage = getMetaContent(html, 'og:image')
-    return toProduct({
+    return {
+      ...toProduct({
       id: itemId,
       name: title,
       price: priceRaw || null,
       description: '',
       photos: images.length > 0 ? images : [ogImage].filter(Boolean),
-    }, url)
+      }, url),
+      detailFetched: true,
+    }
   }
 
   private async probeItemImages(itemId: string): Promise<string[]> {
