@@ -60,3 +60,98 @@ export function findPriceTypeProductIds(
     .filter((product) => selected.has(getProductPriceType(product)))
     .map((product) => product.id)
 }
+
+function normalizeUrl(value: string): string {
+  return value.split('?')[0].trim().replace(/\/+$/, '')
+}
+
+function normalizeKeywords(keywords: string[]): string[] {
+  return keywords.map((keyword) => keyword.trim().toLowerCase()).filter(Boolean)
+}
+
+export function findDangerSellerProductIds(
+  products: Product[],
+  sellerUrls: string[],
+): string[] {
+  const normalizedSellers = sellerUrls.map(normalizeUrl).filter(Boolean)
+  return products
+    .filter((product) => {
+      const sourceUrl = normalizeUrl(product.source_url)
+      return normalizedSellers.some((sellerUrl) => sourceUrl.startsWith(sellerUrl))
+    })
+    .map((product) => product.id)
+}
+
+export function findTitleKeywordProductIds(
+  products: Product[],
+  keywords: string[],
+): string[] {
+  const normalizedKeywords = normalizeKeywords(keywords)
+  if (normalizedKeywords.length === 0) return []
+
+  return products
+    .filter((product) => {
+      const title = product.original_title.toLowerCase()
+      return normalizedKeywords.some((keyword) => title.includes(keyword))
+    })
+    .map((product) => product.id)
+}
+
+export function findPriceRangeProductIds(
+  products: Product[],
+  target: 'original' | 'ebay',
+  min: number | null,
+  max: number | null,
+): string[] {
+  if (min === null && max === null) return []
+
+  return products
+    .filter((product) => {
+      const price = target === 'original'
+        ? (product.original_price ?? 0)
+        : (product.ebay_price ?? 0)
+      if (min !== null && price < min) return true
+      return max !== null && price > max
+    })
+    .map((product) => product.id)
+}
+
+export function findSellerRatingProductIds(
+  products: Product[],
+  max: number | null,
+): string[] {
+  if (max === null || !Number.isFinite(max) || max < 0) return []
+  return products
+    .filter((product) => (
+      product.seller_rating_count !== null
+      && product.seller_rating_count <= max
+    ))
+    .map((product) => product.id)
+}
+
+export function findShippingDaysProductIds(
+  products: Product[],
+  max: number | null,
+): string[] {
+  if (max === null || !Number.isFinite(max) || max < 1) return []
+  return products
+    .filter((product) => product.shipping_days !== null && product.shipping_days > max)
+    .map((product) => product.id)
+}
+
+export function findUpdatedAtProductIds(
+  products: Product[],
+  months: number,
+  now = new Date(),
+): string[] {
+  if (!Number.isFinite(months) || months <= 0) return []
+  const cutoff = new Date(now)
+  cutoff.setMonth(cutoff.getMonth() - months)
+
+  return products
+    .filter((product) => (
+      Boolean(product.source_updated_at)
+      && new Date(product.source_updated_at as string) < cutoff
+    ))
+    .map((product) => product.id)
+}

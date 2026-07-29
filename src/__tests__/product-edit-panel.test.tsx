@@ -155,6 +155,103 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p2')).toBeNull())
     expect(screen.getByDisplayValue('eBay Title p1')).toBeTruthy()
   })
+
+  it('全除外項目で実行前に対象件数を表示する', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          makeProduct('p1', {
+            source_url: 'https://jp.mercari.com/user/profile/danger/items/p1',
+            original_title: 'ジャンク Nintendo 本体',
+            original_price: 500,
+            ebay_brand: 'Nintendo',
+            seller_rating_count: 3,
+            shipping_days: 4,
+            source_updated_at: '2020-01-01T00:00:00.000Z',
+            price_type: 'auction',
+          }),
+          makeProduct('p2', {
+            original_title: '通常商品',
+            original_price: 3000,
+            seller_rating_count: 100,
+            shipping_days: 1,
+            source_updated_at: new Date().toISOString(),
+            price_type: 'fixed',
+          }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          sellers: [{ seller_url: 'https://jp.mercari.com/user/profile/danger' }],
+          words: [{ word: 'ジャンク' }],
+          vero: [{ brand: 'Nintendo' }],
+        }),
+      })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Veroを除外' }))
+    await waitFor(() => expect(screen.getByLabelText('Vero除外対象件数')).toHaveTextContent('1/2件'))
+
+    await userEvent.click(screen.getByRole('button', { name: '危険セラーを除外' }))
+    expect(screen.getByLabelText('危険セラー除外対象件数')).toHaveTextContent('1/2件')
+
+    await userEvent.click(screen.getByRole('button', { name: '危険単語を除外' }))
+    expect(screen.getByLabelText('危険単語除外対象件数')).toHaveTextContent('1/2件')
+
+    await userEvent.click(screen.getByRole('button', { name: 'スポット文字を除外' }))
+    expect(screen.getByLabelText('スポット文字除外対象件数')).toHaveTextContent('0/2件')
+    await userEvent.click(screen.getByRole('button', { name: 'ジャンク' }))
+    expect(screen.getByLabelText('スポット文字除外対象件数')).toHaveTextContent('1/2件')
+
+    await userEvent.click(screen.getByRole('button', { name: '評価数を除外' }))
+    await userEvent.type(screen.getByPlaceholderText('例: 10'), '10')
+    expect(screen.getByLabelText('評価数除外対象件数')).toHaveTextContent('1/2件')
+
+    await userEvent.click(screen.getByRole('button', { name: '発送日数を除外' }))
+    await userEvent.type(screen.getByPlaceholderText('例: 3'), '2')
+    expect(screen.getByLabelText('発送日数除外対象件数')).toHaveTextContent('1/2件')
+
+    await userEvent.click(screen.getByRole('button', { name: '最終更新月を除外' }))
+    expect(screen.getByLabelText('最終更新月除外対象件数')).toHaveTextContent('1/2件')
+
+    await userEvent.click(screen.getByRole('button', { name: '価格タイプを除外' }))
+    expect(screen.getByLabelText('価格タイプ除外対象件数')).toHaveTextContent('1/2件')
+
+    await userEvent.click(screen.getByRole('button', { name: '価格範囲を除外' }))
+    await userEvent.type(screen.getByPlaceholderText('最小'), '1000')
+    expect(screen.getByLabelText('価格範囲除外対象件数')).toHaveTextContent('1/2件')
+
+    await userEvent.click(screen.getByRole('button', { name: '簡易除外を開く' }))
+    await userEvent.type(
+      screen.getByPlaceholderText(/キーワードをカンマ・改行区切り/),
+      'ジャンク',
+    )
+    expect(screen.getByLabelText('簡易除外除外対象件数')).toHaveTextContent('1/2件')
+  })
+
+  it('除外対象が0件のとき実行ボタンを無効化する', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1', { shipping_days: 1 })],
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: '発送日数を除外' }))
+    await userEvent.type(screen.getByPlaceholderText('例: 3'), '2')
+
+    expect(screen.getByLabelText('発送日数除外対象件数')).toHaveTextContent('0/1件')
+    expect(screen.getByRole('button', { name: '除外を実行' })).toBeDisabled()
+    expect(callsTo('/api/extractions/ext-1/exclude')).toHaveLength(0)
+  })
 })
 
 describe('ProductEditPanel: アイテムスペシフィック編集', () => {

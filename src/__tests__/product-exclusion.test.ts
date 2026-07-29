@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { Product } from '@/types/database'
 import {
+  findDangerSellerProductIds,
   findPriceTypeProductIds,
+  findPriceRangeProductIds,
+  findSellerRatingProductIds,
+  findShippingDaysProductIds,
+  findTitleKeywordProductIds,
+  findUpdatedAtProductIds,
   findVeroProductIds,
   getProductPriceType,
   matchesVeroBrand,
@@ -102,5 +108,66 @@ describe('価格タイプ除外判定', () => {
 
   it('未選択なら何も除外しない', () => {
     expect(findPriceTypeProductIds([makeProduct('p1')], [])).toEqual([])
+  })
+})
+
+describe('除外対象件数の事前判定', () => {
+  const products = [
+    makeProduct('p1', {
+      source_url: 'https://jp.mercari.com/user/profile/123/items/p1?tracking=1',
+      original_title: 'ジャンク Nintendo 本体',
+      original_price: 500,
+      ebay_price: 10,
+      seller_rating_count: 3,
+      shipping_days: 4,
+      source_updated_at: '2025-01-01T00:00:00.000Z',
+    }),
+    makeProduct('p2', {
+      source_url: 'https://jp.mercari.com/item/p2',
+      original_title: '通常商品',
+      original_price: 3000,
+      ebay_price: 30,
+      seller_rating_count: 100,
+      shipping_days: 1,
+      source_updated_at: '2026-06-01T00:00:00.000Z',
+    }),
+  ]
+
+  it('危険セラーURLに一致する商品を数える', () => {
+    expect(findDangerSellerProductIds(
+      products,
+      ['https://jp.mercari.com/user/profile/123'],
+    )).toEqual(['p1'])
+  })
+
+  it('危険単語・スポット文字・簡易除外のタイトル一致を数える', () => {
+    expect(findTitleKeywordProductIds(products, ['ジャンク'])).toEqual(['p1'])
+    expect(findTitleKeywordProductIds(products, ['NINTENDO'])).toEqual(['p1'])
+    expect(findTitleKeywordProductIds(products, [])).toEqual([])
+  })
+
+  it('価格範囲外の商品を数える', () => {
+    expect(findPriceRangeProductIds(products, 'original', 1000, 4000)).toEqual(['p1'])
+    expect(findPriceRangeProductIds(products, 'ebay', null, 20)).toEqual(['p2'])
+  })
+
+  it('評価数・発送日数の条件に一致する商品を数える', () => {
+    expect(findSellerRatingProductIds(products, 10)).toEqual(['p1'])
+    expect(findShippingDaysProductIds(products, 2)).toEqual(['p1'])
+  })
+
+  it('最終更新月の条件に一致する商品を数える', () => {
+    expect(findUpdatedAtProductIds(
+      products,
+      3,
+      new Date('2026-07-29T00:00:00.000Z'),
+    )).toEqual(['p1'])
+  })
+
+  it('未入力・不正条件は0件として扱う', () => {
+    expect(findPriceRangeProductIds(products, 'original', null, null)).toEqual([])
+    expect(findSellerRatingProductIds(products, null)).toEqual([])
+    expect(findShippingDaysProductIds(products, 0)).toEqual([])
+    expect(findUpdatedAtProductIds(products, 0)).toEqual([])
   })
 })
