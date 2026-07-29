@@ -388,6 +388,7 @@ async function runScrape(
         original_title: scraped.title,
         original_price: scraped.price,
         image_url: scraped.images[0] ?? null,
+        metadata: {},
       })),
       ...duplicateExcluded.map(({ row, reasonCode, reasonLabel }) => ({
         extraction_id: extractionId,
@@ -399,6 +400,7 @@ async function runScrape(
         original_title: row.original_title,
         original_price: row.original_price,
         image_url: row.original_images[0] ?? null,
+        metadata: {},
       })),
     ]
     if (excludedSnapshots.length > 0) {
