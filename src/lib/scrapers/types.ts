@@ -20,8 +20,6 @@ export interface ScrapedProduct {
 const SOLD_OUT_SOURCE_STATUSES = new Set([
   'sold_out',
   'status_sold_out',
-  'trading',
-  'status_trading',
 ])
 
 export function isSoldOutSourceStatus(status: string | null | undefined): boolean {

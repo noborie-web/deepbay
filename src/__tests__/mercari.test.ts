@@ -187,8 +187,6 @@ describe('toProduct() listing status handling', () => {
   it.each([
     'sold_out',
     'STATUS_SOLD_OUT',
-    'trading',
-    'STATUS_TRADING',
   ])('treats %s as sold out', (status) => {
     expect(isSoldOutSourceStatus(status)).toBe(true)
   })
@@ -196,6 +194,8 @@ describe('toProduct() listing status handling', () => {
   it.each([
     'on_sale',
     'STATUS_ON_SALE',
+    'trading',
+    'STATUS_TRADING',
     null,
     undefined,
   ])('does not treat %s as sold out', (status) => {
