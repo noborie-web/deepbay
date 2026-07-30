@@ -5,6 +5,7 @@ import { scrapeUrl, findScraper } from '@/lib/scrapers'
 import { translateTitles } from '@/lib/translate'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { matchesDangerSeller, normalizeSellerUrl } from '@/lib/danger-seller'
+import { findDangerWordMatch } from '@/lib/danger-word'
 import type { Extraction, Profile } from '@/types/database'
 import type { ScrapedProduct } from '@/lib/scrapers/types'
 
@@ -177,20 +178,25 @@ async function runScrape(
 
     // 危険単語フィルタ
     const wordList: string[] = (dangerWords ?? [])
-      .map((w: { word: string }) => w.word.normalize('NFKC').trim().toLowerCase())
+      .map((w: { word: string }) => w.word)
       .filter(Boolean)
-    const containsDangerWord = (scraped: ScrapedProduct) => {
-      const detailedText = `${scraped.title}\n${scraped.description}`
-        .normalize('NFKC')
-        .toLowerCase()
-      return wordList.some((word) => detailedText.includes(word))
-    }
-    const dangerWordExcluded = wordList.length === 0
-      ? []
-      : sellerFilteredList.filter(containsDangerWord)
-    const filteredList = wordList.length === 0
-      ? sellerFilteredList
-      : sellerFilteredList.filter((scraped) => !containsDangerWord(scraped))
+    const dangerWordExcluded: Array<{
+      scraped: ScrapedProduct
+      matchedWord: string
+    }> = []
+    const filteredList = sellerFilteredList.filter((scraped) => {
+      if (wordList.length === 0) return true
+      const match = findDangerWordMatch(
+        `${scraped.title}\n${scraped.description}`,
+        wordList,
+      )
+      if (!match) return true
+      dangerWordExcluded.push({
+        scraped,
+        matchedWord: match.registeredWord,
+      })
+      return false
+    })
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let setting: any = null
@@ -373,12 +379,7 @@ async function runScrape(
           sellerUrl: scraped.sellerUrl ?? null,
         },
       })),
-      ...dangerWordExcluded.map((scraped: {
-        sourceUrl: string
-        title: string
-        price: number | null
-        images: string[]
-      }) => ({
+      ...dangerWordExcluded.map(({ scraped, matchedWord }) => ({
         extraction_id: extractionId,
         user_id: userId,
         product_id: crypto.randomUUID(),
@@ -388,7 +389,7 @@ async function runScrape(
         original_title: scraped.title,
         original_price: scraped.price,
         image_url: scraped.images[0] ?? null,
-        metadata: {},
+        metadata: { matchedWord },
       })),
       ...duplicateExcluded.map(({ row, reasonCode, reasonLabel }) => ({
         extraction_id: extractionId,
