@@ -104,7 +104,11 @@ export default function ExtractionResultModal({
                   <div
                     key={row.key}
                     className={`grid grid-cols-[1fr_auto] gap-6 px-4 py-3 text-sm md:text-base ${
-                      row.key === 'completed_count' ? 'bg-blue-50 font-bold' : ''
+                      row.key === 'completed_count'
+                        ? 'bg-blue-50 font-bold'
+                        : row.key === 'excluded_total'
+                          ? 'bg-red-50 font-bold'
+                          : ''
                     }`}
                   >
                     <span>{row.label}</span>

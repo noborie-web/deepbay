@@ -106,7 +106,24 @@ describe('extraction activity helpers', () => {
     expect(byKey.shipping_days).toBe(1)
     expect(byKey.seller_rating).toBe(1)
     expect(byKey.updated_at).toBe(1)
+    expect(byKey.excluded_total).toBe(5)
     expect(byKey.completed_count).toBe(120)
+  })
+
+  it('危険単語と未知の理由も除外合計から漏らさず表示する', () => {
+    const rows = buildExtractionResultSummary(591, [
+      ...Array.from({ length: 9 }, (_, index) => (
+        excluded('danger_word', '危険単語', String(index))
+      )),
+      excluded('future_reason', '将来追加された理由', 'future'),
+    ])
+    const byKey = Object.fromEntries(rows.map((row) => [row.key, row.count]))
+
+    expect(byKey.initial_count).toBe(601)
+    expect(byKey.danger_word).toBe(9)
+    expect(byKey.other_excluded).toBe(1)
+    expect(byKey.excluded_total).toBe(10)
+    expect(byKey.completed_count).toBe(591)
   })
 
   it('件数が負にならない', () => {

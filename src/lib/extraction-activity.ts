@@ -124,6 +124,30 @@ export function buildExtractionResultSummary(
     (sum, code) => sum + (counts.get(code) ?? 0),
     0,
   )
+  const displayedReasonCodes = new Set([
+    'title_duplicate',
+    'active_duplicate',
+    'count_adjustment',
+    'detail_failed',
+    'sold_out',
+    'missing_price',
+    'price_missing',
+    'initial_danger_seller',
+    'danger_word',
+    'no_image',
+    'translation_failed',
+    'translated_title_duplicate',
+    'bulk_sold_out',
+    'danger_seller',
+    'shipping_days',
+    'low_seller_rating',
+    'seller_rating',
+    'updated_at',
+    'price_range',
+  ])
+  const otherExcluded = excludedProducts.filter(
+    (product) => !displayedReasonCodes.has(product.reason_code),
+  ).length
 
   const initialCount = Math.max(0, currentProductCount) + excludedProducts.length
   const titleDuplicate = count('title_duplicate')
@@ -151,6 +175,11 @@ export function buildExtractionResultSummary(
       key: 'initial_danger_seller',
       label: '個別危険Seller除外',
       count: count('initial_danger_seller'),
+    },
+    {
+      key: 'danger_word',
+      label: '危険単語除外',
+      count: count('danger_word'),
     },
     { key: 'no_image', label: '画像が1枚もない除外', count: count('no_image') },
     {
@@ -198,6 +227,8 @@ export function buildExtractionResultSummary(
       label: '（一括編集）価格範囲除外',
       count: count('price_range'),
     },
+    { key: 'other_excluded', label: 'その他の除外', count: otherExcluded },
+    { key: 'excluded_total', label: '除外合計', count: excludedProducts.length },
     { key: 'completed_count', label: '取得完了件数', count: Math.max(0, currentProductCount) },
   ]
 }
