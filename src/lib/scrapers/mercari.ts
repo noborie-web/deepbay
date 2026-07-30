@@ -358,8 +358,6 @@ export class MercariScraper {
     let pageToken: string | undefined
     const seenPageTokens = new Set<string>()
     const pageSize = Math.min(limit, 120)
-    // searchSessionId は検索1セッション単位で固定（mercapiに準拠）
-    const searchSessionId = crypto.randomUUID().replace(/-/g, '')
 
     while (allProducts.length < limit) {
       const dpop = await generateDPoP(SEARCH_URL, 'POST', dpopCtx)
@@ -368,7 +366,9 @@ export class MercariScraper {
         userId: '',
         pageSize,
         pageToken: pageToken ?? '',
-        searchSessionId,
+        // Mercari公式Webとmercapiはページ要求ごとに新しいIDを送る。
+        // 固定するとpageTokenがあっても同じページが返ることがある。
+        searchSessionId: crypto.randomUUID().replace(/-/g, ''),
         indexRouting: 'INDEX_ROUTING_UNSPECIFIED',
         thumbnailTypes: [],
         searchCondition,

@@ -514,7 +514,11 @@ describe('scrapeSearch item type', () => {
 describe('scrapeSearch pagination', () => {
   it('要求件数より少ないページでもnextPageTokenがあれば次ページを取得する', async () => {
     const originalFetch = globalThis.fetch
-    const requestBodies: Array<{ pageSize: number; pageToken: string }> = []
+    const requestBodies: Array<{
+      pageSize: number
+      pageToken: string
+      searchSessionId: string
+    }> = []
     let searchRequestCount = 0
 
     globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -556,6 +560,9 @@ describe('scrapeSearch pagination', () => {
       expect(requestBodies).toHaveLength(2)
       expect(requestBodies[0]).toMatchObject({ pageSize: 120, pageToken: '' })
       expect(requestBodies[1]).toMatchObject({ pageSize: 120, pageToken: 'page-2' })
+      expect(requestBodies[0].searchSessionId).toMatch(/^[0-9a-f]{32}$/)
+      expect(requestBodies[1].searchSessionId).toMatch(/^[0-9a-f]{32}$/)
+      expect(requestBodies[1].searchSessionId).not.toBe(requestBodies[0].searchSessionId)
     } finally {
       globalThis.fetch = originalFetch
     }
