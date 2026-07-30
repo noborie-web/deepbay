@@ -418,6 +418,44 @@ describe('scrapeSearch excludeKeyword', () => {
   })
 })
 
+describe('scrapeSearch item type', () => {
+  it('通常商品の詳細APIで取得できるメルカリ商品だけを検索する', async () => {
+    const originalFetch = globalThis.fetch
+    const requestBodies: Array<{
+      searchCondition: { itemTypes: string[] }
+    }> = []
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(input)
+      if (!requestUrl.includes('entities:search')) {
+        return new Response(null, { status: 404 })
+      }
+
+      requestBodies.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({
+        items: [{
+          id: 'm1',
+          name: 'Mercari item',
+          price: 1000,
+          photos: ['https://static.mercdn.net/m1.jpg'],
+        }],
+      }), { status: 200 })
+    }
+
+    try {
+      await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 1 },
+      )
+
+      expect(requestBodies).toHaveLength(1)
+      expect(requestBodies[0].searchCondition.itemTypes).toEqual(['ITEM_TYPE_MERCARI'])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
 describe('scrapeSearch pagination', () => {
   it('要求件数より少ないページでもnextPageTokenがあれば次ページを取得する', async () => {
     const originalFetch = globalThis.fetch

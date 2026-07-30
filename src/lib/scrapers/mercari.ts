@@ -325,7 +325,9 @@ export class MercariScraper {
       colorId:        [],
       hasCoupon:      false,
       attributes:     [],
-      itemTypes:      [],
+      // 通常商品用の詳細APIで取得できないメルカリShops商品
+      // (ITEM_TYPE_BEYOND) が混ざらないよう、通常メルカリ商品だけを検索する。
+      itemTypes:      ['ITEM_TYPE_MERCARI'],
       skuIds:         [],
     }
 
