@@ -443,7 +443,12 @@ async function runScrape(
     // 100件ずつ分割してinsert
     const chunkSize = 100
     for (let i = 0; i < deduped.length; i += chunkSize) {
-      await supabase.from('products').insert(deduped.slice(i, i + chunkSize))
+      const { error } = await supabase
+        .from('products')
+        .insert(deduped.slice(i, i + chunkSize))
+      if (error) {
+        throw new Error(`商品の保存に失敗しました: ${error.message}`)
+      }
     }
 
     await Promise.all([
