@@ -7,6 +7,7 @@ import {
   _toProduct,
   MercariScraper,
 } from '../lib/scrapers/mercari'
+import { isSoldOutSourceStatus } from '../lib/scrapers/types'
 
 describe('DPoP JWT generation', () => {
   it('produces a 3-segment JWT string', async () => {
@@ -150,6 +151,58 @@ describe('toProduct() seller handling', () => {
   })
 })
 
+describe('toProduct() listing status handling', () => {
+  it.each([
+    ['on_sale', 'on_sale'],
+    ['trading', 'trading'],
+    ['sold_out', 'sold_out'],
+    ['STATUS_ON_SALE', 'status_on_sale'],
+    ['STATUS_TRADING', 'status_trading'],
+    ['STATUS_SOLD_OUT', 'status_sold_out'],
+  ])('keeps and normalizes Mercari status %s', (status, expected) => {
+    const product = _toProduct({
+      id: 'x1',
+      name: 'Test',
+      price: 100,
+      description: '',
+      thumbnails: [],
+      status,
+    }, 'https://jp.mercari.com/item/x1')
+
+    expect(product.sourceStatus).toBe(expected)
+  })
+
+  it('returns null when status is absent', () => {
+    const product = _toProduct({
+      id: 'x1',
+      name: 'Test',
+      price: 100,
+      description: '',
+      thumbnails: [],
+    }, 'https://jp.mercari.com/item/x1')
+
+    expect(product.sourceStatus).toBeNull()
+  })
+
+  it.each([
+    'sold_out',
+    'STATUS_SOLD_OUT',
+    'trading',
+    'STATUS_TRADING',
+  ])('treats %s as sold out', (status) => {
+    expect(isSoldOutSourceStatus(status)).toBe(true)
+  })
+
+  it.each([
+    'on_sale',
+    'STATUS_ON_SALE',
+    null,
+    undefined,
+  ])('does not treat %s as sold out', (status) => {
+    expect(isSoldOutSourceStatus(status)).toBe(false)
+  })
+})
+
 describe('toProduct() date handling', () => {
   function makeItemWithDate(updated: unknown) {
     return {
@@ -226,6 +279,7 @@ describe('Mercari item images', () => {
             id: 'm1',
             name: 'Detailed item title',
             price: 2200,
+            status: 'sold_out',
             description: '個別商品ページの説明',
             photos: fullImages,
             seller: { id: 'seller-123', num_ratings: 45 },
@@ -247,6 +301,7 @@ describe('Mercari item images', () => {
         title: 'Detailed item title',
         price: 2200,
         description: '個別商品ページの説明',
+        sourceStatus: 'sold_out',
         sellerId: 'seller-123',
         sellerRatingCount: 45,
         shippingDays: 2,

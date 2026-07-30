@@ -151,6 +151,10 @@ function extractImages(item: any): string[] {
 function toProduct(item: any, url: string): ScrapedProduct {
   const itemId: string = item.id ?? item.item_id ?? ''
   const images = extractImages(item)
+  const sourceStatusRaw = item.status ?? item.item_status ?? item.itemStatus ?? null
+  const sourceStatus = sourceStatusRaw == null
+    ? null
+    : String(sourceStatusRaw).trim().toLowerCase() || null
 
   // 評価数: seller情報から複数パスを試みる
   const seller = item.seller ?? item.sellerInfo ?? null
@@ -223,6 +227,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
     category: item.item_category?.name ?? item.itemCategory?.name ?? null,
     sellerId,
     sellerUrl,
+    sourceStatus,
     sellerRatingCount,
     shippingDays,
     sourceUpdatedAt,
@@ -243,6 +248,7 @@ function mergeProductDetail(
     category: detail.category ?? summary.category,
     sellerId: detail.sellerId ?? summary.sellerId ?? null,
     sellerUrl: detail.sellerUrl ?? summary.sellerUrl ?? null,
+    sourceStatus: detail.sourceStatus ?? summary.sourceStatus ?? null,
     sellerRatingCount: detail.sellerRatingCount ?? summary.sellerRatingCount,
     shippingDays: detail.shippingDays ?? summary.shippingDays,
     sourceUpdatedAt: detail.sourceUpdatedAt ?? summary.sourceUpdatedAt,
