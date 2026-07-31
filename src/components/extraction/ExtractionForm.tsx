@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Search } from 'lucide-react'
+import Link from 'next/link'
 import type { SellerAccount, ListingCategory, BulkEditSetting } from '@/types/database'
 
 interface Props {
@@ -23,7 +23,9 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
   const [sellerAccountId, setSellerAccountId] = useState(
     sellers.find((s) => s.is_default)?.id ?? sellers[0]?.id ?? ''
   )
-  const [bulkEditSettingId, setBulkEditSettingId] = useState(bulkSettings[0]?.id ?? '')
+  const [bulkEditSettingId, setBulkEditSettingId] = useState(
+    bulkSettings.find((setting) => setting.is_default)?.id ?? bulkSettings[0]?.id ?? '',
+  )
   const [loading, setLoading] = useState(false)
 
   async function handleSubmit() {
@@ -92,11 +94,12 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
         </select>
       </div>
 
-      <button
+      <Link
+        href={`/bulk-edit-settings${bulkEditSettingId ? `?id=${bulkEditSettingId}` : ''}`}
         className="border border-gray-300 rounded px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
       >
         一括編集設定編集
-      </button>
+      </Link>
 
       <button
         onClick={handleSubmit}

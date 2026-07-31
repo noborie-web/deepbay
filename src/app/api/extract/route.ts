@@ -5,9 +5,13 @@ import { scrapeUrl, findScraper } from '@/lib/scrapers'
 import { translateTitles } from '@/lib/translate'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { matchesDangerSeller, normalizeSellerUrl } from '@/lib/danger-seller'
-import { findDangerWordMatch } from '@/lib/danger-word'
 import type { Extraction, Profile } from '@/types/database'
 import { isSoldOutSourceStatus, type ScrapedProduct } from '@/lib/scrapers/types'
+import {
+  evaluateBulkProduct,
+  normalizeBulkEditConfig,
+  type BulkFilterMatch,
+} from '@/lib/bulk-edit-settings'
 
 export const maxDuration = 300
 
@@ -105,12 +109,24 @@ async function runScrape(
     const limit = 600
 
     // 抽出設定を取得
-    const [{ data: dangerSellers }, { data: dangerWords }, { data: replaceWords }, { data: extractionSettings }] = await Promise.all([
+    const [
+      { data: dangerSellers },
+      { data: dangerWords },
+      { data: replaceWords },
+      { data: extractionSettings },
+      { data: veroBrands },
+      { data: setting },
+    ] = await Promise.all([
       supabase.from('danger_sellers').select('seller_url').eq('user_id', userId),
       supabase.from('danger_words').select('word').eq('user_id', userId),
       supabase.from('replace_words').select('before_word, after_word').eq('user_id', userId),
       supabase.from('extraction_settings').select('*').eq('user_id', userId).single(),
+      supabase.from('vero_brands').select('brand').eq('user_id', userId),
+      bulkEditSettingId
+        ? supabase.from('bulk_edit_settings').select('*').eq('id', bulkEditSettingId).eq('user_id', userId).single()
+        : Promise.resolve({ data: null }),
     ])
+    const bulkConfig = normalizeBulkEditConfig(setting?.config)
 
     // アクティブHTMLテンプレートを取得
     let activeTemplate: string | null = null
@@ -129,12 +145,15 @@ async function runScrape(
       .filter(Boolean)
     const normalizedUrl = normalizeSellerUrl(url)
     if (
+      bulkConfig.dangerSellerEnabled
+      && (
       matchesDangerSeller({ sellerUrl: url }, sellerUrls)
       || sellerUrls.some((sellerUrl) => {
         const normalizedSellerUrl = normalizeSellerUrl(sellerUrl)
         return normalizedUrl === normalizedSellerUrl
           || normalizedUrl.startsWith(`${normalizedSellerUrl}/`)
       })
+      )
     ) {
       await Promise.all([
         supabase
@@ -178,45 +197,32 @@ async function runScrape(
     ))
 
     // 検索結果に混在する危険セラーを商品単位で除外する
-    const dangerSellerExcluded = sellerUrls.length === 0
+    const dangerSellerExcluded = !bulkConfig.dangerSellerEnabled || sellerUrls.length === 0
       ? []
       : onSaleList.filter((scraped) => matchesDangerSeller(scraped, sellerUrls))
-    const sellerFilteredList = sellerUrls.length === 0
+    const sellerFilteredList = !bulkConfig.dangerSellerEnabled || sellerUrls.length === 0
       ? onSaleList
       : onSaleList.filter((scraped) => !matchesDangerSeller(scraped, sellerUrls))
 
-    // 危険単語フィルタ
     const wordList: string[] = (dangerWords ?? [])
       .map((w: { word: string }) => w.word)
       .filter(Boolean)
-    const dangerWordExcluded: Array<{
+    const veroList: string[] = (veroBrands ?? [])
+      .map((item: { brand: string }) => item.brand)
+      .filter(Boolean)
+    const settingExcluded: Array<{
       scraped: ScrapedProduct
-      matchedWord: string
+      match: BulkFilterMatch
     }> = []
     const filteredList = sellerFilteredList.filter((scraped) => {
-      if (wordList.length === 0) return true
-      const match = findDangerWordMatch(
-        `${scraped.title}\n${scraped.description}`,
-        wordList,
-      )
-      if (!match) return true
-      dangerWordExcluded.push({
-        scraped,
-        matchedWord: match.registeredWord,
+      const match = evaluateBulkProduct(scraped, bulkConfig, {
+        veroBrands: veroList,
+        dangerWords: wordList,
       })
+      if (!match) return true
+      settingExcluded.push({ scraped, match })
       return false
     })
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let setting: any = null
-    if (bulkEditSettingId) {
-      const { data } = await supabase
-        .from('bulk_edit_settings')
-        .select('*')
-        .eq('id', bulkEditSettingId)
-        .single()
-      setting = data
-    }
 
     const replacePairs: { before_word: string; after_word: string }[] = replaceWords ?? []
 
@@ -403,17 +409,17 @@ async function runScrape(
           sellerUrl: scraped.sellerUrl ?? null,
         },
       })),
-      ...dangerWordExcluded.map(({ scraped, matchedWord }) => ({
+      ...settingExcluded.map(({ scraped, match }) => ({
         extraction_id: extractionId,
         user_id: userId,
         product_id: crypto.randomUUID(),
-        reason_code: 'danger_word',
-        reason_label: '危険単語',
+        reason_code: match.reasonCode,
+        reason_label: match.reasonLabel,
         source_url: scraped.sourceUrl,
         original_title: scraped.title,
         original_price: scraped.price,
         image_url: scraped.images[0] ?? null,
-        metadata: { matchedWord },
+        metadata: match.metadata,
       })),
       ...duplicateExcluded.map(({ row, reasonCode, reasonLabel }) => ({
         extraction_id: extractionId,

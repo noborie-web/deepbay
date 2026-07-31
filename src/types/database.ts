@@ -51,6 +51,9 @@ export interface BulkEditSetting {
   title_suffix: string
   description_template: string
   condition_mapping: Record<string, string>
+  memo: string
+  is_default: boolean
+  config: import('@/lib/bulk-edit-settings').BulkEditConfig
   created_at: string
   updated_at: string
 }

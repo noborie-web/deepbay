@@ -172,6 +172,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
       ? `https://jp.mercari.com/user/profile/${encodeURIComponent(sellerId)}`
       : null
   let sellerRatingCount: number | null = null
+  let sellerLowRatingCount: number | null = null
   if (seller) {
     // num_ratings が直接ある場合
     if (typeof seller.num_ratings === 'number') sellerRatingCount = seller.num_ratings
@@ -179,6 +180,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
     else if (seller.ratings) {
       const g = seller.ratings.good ?? 0
       const b = seller.ratings.bad ?? 0
+      if (typeof b === 'number') sellerLowRatingCount = b
       if (g + b > 0) sellerRatingCount = g + b
     }
     // evaluation_count / ratingCount
@@ -229,6 +231,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
     sellerUrl,
     sourceStatus,
     sellerRatingCount,
+    sellerLowRatingCount,
     shippingDays,
     sourceUpdatedAt,
   }
@@ -250,6 +253,7 @@ function mergeProductDetail(
     sellerUrl: detail.sellerUrl ?? summary.sellerUrl ?? null,
     sourceStatus: detail.sourceStatus ?? summary.sourceStatus ?? null,
     sellerRatingCount: detail.sellerRatingCount ?? summary.sellerRatingCount,
+    sellerLowRatingCount: detail.sellerLowRatingCount ?? summary.sellerLowRatingCount,
     shippingDays: detail.shippingDays ?? summary.shippingDays,
     sourceUpdatedAt: detail.sourceUpdatedAt ?? summary.sourceUpdatedAt,
     detailFetched: true,

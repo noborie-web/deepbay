@@ -13,6 +13,7 @@ export interface ScrapedProduct {
   detailFetched?: boolean          // 個別商品詳細の取得に成功したか
   sourceStatus?: string | null     // 出品元サイトの商品状態（on_sale / trading / sold_out 等）
   sellerRatingCount: number | null  // 評価数
+  sellerLowRatingCount?: number | null // 低評価数（取得元が提供する場合）
   shippingDays: number | null       // 発送日数（最短日数）
   sourceUpdatedAt: string | null    // 最終更新日（ISO文字列）
 }
