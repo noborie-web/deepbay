@@ -105,20 +105,33 @@ export default function BulkEditSettingsPage() {
   const [newWord, setNewWord] = useState('')
   const [message, setMessage] = useState('')
   const [saving, setSaving] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [loading, setLoading] = useState(true)
 
   async function load(preferredId?: string) {
-    const response = await fetch('/api/bulk-edit-settings')
-    const data = await response.json()
-    const rows = (data.settings ?? []) as BulkEditSetting[]
-    setSettings(rows)
-    const requested = preferredId
-      || (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('id') : '')
-      || ''
-    const selected = rows.find((row) => row.id === requested)
-      ?? rows.find((row) => row.is_default)
-      ?? rows[0]
-    setSelectedId(selected?.id ?? '')
-    setDraft(selected ? { ...selected, config: normalizeBulkEditConfig(selected.config) } : null)
+    setLoading(true)
+    try {
+      const response = await fetch('/api/bulk-edit-settings')
+      const data = await response.json()
+      if (!response.ok) {
+        setMessage(data.error ?? '設定の読み込みに失敗しました')
+        return
+      }
+      const rows = (data.settings ?? []) as BulkEditSetting[]
+      setSettings(rows)
+      const requested = preferredId
+        || (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('id') : '')
+        || ''
+      const selected = rows.find((row) => row.id === requested)
+        ?? rows.find((row) => row.is_default)
+        ?? rows[0]
+      setSelectedId(selected?.id ?? '')
+      setDraft(selected ? { ...selected, config: normalizeBulkEditConfig(selected.config) } : null)
+    } catch {
+      setMessage('設定の読み込みに失敗しました。通信状態を確認して再試行してください。')
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -141,19 +154,27 @@ export default function BulkEditSettingsPage() {
   }
 
   async function create(copyCurrent: boolean) {
+    setCreating(true)
+    setMessage('')
     const source = copyCurrent && draft ? draft : null
     const payload = source
       ? { ...source, id: undefined, name: `${source.name} のコピー`, is_default: false }
       : EMPTY_SETTING
-    const response = await fetch('/api/bulk-edit-settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    const data = await response.json()
-    if (!response.ok) return setMessage(data.error ?? '作成に失敗しました')
-    setMessage('設定を作成しました')
-    await load(data.setting.id)
+    try {
+      const response = await fetch('/api/bulk-edit-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await response.json()
+      if (!response.ok) return setMessage(data.error ?? '作成に失敗しました')
+      setMessage('設定を作成しました')
+      await load(data.setting.id)
+    } catch {
+      setMessage('作成に失敗しました。通信状態を確認して再試行してください。')
+    } finally {
+      setCreating(false)
+    }
   }
 
   async function save() {
@@ -192,9 +213,18 @@ export default function BulkEditSettingsPage() {
     return (
       <div className="p-6">
         <h1 className="text-2xl font-bold mb-4">一括編集設定</h1>
-        <p className="text-gray-500 mb-4">設定がまだありません。</p>
-        <button onClick={() => create(false)} className="border border-blue-500 text-blue-600 rounded px-4 py-2">
-          最初の設定を作成
+        <p className="text-gray-500 mb-4">{loading ? '設定を確認しています…' : '設定がまだありません。'}</p>
+        {message && (
+          <div className="mb-4 max-w-2xl rounded border border-red-300 bg-red-50 px-4 py-3 text-red-700">
+            {message}
+          </div>
+        )}
+        <button
+          onClick={() => create(false)}
+          disabled={loading || creating}
+          className="border border-blue-500 text-blue-600 rounded px-4 py-2 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {creating ? '作成中…' : '最初の設定を作成'}
         </button>
       </div>
     )

@@ -35,6 +35,13 @@ function cleanPayload(body: Record<string, unknown>) {
   }
 }
 
+function databaseErrorMessage(message: string) {
+  if (/is_default|memo|config/.test(message)) {
+    return '一括編集設定のデータベース更新が未適用です。Supabaseで20260731_bulk_edit_settings_v2.sqlを実行してください。'
+  }
+  return message
+}
+
 export async function GET() {
   const user = await authenticatedUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -44,7 +51,7 @@ export async function GET() {
     .eq('user_id', user.id)
     .order('is_default', { ascending: false })
     .order('created_at')
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) return NextResponse.json({ error: databaseErrorMessage(error.message) }, { status: 500 })
   return NextResponse.json({ settings: data ?? [] })
 }
 
@@ -68,7 +75,7 @@ export async function POST(req: NextRequest) {
       .insert({ ...payload, is_default: makeDefault, user_id: user.id })
       .select()
       .single()
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (error) return NextResponse.json({ error: databaseErrorMessage(error.message) }, { status: 500 })
     return NextResponse.json({ setting: data }, { status: 201 })
   } catch (error) {
     return NextResponse.json(
@@ -97,7 +104,7 @@ export async function PATCH(req: NextRequest) {
       .eq('user_id', user.id)
       .select()
       .single()
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (error) return NextResponse.json({ error: databaseErrorMessage(error.message) }, { status: 500 })
     return NextResponse.json({ setting: data })
   } catch (error) {
     return NextResponse.json(
@@ -144,4 +151,3 @@ export async function DELETE(req: NextRequest) {
   }
   return NextResponse.json({ ok: true })
 }
-
