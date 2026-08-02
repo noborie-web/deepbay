@@ -8,7 +8,15 @@ import ExtractionForm from '@/components/extraction/ExtractionForm'
 import ExtractionRow from '@/components/extraction/ExtractionRow'
 import ProductEditPanel from '@/components/extraction/ProductEditPanel'
 import ListingModal from '@/components/extraction/ListingModal'
-import type { SellerAccount, ListingCategory, BulkEditSetting, Extraction } from '@/types/database'
+import ExclusionDetailsModal from '@/components/extraction/ExclusionDetailsModal'
+import ExtractionResultModal from '@/components/extraction/ExtractionResultModal'
+import type {
+  SellerAccount,
+  ListingCategory,
+  BulkEditSetting,
+  Extraction,
+  ExtractionActivity,
+} from '@/types/database'
 
 interface Props {
   profile: { extraction_limit: number; extraction_used: number } | null
@@ -33,6 +41,16 @@ export default function ExtractionPageClient({
   const [notice, setNotice] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [listingId, setListingId] = useState<string | null>(null)
+  const [exclusionId, setExclusionId] = useState<string | null>(null)
+  const [resultId, setResultId] = useState<string | null>(null)
+
+  function addActivity(extractionId: string, activity: ExtractionActivity) {
+    setExtractions((current) => current.map((extraction) => (
+      extraction.id === extractionId
+        ? { ...extraction, activities: [activity, ...(extraction.activities ?? [])] }
+        : extraction
+    )))
+  }
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -189,10 +207,11 @@ export default function ExtractionPageClient({
             <ExtractionRow
               key={extraction.id}
               extraction={extraction}
-              onViewResult={(id) => router.push(`/extraction/${id}`)}
+              onViewResult={(id) => setResultId(id)}
               onDelete={(id) => setExtractions((prev) => prev.filter((e) => e.id !== id))}
               onEdit={(id) => setEditingId((prev) => prev === id ? null : id)}
               onList={(id) => setListingId(id)}
+              onViewExclusions={(id) => setExclusionId(id)}
             />
           ))
         )}
@@ -203,6 +222,7 @@ export default function ExtractionPageClient({
         <ProductEditPanel
           extractionId={editingId}
           onClose={() => setEditingId(null)}
+          onActivity={(activity) => addActivity(editingId, activity)}
         />
       )}
 
@@ -211,6 +231,22 @@ export default function ExtractionPageClient({
           extraction={extractions.find((item) => item.id === listingId)!}
           sellers={sellers}
           onClose={() => setListingId(null)}
+          onActivity={(activity) => addActivity(listingId, activity)}
+        />
+      )}
+
+      {exclusionId && (
+        <ExclusionDetailsModal
+          extraction={extractions.find((item) => item.id === exclusionId)!}
+          onClose={() => setExclusionId(null)}
+        />
+      )}
+
+      {resultId && (
+        <ExtractionResultModal
+          extraction={extractions.find((item) => item.id === resultId)!}
+          onClose={() => setResultId(null)}
+          onOpenProducts={() => router.push(`/extraction/${resultId}`)}
         />
       )}
     </div>

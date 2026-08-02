@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import type { Product } from '@/types/database'
+import SourceUrlRestore from '@/components/inventory/SourceUrlRestore'
 
 export default async function InventoryPage() {
   const supabase = await createClient()
@@ -26,6 +27,8 @@ export default async function InventoryPage() {
   return (
     <div className="p-6">
       <h1 className="text-lg font-semibold mb-6 text-gray-800">在庫管理</h1>
+
+      <SourceUrlRestore />
 
       {/* 集計 */}
       <div className="grid grid-cols-4 gap-4 mb-6">

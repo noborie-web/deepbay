@@ -24,7 +24,7 @@ export default async function ExtractionPage() {
     supabase.from('bulk_edit_settings').select('*').eq('user_id', user.id).order('created_at'),
     supabase
       .from('extractions')
-      .select('*, seller_account:seller_accounts(id, user_id, seller_id, display_name, is_default, ebay_user_id, ebay_marketplace_id, ebay_connected_at, created_at), category:listing_categories(*), bulk_edit_setting:bulk_edit_settings(name)')
+      .select('*, seller_account:seller_accounts(id, user_id, seller_id, display_name, is_default, ebay_user_id, ebay_marketplace_id, ebay_connected_at, created_at), category:listing_categories(*), bulk_edit_setting:bulk_edit_settings(name), activities:extraction_activities(*)')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(50),

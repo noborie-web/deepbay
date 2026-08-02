@@ -10,6 +10,21 @@ const HEADERS = {
   'X-Platform': 'web',
 }
 
+const SEARCH_TIMEOUT_MS = 10_000
+const DETAIL_TIMEOUT_MS = 3_500
+const IMAGE_TIMEOUT_MS = 1_500
+
+function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs: number,
+): Promise<Response> {
+  return fetch(input, {
+    ...init,
+    signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+  })
+}
+
 // ---- DPoP utility ----
 
 function base64url(data: Uint8Array): string {
@@ -136,10 +151,28 @@ function extractImages(item: any): string[] {
 function toProduct(item: any, url: string): ScrapedProduct {
   const itemId: string = item.id ?? item.item_id ?? ''
   const images = extractImages(item)
+  const sourceStatusRaw = item.status ?? item.item_status ?? item.itemStatus ?? null
+  const sourceStatus = sourceStatusRaw == null
+    ? null
+    : String(sourceStatusRaw).trim().toLowerCase() || null
 
   // 評価数: seller情報から複数パスを試みる
   const seller = item.seller ?? item.sellerInfo ?? null
+  const sellerIdRaw = seller?.id
+    ?? seller?.user_id
+    ?? seller?.userId
+    ?? item.seller_id
+    ?? item.sellerId
+    ?? null
+  const sellerId = sellerIdRaw == null ? null : String(sellerIdRaw).trim() || null
+  const suppliedSellerUrl = seller?.url ?? seller?.profile_url ?? seller?.profileUrl ?? null
+  const sellerUrl = typeof suppliedSellerUrl === 'string' && suppliedSellerUrl.trim()
+    ? suppliedSellerUrl.trim()
+    : sellerId
+      ? `https://jp.mercari.com/user/profile/${encodeURIComponent(sellerId)}`
+      : null
   let sellerRatingCount: number | null = null
+  let sellerLowRatingCount: number | null = null
   if (seller) {
     // num_ratings が直接ある場合
     if (typeof seller.num_ratings === 'number') sellerRatingCount = seller.num_ratings
@@ -147,6 +180,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
     else if (seller.ratings) {
       const g = seller.ratings.good ?? 0
       const b = seller.ratings.bad ?? 0
+      if (typeof b === 'number') sellerLowRatingCount = b
       if (g + b > 0) sellerRatingCount = g + b
     }
     // evaluation_count / ratingCount
@@ -193,9 +227,36 @@ function toProduct(item: any, url: string): ScrapedProduct {
     images,
     condition: item.item_condition?.name ?? item.itemCondition?.name ?? null,
     category: item.item_category?.name ?? item.itemCategory?.name ?? null,
+    sellerId,
+    sellerUrl,
+    sourceStatus,
     sellerRatingCount,
+    sellerLowRatingCount,
     shippingDays,
     sourceUpdatedAt,
+  }
+}
+
+function mergeProductDetail(
+  summary: ScrapedProduct,
+  detail: ScrapedProduct,
+): ScrapedProduct {
+  return {
+    ...summary,
+    title: detail.title || summary.title,
+    price: detail.price ?? summary.price,
+    description: detail.description || summary.description,
+    images: detail.images.length > 0 ? detail.images : summary.images,
+    condition: detail.condition ?? summary.condition,
+    category: detail.category ?? summary.category,
+    sellerId: detail.sellerId ?? summary.sellerId ?? null,
+    sellerUrl: detail.sellerUrl ?? summary.sellerUrl ?? null,
+    sourceStatus: detail.sourceStatus ?? summary.sourceStatus ?? null,
+    sellerRatingCount: detail.sellerRatingCount ?? summary.sellerRatingCount,
+    sellerLowRatingCount: detail.sellerLowRatingCount ?? summary.sellerLowRatingCount,
+    shippingDays: detail.shippingDays ?? summary.shippingDays,
+    sourceUpdatedAt: detail.sourceUpdatedAt ?? summary.sourceUpdatedAt,
+    detailFetched: true,
   }
 }
 
@@ -274,7 +335,9 @@ export class MercariScraper {
       colorId:        [],
       hasCoupon:      false,
       attributes:     [],
-      itemTypes:      [],
+      // 通常商品用の詳細APIで取得できないメルカリShops商品
+      // (ITEM_TYPE_BEYOND) が混ざらないよう、通常メルカリ商品だけを検索する。
+      itemTypes:      ['ITEM_TYPE_MERCARI'],
       skuIds:         [],
     }
 
@@ -297,9 +360,8 @@ export class MercariScraper {
     const dpopCtx = await getDPoPContext()
     const allProducts: ScrapedProduct[] = []
     let pageToken: string | undefined
+    const seenPageTokens = new Set<string>()
     const pageSize = Math.min(limit, 120)
-    // searchSessionId は検索1セッション単位で固定（mercapiに準拠）
-    const searchSessionId = crypto.randomUUID().replace(/-/g, '')
 
     while (allProducts.length < limit) {
       const dpop = await generateDPoP(SEARCH_URL, 'POST', dpopCtx)
@@ -308,7 +370,9 @@ export class MercariScraper {
         userId: '',
         pageSize,
         pageToken: pageToken ?? '',
-        searchSessionId,
+        // Mercari公式Webとmercapiはページ要求ごとに新しいIDを送る。
+        // 固定するとpageTokenがあっても同じページが返ることがある。
+        searchSessionId: crypto.randomUUID().replace(/-/g, ''),
         indexRouting: 'INDEX_ROUTING_UNSPECIFIED',
         thumbnailTypes: [],
         searchCondition,
@@ -316,11 +380,11 @@ export class MercariScraper {
         serviceFrom: 'suruga',
       }
 
-      const res = await fetch(SEARCH_URL, {
+      const res = await fetchWithTimeout(SEARCH_URL, {
         method: 'POST',
         headers: { ...HEADERS, 'Content-Type': 'application/json', 'DPoP': dpop },
         body: JSON.stringify(reqBody),
-      })
+      }, _options.timeoutMs ?? SEARCH_TIMEOUT_MS)
 
       if (!res.ok) {
         const text = (await res.text().catch(() => '')).slice(0, 500)
@@ -335,8 +399,15 @@ export class MercariScraper {
 
       allProducts.push(...items.map((item) => toProduct(item, url)))
 
-      pageToken = json?.meta?.nextPageToken ?? json?.nextPageToken
-      if (!pageToken || items.length < pageSize) break
+      const nextPageToken = json?.meta?.nextPageToken ?? json?.nextPageToken
+      if (
+        !nextPageToken
+        || nextPageToken === pageToken
+        || seenPageTokens.has(nextPageToken)
+      ) break
+
+      seenPageTokens.add(nextPageToken)
+      pageToken = nextPageToken
     }
 
     if (allProducts.length === 0) {
@@ -354,9 +425,9 @@ export class MercariScraper {
       offset: '0',
     })
 
-    const res = await fetch(`https://api.mercari.jp/v2/entities/@${sellerId}/items?${params}`, {
+    const res = await fetchWithTimeout(`https://api.mercari.jp/v2/entities/@${sellerId}/items?${params}`, {
       headers: HEADERS,
-    })
+    }, SEARCH_TIMEOUT_MS)
 
     if (!res.ok) {
       // フォールバック: 検索APIで試す
@@ -381,11 +452,11 @@ export class MercariScraper {
       offset: 0,
     })
 
-    const res = await fetch('https://api.mercari.jp/v2/entities/search', {
+    const res = await fetchWithTimeout('https://api.mercari.jp/v2/entities/search', {
       method: 'POST',
       headers: { ...HEADERS, 'Content-Type': 'application/json' },
       body,
-    })
+    }, SEARCH_TIMEOUT_MS)
 
     if (!res.ok) {
       throw new ScraperError(`Seller API error: ${res.status}`, this.siteKey, url)
@@ -405,7 +476,7 @@ export class MercariScraper {
   private async scrapeItem(itemId: string, url: string): Promise<ScrapedProduct> {
     try {
       const item = await this.fetchItemDetail(itemId)
-      if (item?.name) return toProduct(item, url)
+      if (item?.name) return { ...toProduct(item, url), detailFetched: true }
     } catch {
       // Vercelなど一部の実行環境で詳細APIが404になる場合は商品ページへ切り替える。
     }
@@ -413,14 +484,14 @@ export class MercariScraper {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async fetchItemDetail(itemId: string): Promise<any> {
+  private async fetchItemDetail(itemId: string, timeoutMs = DETAIL_TIMEOUT_MS): Promise<any> {
     const itemUrl = new URL('https://api.mercari.jp/items/get')
     itemUrl.searchParams.set('id', itemId)
     const endpoint = itemUrl.toString()
     const dpop = await generateDPoP(endpoint, 'GET', await getDPoPContext())
-    const res = await fetch(endpoint, {
+    const res = await fetchWithTimeout(endpoint, {
       headers: { ...HEADERS, 'DPoP': dpop },
-    })
+    }, timeoutMs)
 
     if (!res.ok) {
       throw new Error(`Item API error: ${res.status}`)
@@ -437,7 +508,9 @@ export class MercariScraper {
     options: ScraperOptions = {},
   ): Promise<ScrapedProduct[]> {
     const enriched: ScrapedProduct[] = []
-    const concurrency = 8
+    // Vercelの実行時間内に最大600件を処理できるよう、適度な並列数で実行する。
+    const concurrency = 24
+    const detailTimeoutMs = Math.min(options.timeoutMs ?? DETAIL_TIMEOUT_MS, DETAIL_TIMEOUT_MS)
 
     for (let index = 0; index < products.length; index += concurrency) {
       const chunk = products.slice(index, index + concurrency)
@@ -445,17 +518,16 @@ export class MercariScraper {
         if (!product.sourceItemId) return product
 
         try {
-          const detail = await this.fetchItemDetail(product.sourceItemId)
-          const detailImages = extractImages(detail)
-          return detailImages.length > 0
-            ? { ...product, images: detailImages }
-            : product
+          const detail = await this.fetchItemDetail(product.sourceItemId, detailTimeoutMs)
+          return mergeProductDetail(product, toProduct(detail, url))
         } catch {
           // 詳細APIが404でも、Mercari CDNの連番画像を確認して全画像を補完する。
           const probedImages = await this.probeItemImages(product.sourceItemId)
-          return probedImages.length > 0
-            ? { ...product, images: probedImages }
-            : product
+          return {
+            ...product,
+            images: probedImages.length > 0 ? probedImages : product.images,
+            detailFetched: false,
+          }
         }
       }))
       enriched.push(...results)
@@ -470,7 +542,7 @@ export class MercariScraper {
 
   private async scrapeItemPage(itemId: string, url: string): Promise<ScrapedProduct> {
     const pageUrl = `https://jp.mercari.com/item/${encodeURIComponent(itemId)}`
-    const res = await fetch(pageUrl, { headers: HEADERS })
+    const res = await fetchWithTimeout(pageUrl, { headers: HEADERS }, SEARCH_TIMEOUT_MS)
     if (!res.ok) {
       throw new ScraperError(`Item page error: ${res.status}`, this.siteKey, url)
     }
@@ -484,29 +556,42 @@ export class MercariScraper {
 
     const images = await this.probeItemImages(itemId)
     const ogImage = getMetaContent(html, 'og:image')
-    return toProduct({
+    return {
+      ...toProduct({
       id: itemId,
       name: title,
       price: priceRaw || null,
       description: '',
       photos: images.length > 0 ? images : [ogImage].filter(Boolean),
-    }, url)
+      }, url),
+      detailFetched: true,
+    }
   }
 
   private async probeItemImages(itemId: string): Promise<string[]> {
     const images: string[] = []
     // eBay側のPicURL上限に合わせ、最大12枚まで連番画像の存在を確認する。
-    for (let index = 1; index <= 12; index += 1) {
-      const imageUrl = `https://static.mercdn.net/item/detail/orig/photos/${encodeURIComponent(itemId)}_${index}.jpg`
-      try {
-        const res = await fetch(imageUrl, {
-          method: 'HEAD',
-          headers: { 'User-Agent': HEADERS['User-Agent'] },
-        })
-        if (!res.ok) break
-        images.push(imageUrl)
-      } catch {
-        break
+    // 4枚ずつ確認して、通信が遅い商品1件が全体を止めないようにする。
+    for (let start = 1; start <= 12; start += 4) {
+      const candidates = Array.from({ length: Math.min(4, 13 - start) }, (_, offset) => {
+        const index = start + offset
+        return `https://static.mercdn.net/item/detail/orig/photos/${encodeURIComponent(itemId)}_${index}.jpg`
+      })
+      const results = await Promise.all(candidates.map(async (imageUrl) => {
+        try {
+          const res = await fetchWithTimeout(imageUrl, {
+            method: 'HEAD',
+            headers: { 'User-Agent': HEADERS['User-Agent'] },
+          }, IMAGE_TIMEOUT_MS)
+          return res.ok
+        } catch {
+          return false
+        }
+      }))
+
+      for (let index = 0; index < results.length; index += 1) {
+        if (!results[index]) return images
+        images.push(candidates[index])
       }
     }
     return images

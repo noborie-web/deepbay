@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Copy, Pencil, MoreHorizontal } from 'lucide-react'
 import Badge from '@/components/ui/Badge'
+import { activityBadges, latestActivityAt } from '@/lib/extraction-activity'
 import type { Extraction } from '@/types/database'
 
 interface Props {
@@ -11,10 +12,29 @@ interface Props {
   onDelete?: (id: string) => void
   onEdit?: (id: string) => void
   onList?: (id: string) => void
+  onViewExclusions?: (id: string) => void
 }
 
-export default function ExtractionRow({ extraction, onViewResult, onDelete, onEdit, onList }: Props) {
+function formatActivityDate(value: string | null): string {
+  if (!value) return '—'
+  return new Date(value).toLocaleDateString('ja-JP')
+}
+
+export default function ExtractionRow({
+  extraction,
+  onViewResult,
+  onDelete,
+  onEdit,
+  onList,
+  onViewExclusions,
+}: Props) {
   const isManual = !extraction.is_bulk
+  const badges = activityBadges(extraction.activities)
+  const editedAt = latestActivityAt(extraction.activities, ['edited'])
+  const outputAt = latestActivityAt(
+    extraction.activities,
+    ['csv_exported', 'specifics_csv_exported', 'direct_listed'],
+  )
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -53,10 +73,15 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
   return (
     <div className="grid grid-cols-[160px_1fr_1fr_180px_140px_1fr] gap-4 items-center px-4 py-3 border-b last:border-0 hover:bg-gray-50 text-sm">
       {/* 種別 */}
-      <div>
+      <div className="flex flex-col items-start gap-1.5">
         <Badge variant="default">
           {isManual ? '手動' : '自動'}/一括/通常
         </Badge>
+        {badges.map((badge) => (
+          <Badge key={badge.type} variant={badge.variant}>
+            {badge.label}
+          </Badge>
+        ))}
       </div>
 
       {/* 抽出ID・セラー・カテゴリ */}
@@ -103,8 +128,8 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
             ? new Date(extraction.extracted_at).toLocaleDateString('ja-JP')
             : new Date(extraction.created_at).toLocaleDateString('ja-JP')}
         </div>
-        <div><span className="text-gray-400">編集: </span></div>
-        <div><span className="text-gray-400">出品: </span></div>
+        <div><span className="text-gray-400">編集: </span>{formatActivityDate(editedAt)}</div>
+        <div><span className="text-gray-400">出力/出品: </span>{formatActivityDate(outputAt)}</div>
       </div>
 
       {/* 進捗バー / エラーメッセージ */}
@@ -161,6 +186,7 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
         <div className="relative" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((v) => !v)}
+            aria-label="その他の操作"
             className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 transition-colors text-gray-500"
           >
             <MoreHorizontal size={16} />
@@ -185,6 +211,15 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
                 className="w-full text-left px-4 py-2.5 text-sm text-gray-400 cursor-not-allowed"
               >
                 担当者解除
+              </button>
+              <button
+                onClick={() => {
+                  onViewExclusions?.(extraction.id)
+                  setMenuOpen(false)
+                }}
+                className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors"
+              >
+                除外詳細
               </button>
               <hr className="my-1 border-gray-100" />
               <button

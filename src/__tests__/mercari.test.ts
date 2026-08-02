@@ -7,6 +7,7 @@ import {
   _toProduct,
   MercariScraper,
 } from '../lib/scrapers/mercari'
+import { isSoldOutSourceStatus } from '../lib/scrapers/types'
 
 describe('DPoP JWT generation', () => {
   it('produces a 3-segment JWT string', async () => {
@@ -117,6 +118,91 @@ describe('toProduct() price handling', () => {
   })
 })
 
+describe('toProduct() seller handling', () => {
+  it('seller.idからセラーIDとプロフィールURLを保持する', () => {
+    const product = _toProduct({
+      id: 'x1',
+      name: 'Test',
+      price: 100,
+      description: '',
+      thumbnails: [],
+      seller: { id: 12345 },
+    }, 'https://jp.mercari.com/item/x1')
+
+    expect(product.sellerId).toBe('12345')
+    expect(product.sellerUrl).toBe('https://jp.mercari.com/user/profile/12345')
+  })
+
+  it('APIが返したプロフィールURLを優先する', () => {
+    const product = _toProduct({
+      id: 'x1',
+      name: 'Test',
+      price: 100,
+      description: '',
+      thumbnails: [],
+      sellerInfo: {
+        userId: 'abc',
+        profileUrl: 'https://jp.mercari.com/s/abc',
+      },
+    }, 'https://jp.mercari.com/item/x1')
+
+    expect(product.sellerId).toBe('abc')
+    expect(product.sellerUrl).toBe('https://jp.mercari.com/s/abc')
+  })
+})
+
+describe('toProduct() listing status handling', () => {
+  it.each([
+    ['on_sale', 'on_sale'],
+    ['trading', 'trading'],
+    ['sold_out', 'sold_out'],
+    ['STATUS_ON_SALE', 'status_on_sale'],
+    ['STATUS_TRADING', 'status_trading'],
+    ['STATUS_SOLD_OUT', 'status_sold_out'],
+  ])('keeps and normalizes Mercari status %s', (status, expected) => {
+    const product = _toProduct({
+      id: 'x1',
+      name: 'Test',
+      price: 100,
+      description: '',
+      thumbnails: [],
+      status,
+    }, 'https://jp.mercari.com/item/x1')
+
+    expect(product.sourceStatus).toBe(expected)
+  })
+
+  it('returns null when status is absent', () => {
+    const product = _toProduct({
+      id: 'x1',
+      name: 'Test',
+      price: 100,
+      description: '',
+      thumbnails: [],
+    }, 'https://jp.mercari.com/item/x1')
+
+    expect(product.sourceStatus).toBeNull()
+  })
+
+  it.each([
+    'sold_out',
+    'STATUS_SOLD_OUT',
+  ])('treats %s as sold out', (status) => {
+    expect(isSoldOutSourceStatus(status)).toBe(true)
+  })
+
+  it.each([
+    'on_sale',
+    'STATUS_ON_SALE',
+    'trading',
+    'STATUS_TRADING',
+    null,
+    undefined,
+  ])('does not treat %s as sold out', (status) => {
+    expect(isSoldOutSourceStatus(status)).toBe(false)
+  })
+})
+
 describe('toProduct() date handling', () => {
   function makeItemWithDate(updated: unknown) {
     return {
@@ -191,9 +277,14 @@ describe('Mercari item images', () => {
         return new Response(JSON.stringify({
           data: {
             id: 'm1',
-            name: 'Test item',
-            price: 1000,
+            name: 'Detailed item title',
+            price: 2200,
+            status: 'sold_out',
+            description: '個別商品ページの説明',
             photos: fullImages,
+            seller: { id: 'seller-123', num_ratings: 45 },
+            shipping_duration: { min: 2, max: 3 },
+            updated: 1719548737,
           },
         }), { status: 200 })
       }
@@ -206,6 +297,16 @@ describe('Mercari item images', () => {
         { limit: 1 },
       )
       expect(products[0].images).toEqual(fullImages)
+      expect(products[0]).toMatchObject({
+        title: 'Detailed item title',
+        price: 2200,
+        description: '個別商品ページの説明',
+        sourceStatus: 'sold_out',
+        sellerId: 'seller-123',
+        sellerRatingCount: 45,
+        shippingDays: 2,
+        detailFetched: true,
+      })
       expect(detailRequests).toHaveLength(1)
       expect(detailRequests[0].dpop).toBeTruthy()
     } finally {
@@ -236,6 +337,7 @@ describe('Mercari item images', () => {
         { limit: 1 },
       )
       expect(products[0].images).toEqual(['https://static.mercdn.net/thumb.jpg'])
+      expect(products[0].detailFetched).toBe(false)
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -274,6 +376,7 @@ describe('Mercari item images', () => {
         'https://static.mercdn.net/item/detail/orig/photos/m1_1.jpg',
         'https://static.mercdn.net/item/detail/orig/photos/m1_2.jpg',
       ])
+      expect(products[0].detailFetched).toBe(false)
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -367,5 +470,131 @@ describe('scrapeSearch excludeKeyword', () => {
     expect(calls.length).toBeGreaterThan(0)
     const body = JSON.parse(calls[0])
     expect(body.searchCondition.excludeKeyword).toBe('まとめ売り')
+  })
+})
+
+describe('scrapeSearch item type', () => {
+  it('通常商品の詳細APIで取得できるメルカリ商品だけを検索する', async () => {
+    const originalFetch = globalThis.fetch
+    const requestBodies: Array<{
+      searchCondition: { itemTypes: string[] }
+    }> = []
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(input)
+      if (!requestUrl.includes('entities:search')) {
+        return new Response(null, { status: 404 })
+      }
+
+      requestBodies.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({
+        items: [{
+          id: 'm1',
+          name: 'Mercari item',
+          price: 1000,
+          photos: ['https://static.mercdn.net/m1.jpg'],
+        }],
+      }), { status: 200 })
+    }
+
+    try {
+      await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 1 },
+      )
+
+      expect(requestBodies).toHaveLength(1)
+      expect(requestBodies[0].searchCondition.itemTypes).toEqual(['ITEM_TYPE_MERCARI'])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
+describe('scrapeSearch pagination', () => {
+  it('要求件数より少ないページでもnextPageTokenがあれば次ページを取得する', async () => {
+    const originalFetch = globalThis.fetch
+    const requestBodies: Array<{
+      pageSize: number
+      pageToken: string
+      searchSessionId: string
+    }> = []
+    let searchRequestCount = 0
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(input)
+      if (!requestUrl.includes('entities:search')) {
+        return new Response(null, { status: 404 })
+      }
+
+      requestBodies.push(JSON.parse(String(init?.body)))
+      searchRequestCount += 1
+
+      if (searchRequestCount === 1) {
+        return new Response(JSON.stringify({
+          items: Array.from({ length: 118 }, (_, index) => ({
+            name: `Item ${index + 1}`,
+            price: 1000,
+            thumbnails: [],
+          })),
+          meta: { nextPageToken: 'page-2' },
+        }), { status: 200 })
+      }
+
+      return new Response(JSON.stringify({
+        items: Array.from({ length: 2 }, (_, index) => ({
+          name: `Item ${119 + index}`,
+          price: 1000,
+          thumbnails: [],
+        })),
+      }), { status: 200 })
+    }
+
+    try {
+      const products = await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 120 },
+      )
+
+      expect(products).toHaveLength(120)
+      expect(requestBodies).toHaveLength(2)
+      expect(requestBodies[0]).toMatchObject({ pageSize: 120, pageToken: '' })
+      expect(requestBodies[1]).toMatchObject({ pageSize: 120, pageToken: 'page-2' })
+      expect(requestBodies[0].searchSessionId).toMatch(/^[0-9a-f]{32}$/)
+      expect(requestBodies[1].searchSessionId).toMatch(/^[0-9a-f]{32}$/)
+      expect(requestBodies[1].searchSessionId).not.toBe(requestBodies[0].searchSessionId)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('同じnextPageTokenが繰り返された場合は安全に停止する', async () => {
+    const originalFetch = globalThis.fetch
+    let searchRequestCount = 0
+
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const requestUrl = String(input)
+      if (!requestUrl.includes('entities:search')) {
+        return new Response(null, { status: 404 })
+      }
+
+      searchRequestCount += 1
+      return new Response(JSON.stringify({
+        items: [{ name: `Item ${searchRequestCount}`, price: 1000, thumbnails: [] }],
+        meta: { nextPageToken: 'same-token' },
+      }), { status: 200 })
+    }
+
+    try {
+      const products = await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 120 },
+      )
+
+      expect(products).toHaveLength(2)
+      expect(searchRequestCount).toBe(2)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })

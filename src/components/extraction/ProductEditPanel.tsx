@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Trash2, Link, ChevronUp, ChevronDown } from 'lucide-react'
-import type { Product } from '@/types/database'
+import type { ExtractionActivity, Product } from '@/types/database'
 import TitleEditModal, { applyOp } from './TitleEditModal'
 import type { TitleEditOp, TitleEditScope } from './TitleEditModal'
 import PriceEditModal from './PriceEditModal'
@@ -20,7 +20,13 @@ import type {
   ItemSpecificsEditScope,
 } from './ItemSpecificsEditModal'
 import {
+  findDangerSellerProductIds,
   findPriceTypeProductIds,
+  findPriceRangeProductIds,
+  findSellerRatingProductIds,
+  findShippingDaysProductIds,
+  findTitleKeywordProductIds,
+  findUpdatedAtProductIds,
   findVeroProductIds,
   getProductPriceType,
 } from '@/lib/product-exclusion'
@@ -33,15 +39,26 @@ import type { ProductSearchFilters } from '@/lib/product-search'
 import PokemonEditPanel from './PokemonEditPanel'
 import type { PokemonEditScope } from './PokemonEditPanel'
 import { isPokemonProduct } from '@/lib/pokemon'
+import {
+  saveProductUpdatesInBatches,
+  type ProductBulkUpdate,
+} from '@/lib/product-bulk-save'
 
 interface Props {
   extractionId: string
   onClose: () => void
+  onActivity?: (activity: ExtractionActivity) => void
 }
 
 type Tab = 'main' | 'exclude' | 'edit' | 'search' | 'pokemon'
 type ImageSize = '小' | '中' | '大'
 type EditMode = '簡易編集モード' | '詳細編集モード'
+
+interface ExclusionSettings {
+  sellerUrls: string[]
+  dangerWords: string[]
+  veroBrands: string[]
+}
 
 const IMAGE_SIZE_MAP: Record<ImageSize, string> = {
   小: 'w-20 h-20',
@@ -51,7 +68,7 @@ const IMAGE_SIZE_MAP: Record<ImageSize, string> = {
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 
-export default function ProductEditPanel({ extractionId, onClose }: Props) {
+export default function ProductEditPanel({ extractionId, onClose, onActivity }: Props) {
   const [tab, setTab] = useState<Tab>('main')
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
@@ -78,6 +95,9 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [excludeRunning, setExcludeRunning] = useState<Record<string, boolean>>({})
   const [excludeMsg, setExcludeMsg] = useState('')
   const [excludePanel, setExcludePanel] = useState<string | null>(null)
+  const [excludeSettings, setExcludeSettings] = useState<ExclusionSettings | null>(null)
+  const [excludeSettingsLoading, setExcludeSettingsLoading] = useState(false)
+  const [excludeSettingsError, setExcludeSettingsError] = useState('')
 
   // スポット文字
   const SPOT_PRESETS = ['難あり', 'ジャンク', '破損', '動作未確認', '訳あり', '傷あり', 'シミ', '汚れ', 'カビ', '臭い', 'NG']
@@ -134,6 +154,39 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     setExcludeMsg('')
   }
 
+  async function openSettingsPanel(key: 'vero' | 'seller' | 'word') {
+    const isOpening = excludePanel !== key
+    togglePanel(key)
+    if (!isOpening || excludeSettings || excludeSettingsLoading) return
+
+    setExcludeSettingsLoading(true)
+    setExcludeSettingsError('')
+    try {
+      const response = await fetch('/api/extraction-settings')
+      if (!response.ok) throw new Error('除外設定を取得できませんでした')
+      const data = await response.json()
+      setExcludeSettings({
+        sellerUrls: (data.sellers ?? [])
+          .map((seller: { seller_url?: unknown }) => (
+            typeof seller.seller_url === 'string' ? seller.seller_url : ''
+          ))
+          .filter(Boolean),
+        dangerWords: (data.words ?? [])
+          .map((item: { word?: unknown }) => typeof item.word === 'string' ? item.word : '')
+          .filter(Boolean),
+        veroBrands: (data.vero ?? [])
+          .map((item: { brand?: unknown }) => typeof item.brand === 'string' ? item.brand : '')
+          .filter(Boolean),
+      })
+    } catch (caught) {
+      setExcludeSettingsError(
+        caught instanceof Error ? caught.message : '除外設定を取得できませんでした',
+      )
+    } finally {
+      setExcludeSettingsLoading(false)
+    }
+  }
+
   async function runExclude(key: string, fn: () => Promise<string[]>) {
     setExcludeRunning((v) => ({ ...v, [key]: true }))
     setExcludeMsg('')
@@ -152,187 +205,117 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     }
   }
 
-  async function excludeDangerSellers(): Promise<string[]> {
-    const res = await fetch('/api/extraction-settings')
-    const data = await res.json()
-    const sellerUrls: string[] = (data.sellers ?? []).map((s: { seller_url: string }) =>
-      s.seller_url.split('?')[0].trim().replace(/\/+$/, '')
-    )
-    if (sellerUrls.length === 0) return []
-    const toDelete = products.filter((p) => {
-      const norm = p.source_url.split('?')[0].trim().replace(/\/+$/, '')
-      return sellerUrls.some((s) => norm.startsWith(s))
-    })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
+  async function excludeProducts(
+    targets: Product[],
+    reasonCode: string,
+    reasonLabel: string,
+    metadata: Record<string, unknown> = {},
+  ): Promise<string[]> {
+    if (targets.length === 0) return []
+    const removedIds: string[] = []
+    for (let offset = 0; offset < targets.length; offset += 500) {
+      const chunk = targets.slice(offset, offset + 500)
+      const response = await fetch(`/api/extractions/${extractionId}/exclude`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
+        body: JSON.stringify({
+          productIds: chunk.map((product) => product.id),
+          reasonCode,
+          reasonLabel,
+          metadata,
+        }),
       })
-    ))
-    return toDelete.map((p) => p.id)
+      const json = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(json.error ?? '除外に失敗しました')
+      removedIds.push(...(json.removedIds ?? []))
+      if (json.activity) onActivity?.(json.activity as ExtractionActivity)
+    }
+    return removedIds
   }
 
-  async function deleteExcludedProducts(productIds: string[]): Promise<string[]> {
-    if (productIds.length === 0) return []
-
-    const results = await Promise.all(productIds.map(async (productId) => {
-      const response = await fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
+  async function recordEditActivity(itemCount: number) {
+    if (itemCount <= 0) return
+    try {
+      const response = await fetch(`/api/extractions/${extractionId}/activity`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId }),
+        body: JSON.stringify({
+          activityType: 'edited',
+          label: '商品編集を保存',
+          itemCount,
+        }),
       })
-      return { productId, ok: response.ok }
-    }))
-
-    const failed = results.filter((result) => !result.ok)
-    if (failed.length > 0) {
-      throw new Error(`${failed.length}件の除外に失敗しました`)
+      if (!response?.ok) return
+      const json = await response.json()
+      if (json.activity) onActivity?.(json.activity as ExtractionActivity)
+    } catch {
+      // 商品保存自体は成功しているため、履歴記録の失敗で編集結果を失敗扱いにしない。
     }
-    return productIds
+  }
+
+  async function excludeDangerSellers(): Promise<string[]> {
+    return excludeProducts(dangerSellerTargets, 'danger_seller', '危険セラー')
   }
 
   async function excludeVero(): Promise<string[]> {
-    const response = await fetch('/api/extraction-settings')
-    if (!response.ok) throw new Error('Veroブランドを取得できませんでした')
-    const data = await response.json()
-    const brands: string[] = (data.vero ?? [])
-      .map((item: { brand?: unknown }) => typeof item.brand === 'string' ? item.brand : '')
-      .filter(Boolean)
-    return deleteExcludedProducts(findVeroProductIds(products, brands))
+    return excludeProducts(
+      veroTargets,
+      'vero',
+      'Veroブランド',
+      { brandCount: excludeSettings?.veroBrands.length ?? 0 },
+    )
   }
 
   async function excludeByPriceType(): Promise<string[]> {
-    const selectedTypes = (Object.entries(priceTypesSelected) as [ProductPriceType, boolean][])
-      .filter(([, selected]) => selected)
-      .map(([type]) => type)
-    return deleteExcludedProducts(findPriceTypeProductIds(products, selectedTypes))
+    return excludeProducts(
+      priceTypeTargets,
+      'price_type',
+      '価格タイプ',
+      { selectedTypes },
+    )
   }
 
   async function excludeSpotWords(): Promise<string[]> {
-    const keywords = [
-      ...Array.from(spotSelected),
-      ...spotCustom.split(/[,、\n]/).map((s) => s.trim()).filter(Boolean),
-    ].map((w) => w.toLowerCase())
-    if (keywords.length === 0) return []
-    const toDelete = products.filter((p) => {
-      const lower = p.original_title.toLowerCase()
-      return keywords.some((w) => lower.includes(w))
+    return excludeProducts(spotTargets, 'spot_word', 'スポット文字', {
+      keywords: spotKeywords,
     })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
   }
 
   async function excludeByPrice(): Promise<string[]> {
     const min = priceMin !== '' ? Number(priceMin) : null
     const max = priceMax !== '' ? Number(priceMax) : null
-    if (min === null && max === null) return []
-    const toDelete = products.filter((p) => {
-      const price = priceTarget === 'original' ? (p.original_price ?? 0) : (p.ebay_price ?? 0)
-      if (min !== null && price < min) return true
-      if (max !== null && price > max) return true
-      return false
+    return excludeProducts(priceTargets, 'price_range', '価格範囲', {
+      min,
+      max,
+      target: priceTarget,
     })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
   }
 
   async function excludeByRating(): Promise<string[]> {
     const max = ratingMax !== '' ? Number(ratingMax) : null
-    if (max === null) return []
-    const toDelete = products.filter((p) =>
-      p.seller_rating_count !== null && p.seller_rating_count <= max
-    )
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
+    return excludeProducts(ratingTargets, 'seller_rating', '評価数', { max })
   }
 
   async function excludeByShippingDays(): Promise<string[]> {
     const max = shippingDaysMax !== '' ? Number(shippingDaysMax) : null
-    if (max === null) return []
-    const toDelete = products.filter((p) =>
-      p.shipping_days !== null && p.shipping_days > max
-    )
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
+    return excludeProducts(shippingTargets, 'shipping_days', '発送日数', { max })
   }
 
   async function excludeByUpdatedAt(): Promise<string[]> {
     const months = Number(updatedMonthsAgo) || 3
-    const cutoff = new Date()
-    cutoff.setMonth(cutoff.getMonth() - months)
-    const toDelete = products.filter((p) => {
-      if (!p.source_updated_at) return false
-      return new Date(p.source_updated_at) < cutoff
-    })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
+    return excludeProducts(updatedTargets, 'updated_at', '最終更新月', { months })
   }
 
   async function excludeQuick(): Promise<string[]> {
-    const keywords = quickKeywords.split(/[,、\n]/).map((s) => s.trim().toLowerCase()).filter(Boolean)
-    if (keywords.length === 0) return []
-    const toDelete = products.filter((p) => {
-      const lower = p.original_title.toLowerCase()
-      return keywords.some((w) => lower.includes(w))
+    return excludeProducts(quickTargets, 'quick_keyword', '簡易除外', {
+      keywords: quickKeywordList,
     })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
   }
 
   async function excludeDangerWords(): Promise<string[]> {
-    const res = await fetch('/api/extraction-settings')
-    const data = await res.json()
-    const words: string[] = (data.words ?? []).map((w: { word: string }) => w.word.toLowerCase())
-    if (words.length === 0) return []
-    const toDelete = products.filter((p) => {
-      const lower = p.original_title.toLowerCase()
-      return words.some((w) => lower.includes(w))
+    return excludeProducts(dangerWordTargets, 'danger_word', '危険単語', {
+      words: excludeSettings?.dangerWords ?? [],
     })
-    await Promise.all(toDelete.map((p) =>
-      fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId: p.id }),
-      })
-    ))
-    return toDelete.map((p) => p.id)
   }
 
   useEffect(() => {
@@ -461,7 +444,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         const ebay_title = typeof fields.ebay_title === 'string'
           ? fields.ebay_title.slice(0, 80)
           : fields.ebay_title
-        const out: Record<string, unknown> = { productId }
+        const out: ProductBulkUpdate = { productId }
         if (ebay_title !== undefined) out.ebay_title = ebay_title
         if (fields.ebay_brand !== undefined) out.ebay_brand = fields.ebay_brand
         if (fields.ebay_description !== undefined) out.ebay_description = fields.ebay_description
@@ -474,25 +457,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         return out
       })
 
-      const res = await fetch(`/api/products/${extractionId}/bulk`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ updates }),
-      })
+      const result = await saveProductUpdatesInBatches(extractionId, updates)
+      const succeededSet = new Set(result.succeeded)
 
-      const json: { ok?: boolean; succeeded?: string[]; failed?: { productId: string; error: string }[] }
-        = await res.json().catch(() => ({}))
-
-      if (json.ok === true) {
+      if (result.failed.length === 0) {
         // 全成功
-        setProducts((prev) =>
-          prev.map((p) => (edits[p.id] ? { ...p, ...edits[p.id] } : p))
-        )
-        setEdits({})
-      } else if (json.succeeded && json.failed) {
-        // 部分失敗 — 成功分だけ edits をクリア、失敗分は保持
-        const succeededSet = new Set(json.succeeded)
-        const failedSet = new Set(json.failed.map((f) => f.productId))
         setProducts((prev) =>
           prev.map((p) => (succeededSet.has(p.id) ? { ...p, ...edits[p.id] } : p))
         )
@@ -501,10 +470,24 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           for (const id of succeededSet) delete next[id]
           return next
         })
-        const firstErrors = json.failed.slice(0, 3).map((f) => `${f.productId.slice(0, 8)}: ${f.error}`).join(' / ')
-        setSaveError(`${failedSet.size}件の保存に失敗しました — ${firstErrors}`)
+        await recordEditActivity(succeededSet.size)
       } else {
-        setSaveError('保存に失敗しました')
+        // 部分失敗 — 成功分だけ edits をクリア、失敗分は保持
+        const failedSet = new Set(result.failed.map((failure) => failure.productId))
+        setProducts((prev) =>
+          prev.map((p) => (succeededSet.has(p.id) ? { ...p, ...edits[p.id] } : p))
+        )
+        setEdits((prev) => {
+          const next = { ...prev }
+          for (const id of succeededSet) delete next[id]
+          return next
+        })
+        const firstErrors = result.failed
+          .slice(0, 3)
+          .map((failure) => `${failure.productId.slice(0, 8)}: ${failure.error}`)
+          .join(' / ')
+        setSaveError(`${failedSet.size}件の保存に失敗しました — ${firstErrors}`)
+        await recordEditActivity(succeededSet.size)
       }
     } catch (e) {
       setSaveError(`通信エラー: ${e instanceof Error ? e.message : '不明なエラー'}`)
@@ -515,13 +498,13 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
   async function deleteProduct(productId: string) {
     if (!confirm('この商品を削除しますか？')) return
-    const res = await fetch(`/api/products/${extractionId}`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ productId }),
-    })
-    if (res.ok) {
+    const product = products.find((item) => item.id === productId)
+    if (!product) return
+    try {
+      await excludeProducts([product], 'manual_delete', '手動削除')
       setProducts((prev) => prev.filter((p) => p.id !== productId))
+    } catch (caught) {
+      setSaveError(caught instanceof Error ? caught.message : '商品の削除に失敗しました')
     }
   }
 
@@ -579,6 +562,97 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     if (fromEdit !== undefined) return fromEdit
     if (p.purchase_price_jpy != null) return p.purchase_price_jpy
     return p.original_price ?? null
+  }
+
+  const productsByIds = (ids: string[]) => {
+    const idSet = new Set(ids)
+    return products.filter((product) => idSet.has(product.id))
+  }
+  const selectedTypes = (Object.entries(priceTypesSelected) as [ProductPriceType, boolean][])
+    .filter(([, selected]) => selected)
+    .map(([type]) => type)
+  const spotKeywords = [
+    ...Array.from(spotSelected),
+    ...spotCustom.split(/[,、\n]/).map((value) => value.trim()).filter(Boolean),
+  ]
+  const quickKeywordList = quickKeywords
+    .split(/[,、\n]/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+  const ratingLimit = ratingMax === '' ? null : Number(ratingMax)
+  const shippingDaysLimit = shippingDaysMax === '' ? null : Number(shippingDaysMax)
+  const updatedMonths = Number(updatedMonthsAgo)
+  const minimumPrice = priceMin === '' ? null : Number(priceMin)
+  const maximumPrice = priceMax === '' ? null : Number(priceMax)
+
+  const veroTargets = productsByIds(findVeroProductIds(
+    products,
+    excludeSettings?.veroBrands ?? [],
+  ))
+  const dangerSellerTargets = productsByIds(findDangerSellerProductIds(
+    products,
+    excludeSettings?.sellerUrls ?? [],
+  ))
+  const dangerWordTargets = productsByIds(findTitleKeywordProductIds(
+    products,
+    excludeSettings?.dangerWords ?? [],
+  ))
+  const spotTargets = productsByIds(findTitleKeywordProductIds(products, spotKeywords))
+  const ratingTargets = productsByIds(findSellerRatingProductIds(products, ratingLimit))
+  const shippingTargets = productsByIds(findShippingDaysProductIds(products, shippingDaysLimit))
+  const updatedTargets = productsByIds(findUpdatedAtProductIds(products, updatedMonths))
+  const priceTypeTargets = productsByIds(findPriceTypeProductIds(products, selectedTypes))
+  const priceTargets = productsByIds(findPriceRangeProductIds(
+    products,
+    priceTarget,
+    minimumPrice,
+    maximumPrice,
+  ))
+  const quickTargets = productsByIds(findTitleKeywordProductIds(products, quickKeywordList))
+
+  function renderExclusionAction({
+    key,
+    label,
+    targets,
+    buttonLabel = '除外を実行',
+    loading = false,
+    error = '',
+    run,
+  }: {
+    key: string
+    label: string
+    targets: Product[]
+    buttonLabel?: string
+    loading?: boolean
+    error?: string
+    run: () => Promise<string[]>
+  }) {
+    const running = Boolean(excludeRunning[key])
+    return (
+      <div className="flex items-center justify-between gap-3 flex-wrap pt-1">
+        <p
+          aria-label={`${label}除外対象件数`}
+          className="text-sm text-gray-700"
+        >
+          除外対象商品{' '}
+          <span className="font-semibold text-blue-600">
+            {loading ? '確認中…' : `${targets.length}/${products.length}件`}
+          </span>
+        </p>
+        {error ? (
+          <p className="text-xs text-red-600">{error}</p>
+        ) : (
+          <button
+            type="button"
+            disabled={running || loading || targets.length === 0}
+            onClick={() => runExclude(key, run)}
+            className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {running ? '実行中...' : buttonLabel}
+          </button>
+        )}
+      </div>
+    )
   }
 
   return (
@@ -680,49 +754,49 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
               <div className="px-4 py-4 grid grid-cols-5 gap-3">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">Vero</span>
-                  <button type="button" aria-label="Veroを除外" onClick={() => togglePanel('vero')}
+                  <button type="button" aria-label="Veroを除外" onClick={() => openSettingsPanel('vero')}
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'vero' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">危険セラー</span>
-                  <button type="button" disabled={excludeRunning['seller']} onClick={() => runExclude('seller', excludeDangerSellers)}
-                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
-                    {excludeRunning['seller'] ? '...' : '除外'}
+                  <button type="button" aria-label="危険セラーを除外" onClick={() => openSettingsPanel('seller')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'seller' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">危険単語</span>
-                  <button type="button" disabled={excludeRunning['word']} onClick={() => runExclude('word', excludeDangerWords)}
-                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
-                    {excludeRunning['word'] ? '...' : '除外'}
+                  <button type="button" aria-label="危険単語を除外" onClick={() => openSettingsPanel('word')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'word' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">スポット文字</span>
-                  <button type="button" onClick={() => togglePanel('spot')}
+                  <button type="button" aria-label="スポット文字を除外" onClick={() => togglePanel('spot')}
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'spot' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">評価数</span>
-                  <button type="button" onClick={() => togglePanel('rating')}
+                  <button type="button" aria-label="評価数を除外" onClick={() => togglePanel('rating')}
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'rating' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">発送日数</span>
-                  <button type="button" onClick={() => togglePanel('shipping')}
+                  <button type="button" aria-label="発送日数を除外" onClick={() => togglePanel('shipping')}
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'shipping' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">最終更新月</span>
-                  <button type="button" onClick={() => togglePanel('updated')}
+                  <button type="button" aria-label="最終更新月を除外" onClick={() => togglePanel('updated')}
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'updated' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
@@ -736,14 +810,14 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">価格範囲</span>
-                  <button type="button" onClick={() => togglePanel('price')}
+                  <button type="button" aria-label="価格範囲を除外" onClick={() => togglePanel('price')}
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'price' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">簡易除外</span>
-                  <button type="button" onClick={() => togglePanel('quick')}
+                  <button type="button" aria-label="簡易除外を開く" onClick={() => togglePanel('quick')}
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'quick' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
@@ -755,12 +829,47 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <p className="text-xs text-gray-500">
                     抽出設定のVeroブランドと、eBayブランドまたは商品タイトルが一致する商品を除外します。
                   </p>
-                  <div className="flex justify-end">
-                    <button type="button" disabled={excludeRunning['vero']} onClick={() => runExclude('vero', excludeVero)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
-                      {excludeRunning['vero'] ? '実行中...' : 'Vero除外を実行'}
-                    </button>
-                  </div>
+                  {renderExclusionAction({
+                    key: 'vero',
+                    label: 'Vero',
+                    targets: veroTargets,
+                    buttonLabel: 'Vero除外を実行',
+                    loading: excludeSettingsLoading,
+                    error: excludeSettingsError,
+                    run: excludeVero,
+                  })}
+                </div>
+              )}
+
+              {excludePanel === 'seller' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
+                  <p className="text-xs text-gray-500">
+                    抽出設定に登録した危険セラーの商品を除外します。
+                  </p>
+                  {renderExclusionAction({
+                    key: 'seller',
+                    label: '危険セラー',
+                    targets: dangerSellerTargets,
+                    loading: excludeSettingsLoading,
+                    error: excludeSettingsError,
+                    run: excludeDangerSellers,
+                  })}
+                </div>
+              )}
+
+              {excludePanel === 'word' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
+                  <p className="text-xs text-gray-500">
+                    抽出設定に登録した危険単語をタイトルに含む商品を除外します。
+                  </p>
+                  {renderExclusionAction({
+                    key: 'word',
+                    label: '危険単語',
+                    targets: dangerWordTargets,
+                    loading: excludeSettingsLoading,
+                    error: excludeSettingsError,
+                    run: excludeDangerWords,
+                  })}
                 </div>
               )}
 
@@ -785,16 +894,13 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                       </label>
                     ))}
                   </div>
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      disabled={excludeRunning['priceType'] || !Object.values(priceTypesSelected).some(Boolean)}
-                      onClick={() => runExclude('priceType', excludeByPriceType)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {excludeRunning['priceType'] ? '実行中...' : '価格タイプ除外を実行'}
-                    </button>
-                  </div>
+                  {renderExclusionAction({
+                    key: 'priceType',
+                    label: '価格タイプ',
+                    targets: priceTypeTargets,
+                    buttonLabel: '価格タイプ除外を実行',
+                    run: excludeByPriceType,
+                  })}
                 </div>
               )}
 
@@ -808,12 +914,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                       className="border rounded px-2 py-1 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-blue-300" />
                     <span className="text-xs text-gray-500">件以下を除外</span>
                   </div>
-                  <div className="flex justify-end">
-                    <button type="button" disabled={excludeRunning['rating']} onClick={() => runExclude('rating', excludeByRating)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
-                      {excludeRunning['rating'] ? '実行中...' : '除外を実行'}
-                    </button>
-                  </div>
+                  {renderExclusionAction({
+                    key: 'rating',
+                    label: '評価数',
+                    targets: ratingTargets,
+                    run: excludeByRating,
+                  })}
                 </div>
               )}
 
@@ -827,12 +933,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                       className="border rounded px-2 py-1 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-blue-300" />
                     <span className="text-xs text-gray-500">日超を除外</span>
                   </div>
-                  <div className="flex justify-end">
-                    <button type="button" disabled={excludeRunning['shipping']} onClick={() => runExclude('shipping', excludeByShippingDays)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
-                      {excludeRunning['shipping'] ? '実行中...' : '除外を実行'}
-                    </button>
-                  </div>
+                  {renderExclusionAction({
+                    key: 'shipping',
+                    label: '発送日数',
+                    targets: shippingTargets,
+                    run: excludeByShippingDays,
+                  })}
                 </div>
               )}
 
@@ -848,12 +954,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     </select>
                     <span className="text-xs text-gray-500">に更新された商品を除外</span>
                   </div>
-                  <div className="flex justify-end">
-                    <button type="button" disabled={excludeRunning['updated']} onClick={() => runExclude('updated', excludeByUpdatedAt)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
-                      {excludeRunning['updated'] ? '実行中...' : '除外を実行'}
-                    </button>
-                  </div>
+                  {renderExclusionAction({
+                    key: 'updated',
+                    label: '最終更新月',
+                    targets: updatedTargets,
+                    run: excludeByUpdatedAt,
+                  })}
                 </div>
               )}
 
@@ -876,12 +982,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <input type="text" value={spotCustom} onChange={(e) => setSpotCustom(e.target.value)}
                     placeholder="カスタムキーワード（カンマ区切り）"
                     className="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300" />
-                  <div className="flex justify-end">
-                    <button type="button" disabled={excludeRunning['spot']} onClick={() => runExclude('spot', excludeSpotWords)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
-                      {excludeRunning['spot'] ? '実行中...' : '除外を実行'}
-                    </button>
-                  </div>
+                  {renderExclusionAction({
+                    key: 'spot',
+                    label: 'スポット文字',
+                    targets: spotTargets,
+                    run: excludeSpotWords,
+                  })}
                 </div>
               )}
 
@@ -905,12 +1011,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                       <span className="text-xs text-gray-500">{priceTarget === 'original' ? '円' : '$'} の範囲外を除外</span>
                     </div>
                   </div>
-                  <div className="flex justify-end">
-                    <button type="button" disabled={excludeRunning['price']} onClick={() => runExclude('price', excludeByPrice)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
-                      {excludeRunning['price'] ? '実行中...' : '除外を実行'}
-                    </button>
-                  </div>
+                  {renderExclusionAction({
+                    key: 'price',
+                    label: '価格範囲',
+                    targets: priceTargets,
+                    run: excludeByPrice,
+                  })}
                 </div>
               )}
 
@@ -920,12 +1026,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     placeholder="キーワードをカンマ・改行区切りで入力（タイトルに含む商品を除外）"
                     rows={3}
                     className="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300 resize-none" />
-                  <div className="flex justify-end">
-                    <button type="button" disabled={excludeRunning['quick']} onClick={() => runExclude('quick', excludeQuick)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
-                      {excludeRunning['quick'] ? '実行中...' : '除外を実行'}
-                    </button>
-                  </div>
+                  {renderExclusionAction({
+                    key: 'quick',
+                    label: '簡易除外',
+                    targets: quickTargets,
+                    run: excludeQuick,
+                  })}
                 </div>
               )}
 

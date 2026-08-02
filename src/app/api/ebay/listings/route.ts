@@ -8,6 +8,10 @@ import {
 import { publishFixedPriceItem } from '@/lib/ebay-listing'
 import { getDirectListingIssues } from '@/lib/listing-export'
 import type { Product } from '@/types/database'
+import {
+  attachSourceLookupCodes,
+  ensureSourceLookupCodes,
+} from '@/lib/source-lookup'
 
 const MAX_PRODUCTS_PER_REQUEST = 20
 const CONCURRENCY = 3
@@ -143,7 +147,7 @@ export async function POST(request: NextRequest) {
     .map((productId) => ({ productId, error: '商品が見つかりません' }))
   const categoryRelation = extraction.category as unknown as { ebay_category_id: string | null } | null
   const categoryId = categoryRelation?.ebay_category_id ?? null
-  const validProducts = typedProducts.filter((product) => {
+  const validProductsWithoutCodes = typedProducts.filter((product) => {
     if (product.listing_status !== 'draft') {
       failed.push({ productId: product.id, error: '出品中または出品済みの商品です' })
       return false
@@ -155,6 +159,15 @@ export async function POST(request: NextRequest) {
     }
     return true
   })
+  let validProducts: Product[]
+  try {
+    const lookupCodes = await ensureSourceLookupCodes(admin, user.id, validProductsWithoutCodes)
+    validProducts = attachSourceLookupCodes(validProductsWithoutCodes, lookupCodes)
+  } catch (caught) {
+    return NextResponse.json({
+      error: caught instanceof Error ? caught.message : 'DBK-IDの発行に失敗しました',
+    }, { status: 500 })
+  }
 
   let accessToken: string
   try {
@@ -233,11 +246,37 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  let activity = null
+  if (succeeded.length > 0) {
+    const { data, error } = await admin
+      .from('extraction_activities')
+      .insert({
+        extraction_id: extraction.id,
+        user_id: user.id,
+        activity_type: 'direct_listed',
+        label: 'eBayへダイレクト出品',
+        item_count: succeeded.length,
+        metadata: {
+          sellerAccountId: seller.id,
+          sellerId: seller.seller_id,
+          ebayItemIds: succeeded.map((item) => item.itemId),
+        },
+      })
+      .select('*')
+      .single()
+    if (error) {
+      console.error('Failed to record direct listing activity:', error)
+    } else {
+      activity = data
+    }
+  }
+
   const status = succeeded.length === 0 ? 422 : failed.length > 0 ? 207 : 200
   return NextResponse.json({
     ok: failed.length === 0,
     succeeded,
     failed,
     requested: productIds.length,
+    activity,
   }, { status })
 }

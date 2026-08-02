@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { scrapeUrl, findScraper, ScraperError } from '@/lib/scrapers'
+import { scrapeUrl, findScraper } from '@/lib/scrapers'
 import { translateTitles } from '@/lib/translate'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
+import { matchesDangerSeller, normalizeSellerUrl } from '@/lib/danger-seller'
 import type { Extraction, Profile } from '@/types/database'
+import { isSoldOutSourceStatus, type ScrapedProduct } from '@/lib/scrapers/types'
+import {
+  evaluateBulkProduct,
+  normalizeBulkEditConfig,
+  type BulkFilterMatch,
+} from '@/lib/bulk-edit-settings'
 
 export const maxDuration = 300
 
@@ -102,12 +109,24 @@ async function runScrape(
     const limit = 600
 
     // 抽出設定を取得
-    const [{ data: dangerSellers }, { data: dangerWords }, { data: replaceWords }, { data: extractionSettings }] = await Promise.all([
+    const [
+      { data: dangerSellers },
+      { data: dangerWords },
+      { data: replaceWords },
+      { data: extractionSettings },
+      { data: veroBrands },
+      { data: setting },
+    ] = await Promise.all([
       supabase.from('danger_sellers').select('seller_url').eq('user_id', userId),
       supabase.from('danger_words').select('word').eq('user_id', userId),
       supabase.from('replace_words').select('before_word, after_word').eq('user_id', userId),
       supabase.from('extraction_settings').select('*').eq('user_id', userId).single(),
+      supabase.from('vero_brands').select('brand').eq('user_id', userId),
+      bulkEditSettingId
+        ? supabase.from('bulk_edit_settings').select('*').eq('id', bulkEditSettingId).eq('user_id', userId).single()
+        : Promise.resolve({ data: null }),
     ])
+    const bulkConfig = normalizeBulkEditConfig(setting?.config)
 
     // アクティブHTMLテンプレートを取得
     let activeTemplate: string | null = null
@@ -121,15 +140,35 @@ async function runScrape(
     }
 
     // 危険セラーチェック: 抽出URLが危険セラーと一致する場合はスキップ
-    const sellerUrls: string[] = (dangerSellers ?? []).map((s: { seller_url: string }) =>
-      s.seller_url.split('?')[0].trim().replace(/\/+$/, ''),
-    )
-    const normalizedUrl = url.split('?')[0].trim().replace(/\/+$/, '')
-    if (sellerUrls.some((s) => normalizedUrl.startsWith(s))) {
-      await supabase
-        .from('extractions')
-        .update({ status: 'excluded', progress: 0, extracted_at: new Date().toISOString() })
-        .eq('id', extractionId)
+    const sellerUrls: string[] = (dangerSellers ?? [])
+      .map((s: { seller_url: string }) => s.seller_url.trim())
+      .filter(Boolean)
+    const normalizedUrl = normalizeSellerUrl(url)
+    if (
+      bulkConfig.dangerSellerEnabled
+      && (
+      matchesDangerSeller({ sellerUrl: url }, sellerUrls)
+      || sellerUrls.some((sellerUrl) => {
+        const normalizedSellerUrl = normalizeSellerUrl(sellerUrl)
+        return normalizedUrl === normalizedSellerUrl
+          || normalizedUrl.startsWith(`${normalizedSellerUrl}/`)
+      })
+      )
+    ) {
+      await Promise.all([
+        supabase
+          .from('extractions')
+          .update({ status: 'excluded', progress: 0, extracted_at: new Date().toISOString() })
+          .eq('id', extractionId),
+        supabase.from('extraction_activities').insert({
+          extraction_id: extractionId,
+          user_id: userId,
+          activity_type: 'excluded',
+          label: '危険セラー',
+          item_count: 0,
+          metadata: { reasonCode: 'initial_danger_seller', phase: 'extraction', sourceUrl: url },
+        }),
+      ])
       return
     }
 
@@ -139,30 +178,51 @@ async function runScrape(
         const pct = Math.min(Math.round((fetched / total) * 90), 90)
         await supabase
           .from('extractions')
-          .update({ progress: pct })
+          .update({ progress: pct, updated_at: new Date().toISOString() })
           .eq('id', extractionId)
       },
     })
 
-    // 危険単語フィルタ
-    const wordList: string[] = (dangerWords ?? []).map((w: { word: string }) => w.word.toLowerCase())
-    const filteredList = wordList.length === 0
-      ? scrapedList
-      : scrapedList.filter((scraped: { title: string }) => {
-          const lower = scraped.title.toLowerCase()
-          return !wordList.some((word) => lower.includes(word))
-        })
+    // 個別商品詳細を取得できなかった商品は、全除外条件を安全に判定できないため除外する。
+    const detailFailedExcluded = scrapedList.filter((scraped) => scraped.detailFetched === false)
+    const detailedList = scrapedList.filter((scraped) => scraped.detailFetched !== false)
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let setting: any = null
-    if (bulkEditSettingId) {
-      const { data } = await supabase
-        .from('bulk_edit_settings')
-        .select('*')
-        .eq('id', bulkEditSettingId)
-        .single()
-      setting = data
-    }
+    // 検索時点では販売中でも、個別商品ページ取得までの間に売り切れることがある。
+    // 必ず個別商品詳細の最新 status を使って商品単位で除外する。
+    const soldOutExcluded = detailedList.filter((scraped) => (
+      isSoldOutSourceStatus(scraped.sourceStatus)
+    ))
+    const onSaleList = detailedList.filter((scraped) => (
+      !isSoldOutSourceStatus(scraped.sourceStatus)
+    ))
+
+    // 検索結果に混在する危険セラーを商品単位で除外する
+    const dangerSellerExcluded = !bulkConfig.dangerSellerEnabled || sellerUrls.length === 0
+      ? []
+      : onSaleList.filter((scraped) => matchesDangerSeller(scraped, sellerUrls))
+    const sellerFilteredList = !bulkConfig.dangerSellerEnabled || sellerUrls.length === 0
+      ? onSaleList
+      : onSaleList.filter((scraped) => !matchesDangerSeller(scraped, sellerUrls))
+
+    const wordList: string[] = (dangerWords ?? [])
+      .map((w: { word: string }) => w.word)
+      .filter(Boolean)
+    const veroList: string[] = (veroBrands ?? [])
+      .map((item: { brand: string }) => item.brand)
+      .filter(Boolean)
+    const settingExcluded: Array<{
+      scraped: ScrapedProduct
+      match: BulkFilterMatch
+    }> = []
+    const filteredList = sellerFilteredList.filter((scraped) => {
+      const match = evaluateBulkProduct(scraped, bulkConfig, {
+        veroBrands: veroList,
+        dangerWords: wordList,
+      })
+      if (!match) return true
+      settingExcluded.push({ scraped, match })
+      return false
+    })
 
     const replacePairs: { before_word: string; after_word: string }[] = replaceWords ?? []
 
@@ -196,7 +256,13 @@ async function runScrape(
     let translatedTitles: string[] = originalTitles
     if (titleEnabled && process.env.OPENAI_API_KEY) {
       try {
-        translatedTitles = await translateTitles(originalTitles, titleEngine)
+        translatedTitles = await translateTitles(originalTitles, titleEngine, async (completed, total) => {
+          const pct = 91 + Math.min(Math.round((completed / total) * 5), 5)
+          await supabase
+            .from('extractions')
+            .update({ progress: pct, updated_at: new Date().toISOString() })
+            .eq('id', extractionId)
+        })
       } catch (e) {
         console.error('Translation failed, using original titles:', e)
       }
@@ -207,9 +273,9 @@ async function runScrape(
     const excludeTitle: boolean = extractionSettings?.exclude_title_duplicate ?? false
     const excludeTranslated: boolean = extractionSettings?.exclude_translated_duplicate ?? false
 
-    let existingSourceUrls = new Set<string>()
-    let existingOriginalTitles = new Set<string>()
-    let existingEbayTitles = new Set<string>()
+    const existingSourceUrls = new Set<string>()
+    const existingOriginalTitles = new Set<string>()
+    const existingEbayTitles = new Set<string>()
 
     if (excludeActive || excludeTitle || excludeTranslated) {
       const selectCols = [
@@ -234,12 +300,7 @@ async function runScrape(
       }
     }
 
-    const rows = filteredList.map((scraped: {
-      sourceUrl: string; sourceSite: string; sourceItemId: string | null
-      title: string; price: number | null; description: string
-      images: string[]; condition: string | null
-      sellerRatingCount: number | null; shippingDays: number | null; sourceUpdatedAt: string | null
-    }, idx: number) => {
+    const rows = filteredList.map((scraped: ScrapedProduct, idx: number) => {
       let ebayTitle = applyReplaces(translatedTitles[idx] ?? scraped.title)
       if (setting) {
         ebayTitle = `${setting.title_prefix}${ebayTitle}${setting.title_suffix}`.slice(0, 80)
@@ -248,11 +309,14 @@ async function runScrape(
       // (original_price をそのまま使うと円がドルになる)
       const ebayPrice: number | null = null
       return {
+        id: crypto.randomUUID(),
         user_id: userId,
         extraction_id: extractionId,
         source_url: scraped.sourceUrl,
         source_site: scraped.sourceSite,
         source_item_id: scraped.sourceItemId,
+        source_seller_id: scraped.sellerId ?? null,
+        source_seller_url: scraped.sellerUrl ?? null,
         original_title: scraped.title,
         original_price: scraped.price,
         original_description: scraped.description,
@@ -279,25 +343,153 @@ async function runScrape(
     })
 
     // 重複除外フィルタ
+    const duplicateExcluded: Array<{
+      row: (typeof rows)[number]
+      reasonCode: string
+      reasonLabel: string
+    }> = []
     const deduped = rows.filter((row: {
       source_url: string; original_title: string; ebay_title: string
     }) => {
-      if (excludeActive && existingSourceUrls.has(row.source_url)) return false
-      if (excludeTitle && existingOriginalTitles.has(row.original_title)) return false
-      if (excludeTranslated && existingEbayTitles.has(row.ebay_title)) return false
+      if (excludeActive && existingSourceUrls.has(row.source_url)) {
+        duplicateExcluded.push({ row: row as (typeof rows)[number], reasonCode: 'active_duplicate', reasonLabel: 'active重複' })
+        return false
+      }
+      if (excludeTitle && existingOriginalTitles.has(row.original_title)) {
+        duplicateExcluded.push({ row: row as (typeof rows)[number], reasonCode: 'title_duplicate', reasonLabel: 'タイトル重複' })
+        return false
+      }
+      if (excludeTranslated && existingEbayTitles.has(row.ebay_title)) {
+        duplicateExcluded.push({ row: row as (typeof rows)[number], reasonCode: 'translated_title_duplicate', reasonLabel: '翻訳後タイトル重複' })
+        return false
+      }
       return true
     })
+
+    const excludedSnapshots = [
+      ...detailFailedExcluded.map((scraped) => ({
+        extraction_id: extractionId,
+        user_id: userId,
+        product_id: crypto.randomUUID(),
+        reason_code: 'detail_failed',
+        reason_label: '詳細取得失敗',
+        source_url: scraped.sourceUrl,
+        original_title: scraped.title,
+        original_price: scraped.price,
+        image_url: scraped.images[0] ?? null,
+        metadata: { sourceItemId: scraped.sourceItemId },
+      })),
+      ...soldOutExcluded.map((scraped) => ({
+        extraction_id: extractionId,
+        user_id: userId,
+        product_id: crypto.randomUUID(),
+        reason_code: 'sold_out',
+        reason_label: '売り切れ',
+        source_url: scraped.sourceUrl,
+        original_title: scraped.title,
+        original_price: scraped.price,
+        image_url: scraped.images[0] ?? null,
+        metadata: {
+          sourceItemId: scraped.sourceItemId,
+          sourceStatus: scraped.sourceStatus,
+        },
+      })),
+      ...dangerSellerExcluded.map((scraped) => ({
+        extraction_id: extractionId,
+        user_id: userId,
+        product_id: crypto.randomUUID(),
+        reason_code: 'initial_danger_seller',
+        reason_label: '個別危険Seller',
+        source_url: scraped.sourceUrl,
+        original_title: scraped.title,
+        original_price: scraped.price,
+        image_url: scraped.images[0] ?? null,
+        metadata: {
+          sellerId: scraped.sellerId ?? null,
+          sellerUrl: scraped.sellerUrl ?? null,
+        },
+      })),
+      ...settingExcluded.map(({ scraped, match }) => ({
+        extraction_id: extractionId,
+        user_id: userId,
+        product_id: crypto.randomUUID(),
+        reason_code: match.reasonCode,
+        reason_label: match.reasonLabel,
+        source_url: scraped.sourceUrl,
+        original_title: scraped.title,
+        original_price: scraped.price,
+        image_url: scraped.images[0] ?? null,
+        metadata: match.metadata,
+      })),
+      ...duplicateExcluded.map(({ row, reasonCode, reasonLabel }) => ({
+        extraction_id: extractionId,
+        user_id: userId,
+        product_id: row.id,
+        reason_code: reasonCode,
+        reason_label: reasonLabel,
+        source_url: row.source_url,
+        original_title: row.original_title,
+        original_price: row.original_price,
+        image_url: row.original_images[0] ?? null,
+        metadata: {},
+      })),
+    ]
+    if (excludedSnapshots.length > 0) {
+      for (let i = 0; i < excludedSnapshots.length; i += 100) {
+        const { error } = await supabase
+          .from('excluded_products')
+          .insert(excludedSnapshots.slice(i, i + 100))
+        if (error) throw new Error(`除外詳細の保存に失敗しました: ${error.message}`)
+      }
+      const reasonGroups = new Map<string, {
+        reasonCode: string
+        reasonLabel: string
+        count: number
+      }>()
+      for (const item of excludedSnapshots) {
+        const current = reasonGroups.get(item.reason_code)
+        if (current) current.count += 1
+        else {
+          reasonGroups.set(item.reason_code, {
+            reasonCode: item.reason_code,
+            reasonLabel: item.reason_label,
+            count: 1,
+          })
+        }
+      }
+      const { error } = await supabase.from('extraction_activities').insert(
+        [...reasonGroups.values()].map((group) => ({
+          extraction_id: extractionId,
+          user_id: userId,
+          activity_type: 'excluded',
+          label: group.reasonLabel,
+          item_count: group.count,
+          metadata: { reasonCode: group.reasonCode, phase: 'extraction' },
+        })),
+      )
+      if (error) throw new Error(`除外履歴の保存に失敗しました: ${error.message}`)
+    }
 
     // 100件ずつ分割してinsert
     const chunkSize = 100
     for (let i = 0; i < deduped.length; i += chunkSize) {
-      await supabase.from('products').insert(deduped.slice(i, i + chunkSize))
+      const { error } = await supabase
+        .from('products')
+        .insert(deduped.slice(i, i + chunkSize))
+      if (error) {
+        throw new Error(`商品の保存に失敗しました: ${error.message}`)
+      }
     }
 
     await Promise.all([
       supabase
         .from('extractions')
-        .update({ status: 'completed', progress: 100, extracted_at: new Date().toISOString() })
+        .update({
+          status: 'completed',
+          progress: 100,
+          extracted_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', extractionId),
       supabase.rpc('increment_extraction_used', { user_id: userId }),
     ])
@@ -306,7 +498,12 @@ async function runScrape(
     console.error('Scrape failed:', message)
     await supabase
       .from('extractions')
-      .update({ status: 'failed', progress: 0, error_message: message })
+      .update({
+        status: 'failed',
+        progress: 0,
+        error_message: message,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', extractionId)
   }
 }

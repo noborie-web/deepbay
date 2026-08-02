@@ -13,6 +13,7 @@ function makeProduct(overrides: Partial<Product> = {}): Product {
     source_url: 'https://jp.mercari.com/item/m1',
     source_site: 'mercari',
     source_item_id: 'm1',
+    source_lookup_code: 'ele_20260727_A2B3C4D5E6F7G8H9',
     original_title: 'Original',
     original_price: 6000,
     original_description: 'Original description',
@@ -67,6 +68,8 @@ describe('eBay direct listing', () => {
     expect(xml).toContain('<ReturnProfileName>Returns Accepted</ReturnProfileName>')
     expect(xml).toContain('<ShippingProfileName>Japan Shipping</ShippingProfileName>')
     expect(xml).toContain('<Name>Platform</Name><Value>Nintendo GameCube</Value>')
+    expect(xml).toContain('<SKU>ele_20260727_A2B3C4D5E6F7G8H9</SKU>')
+    expect(xml).not.toContain('<SKU>https://jp.mercari.com')
   })
 
   it('成功レスポンスからItem IDと警告を取得する', () => {

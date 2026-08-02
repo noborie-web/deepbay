@@ -18,6 +18,7 @@ function makeProduct(overrides: Partial<Product> = {}): Product {
     source_url: 'https://example.com/item/1',
     source_site: 'mercari',
     source_item_id: '1',
+    source_lookup_code: 'ele_20260727_A2B3C4D5E6F7G8H9',
     original_title: 'Original title',
     original_price: 6000,
     original_description: 'Original description',
@@ -97,6 +98,24 @@ describe('listing export', () => {
     expect(csv).toContain(',83.00,5000,Tamiya Mini 4WD,')
     expect(csv).not.toContain('0.56')
     expect(csv).toContain(',eBay Payments,Returns Accepted,Japan Shipping,')
+  })
+
+  it('CustomLabelへDBK-IDだけを出力し、仕入れ先URLを含めない', () => {
+    const product = makeProduct()
+    const rows = parseCsv(generateListingCsv([product], OPTIONS))
+    const customLabelIndex = rows[0].indexOf('CustomLabel')
+
+    expect(rows[1][customLabelIndex]).toBe(product.source_lookup_code)
+    expect(rows[1].join(',')).not.toContain(product.source_url)
+    expect(rows[1].join(',')).not.toContain(product.id)
+  })
+
+  it('SPECFICS-IN 45列CSVも同じDBK-IDをCustomLabelへ出力する', () => {
+    const product = makeProduct()
+    const rows = parseCsv(generateSpecificsCsv([product], OPTIONS))
+    const customLabelIndex = rows[0].indexOf('CustomLabel')
+
+    expect(rows[1][customLabelIndex]).toBe(product.source_lookup_code)
   })
 
   it('eBay添付見本と同じ42列を同じ順序で出力する', () => {

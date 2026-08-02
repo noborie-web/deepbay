@@ -4,12 +4,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RefreshCw, X } from 'lucide-react'
 import { getDirectListingIssues, getListingIssues } from '@/lib/listing-export'
 import type { EbayPolicySet } from '@/lib/ebay'
-import type { Extraction, Product, SellerAccount } from '@/types/database'
+import type {
+  Extraction,
+  ExtractionActivity,
+  Product,
+  SellerAccount,
+} from '@/types/database'
 
 interface Props {
   extraction: Extraction
   sellers: SellerAccount[]
   onClose: () => void
+  onActivity?: (activity: ExtractionActivity) => void
 }
 
 const DEFAULT_POLICIES = {
@@ -23,6 +29,7 @@ interface DirectListingResponse {
   succeeded: Array<{ productId: string; itemId: string; warnings: string[] }>
   failed: Array<{ productId: string; error: string }>
   requested: number
+  activity?: ExtractionActivity
 }
 
 function filenameFromResponse(response: Response, fallback: string): string {
@@ -31,7 +38,7 @@ function filenameFromResponse(response: Response, fallback: string): string {
   return match?.[1] ?? fallback
 }
 
-export default function ListingModal({ extraction, sellers, onClose }: Props) {
+export default function ListingModal({ extraction, sellers, onClose, onActivity }: Props) {
   const initialSellerId = extraction.seller_account_id
     ?? sellers.find((seller) => seller.is_default)?.id
     ?? sellers[0]?.id
@@ -218,6 +225,31 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
     && policiesReady
     && !downloading
 
+  async function recordCsvActivity(kind: 'listing' | 'specifics') {
+    try {
+      const response = await fetch(`/api/extractions/${extraction.id}/activity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          activityType: kind === 'listing' ? 'csv_exported' : 'specifics_csv_exported',
+          label: kind === 'listing' ? 'eBay出品CSVを出力' : 'Specifics-IN 45列CSVを出力',
+          itemCount: products.length,
+          metadata: {
+            sellerId,
+            shippingProfile,
+            paymentProfile,
+            returnProfile,
+          },
+        }),
+      })
+      if (!response?.ok) return
+      const json = await response.json()
+      if (json.activity) onActivity?.(json.activity as ExtractionActivity)
+    } catch {
+      // CSVの生成・保存は成功しているため、履歴記録だけをベストエフォートにする。
+    }
+  }
+
   async function downloadCsv(kind: 'listing' | 'specifics') {
     setError('')
     setNotice('')
@@ -276,6 +308,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
       anchor.click()
       anchor.remove()
       URL.revokeObjectURL(url)
+      await recordCsvActivity(kind)
       setNotice(kind === 'listing'
         ? '出品CSVを出力しました。選択したセラーのeBayへアップロードしてください。'
         : 'Specifics-IN 45列CSVを出力しました。')
@@ -316,6 +349,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
         }
         succeeded.push(...(json.succeeded ?? []))
         failed.push(...(json.failed ?? []))
+        if (json.activity) onActivity?.(json.activity)
         setDirectProgress({
           completed: Math.min(offset + chunk.length, directTargetProducts.length),
           total: directTargetProducts.length,
