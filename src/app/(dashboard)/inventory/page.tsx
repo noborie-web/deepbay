@@ -1,20 +1,31 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import type { Product } from '@/types/database'
+import { createClient as createServiceClient } from '@supabase/supabase-js'
+import type { Product, InventoryActiveListing } from '@/types/database'
+import InventoryPanel from '@/components/inventory/InventoryPanel'
+
+function admin() {
+  return createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+}
 
 export default async function InventoryPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const { data: products } = await supabase
-    .from('products')
-    .select('*')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false })
-    .limit(100)
+  const db = admin()
+  const [productsResult, listingsResult, settingsResult] = await Promise.all([
+    supabase.from('products').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(100),
+    db.from('inventory_active_listings').select('*').eq('user_id', user.id).order('fetched_at', { ascending: false }).limit(500),
+    db.from('inventory_settings').select('ebay_token').eq('user_id', user.id).maybeSingle(),
+  ])
 
-  const items = (products ?? []) as Product[]
+  const items = (productsResult.data ?? []) as Product[]
+  const activeListings = (listingsResult.data ?? []) as InventoryActiveListing[]
+  const hasToken = !!(settingsResult.data?.ebay_token)
 
   const counts = {
     total: items.length,
@@ -41,6 +52,9 @@ export default async function InventoryPage() {
           </div>
         ))}
       </div>
+
+      {/* eBay在庫管理パネル */}
+      <InventoryPanel listings={activeListings} hasToken={hasToken} />
 
       {/* 商品テーブル */}
       <div className="bg-white border rounded-md overflow-hidden">

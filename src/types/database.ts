@@ -105,6 +105,50 @@ export interface Product {
   updated_at: string
 }
 
+export interface InventorySetting {
+  id: string
+  user_id: string
+  ebay_token: string | null
+  ebay_refresh_token: string | null
+  ebay_token_expires_at: string | null
+  sync_enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface InventoryActiveListing {
+  id: string
+  user_id: string
+  ebay_item_id: string
+  custom_label: string | null
+  title: string
+  current_price: number | null
+  quantity: number | null
+  quantity_sold: number | null
+  listing_status: string | null
+  start_time: string | null
+  end_time: string | null
+  source_url: string | null
+  product_id: string | null
+  raw_data: Record<string, unknown> | null
+  fetched_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface InventoryRun {
+  id: string
+  user_id: string
+  run_type: 'sync' | 'upload'
+  status: 'running' | 'completed' | 'failed'
+  items_total: number | null
+  items_matched: number | null
+  error_message: string | null
+  started_at: string
+  finished_at: string | null
+  created_at: string
+}
+
 export interface Scraper {
   id: string
   name: string
