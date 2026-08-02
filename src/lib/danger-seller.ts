@@ -1,6 +1,7 @@
 export interface SellerIdentity {
   sellerId?: string | null
   sellerUrl?: string | null
+  sourceSite?: string | null
 }
 
 function normalizeId(value: string | null | undefined): string | null {
@@ -36,6 +37,26 @@ export function sellerIdFromUrl(value: string): string | null {
   return null
 }
 
+function sellerSiteFromUrl(value: string | null | undefined): string | null {
+  if (!value) return null
+
+  try {
+    const hostname = new URL(value.normalize('NFKC').trim()).hostname.toLowerCase()
+    if (hostname === 'jp.mercari.com' || hostname.endsWith('.mercari.com')) return 'mercari'
+    if (hostname === 'auctions.yahoo.co.jp') return 'yahoo_auctions'
+    return hostname || null
+  } catch {
+    return null
+  }
+}
+
+function normalizeSourceSite(value: string | null | undefined): string | null {
+  const normalized = normalizeId(value)
+  if (!normalized) return null
+  if (normalized === 'yahoo' || normalized === 'yahoo_auction') return 'yahoo_auctions'
+  return normalized
+}
+
 export function matchesDangerSeller(
   product: SellerIdentity,
   registeredSellerUrls: string[],
@@ -44,8 +65,14 @@ export function matchesDangerSeller(
     product.sellerUrl ? sellerIdFromUrl(product.sellerUrl) : null
   )
   const productUrl = product.sellerUrl ? normalizeSellerUrl(product.sellerUrl) : ''
+  const productSite = sellerSiteFromUrl(product.sellerUrl)
+    ?? normalizeSourceSite(product.sourceSite)
 
   return registeredSellerUrls.some((registered) => {
+    const registeredSite = sellerSiteFromUrl(registered)
+    // 共通CSVに複数サイトのURLを混在できるよう、別サイト同士は照合しない。
+    if (productSite && registeredSite && productSite !== registeredSite) return false
+
     const registeredId = sellerIdFromUrl(registered)
     if (productId && registeredId && productId === registeredId) return true
 

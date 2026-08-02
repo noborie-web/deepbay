@@ -31,6 +31,20 @@ describe('danger seller matching', () => {
     )).toBe(true)
   })
 
+  it('Yahoo!オークションのセラーURLをクエリなしで照合する', () => {
+    expect(matchesDangerSeller(
+      { sellerUrl: 'https://auctions.yahoo.co.jp/seller/example123?foo=bar' },
+      ['https://auctions.yahoo.co.jp/seller/example123?user_type=c'],
+    )).toBe(true)
+  })
+
+  it('同じセラーID文字列でも異なるサイト同士は照合しない', () => {
+    expect(matchesDangerSeller(
+      { sellerId: '123', sellerUrl: 'https://jp.mercari.com/user/profile/123' },
+      ['https://auctions.yahoo.co.jp/seller/123'],
+    )).toBe(false)
+  })
+
   it('別セラーやセラー情報がない商品には一致しない', () => {
     const registered = ['https://jp.mercari.com/user/profile/123']
     expect(matchesDangerSeller({ sellerId: '456' }, registered)).toBe(false)
