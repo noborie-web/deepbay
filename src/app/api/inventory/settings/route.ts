@@ -1,0 +1,70 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { createClient as createServiceClient } from '@supabase/supabase-js'
+
+function admin() {
+  return createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+}
+
+export async function GET() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const { data, error } = await admin()
+    .from('inventory_settings')
+    .select('id, sync_enabled, ebay_token_expires_at, created_at, updated_at')
+    .eq('user_id', user.id)
+    .maybeSingle()
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  // Return whether a token exists without exposing the actual token
+  return NextResponse.json({
+    settings: data ? {
+      ...data,
+      has_token: true,
+    } : {
+      has_token: false,
+      sync_enabled: false,
+      ebay_token_expires_at: null,
+    },
+  })
+}
+
+export async function PUT(req: NextRequest) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  let body: Record<string, unknown>
+  try {
+    body = await req.json()
+  } catch {
+    return NextResponse.json({ error: '不正なJSONです' }, { status: 400 })
+  }
+
+  const allowed: Record<string, unknown> = {}
+  if (typeof body.sync_enabled === 'boolean') allowed.sync_enabled = body.sync_enabled
+  if (typeof body.ebay_token === 'string') allowed.ebay_token = body.ebay_token
+  if (typeof body.ebay_refresh_token === 'string') allowed.ebay_refresh_token = body.ebay_refresh_token
+  if (typeof body.ebay_token_expires_at === 'string') allowed.ebay_token_expires_at = body.ebay_token_expires_at
+
+  if (Object.keys(allowed).length === 0) {
+    return NextResponse.json({ error: '更新するフィールドがありません' }, { status: 400 })
+  }
+
+  const { error } = await admin()
+    .from('inventory_settings')
+    .upsert({
+      user_id: user.id,
+      ...allowed,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id' })
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ ok: true })
+}
