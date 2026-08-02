@@ -1,6 +1,10 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import {
+  buildDangerSettingsCsv,
+  type DangerSettingsCsvKind,
+} from '@/lib/extraction-settings-csv'
 
 type Engine = 'normal' | 'high' | 'best'
 type Tab = 'basic' | 'danger' | 'html'
@@ -338,20 +342,37 @@ export default function ExtractionSettingsPage() {
     }
   }
 
-  function downloadCsv(header: string, rows: string[], filename: string) {
-    const lines = [header, ...rows.map((r) => `"${r.replace(/"/g, '""')}"`)]
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
-    URL.revokeObjectURL(url)
-  }
+  async function downloadLatestDangerCsv(kind: DangerSettingsCsvKind) {
+    try {
+      const response = await fetch('/api/extraction-settings', { cache: 'no-store' })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error ?? '登録内容を取得できませんでした')
 
-  function downloadReplaceCsv(rows: { before_word: string; after_word: string }[], filename: string) {
-    const lines = ['before,after', ...rows.map((r) => `"${r.before_word.replace(/"/g, '""')}","${r.after_word.replace(/"/g, '""')}"`)]
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
-    URL.revokeObjectURL(url)
+      const latestSellers: DangerSeller[] = data.sellers ?? []
+      const latestWords: DangerWord[] = data.words ?? []
+      const latestReplaces: ReplaceWord[] = data.replaces ?? []
+      setSellers(latestSellers)
+      setWords(latestWords)
+      setReplaces(latestReplaces)
+
+      const file = buildDangerSettingsCsv(kind, {
+        sellers: latestSellers,
+        words: latestWords,
+        replaces: latestReplaces,
+      })
+      const blob = new Blob([file.content], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = file.filename
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(url)
+      flash(`現在の登録 ${file.count}件をCSVに出力しました`)
+    } catch (error) {
+      flash(error instanceof Error ? error.message : 'CSVダウンロードに失敗しました')
+    }
   }
 
   if (loading) return <div className="p-6 text-sm text-gray-400">読み込み中...</div>
@@ -461,7 +482,7 @@ export default function ExtractionSettingsPage() {
             onAdd={(url) => addSeller(url)}
             onDelete={deleteSeller}
             onClear={clearSellers}
-            onCsvDownload={() => downloadCsv('sellers', sellers.map((s) => s.seller_url), 'danger_sellers.csv')}
+            onCsvDownload={() => void downloadLatestDangerCsv('sellers')}
             onCsvUpload={uploadSellersCsv}
             itemLabel="登録セラー"
           />
@@ -472,7 +493,7 @@ export default function ExtractionSettingsPage() {
             onAdd={(word) => addWord(word)}
             onDelete={deleteWord}
             onClear={clearWords}
-            onCsvDownload={() => downloadCsv('words', words.map((w) => w.word), 'danger_words.csv')}
+            onCsvDownload={() => void downloadLatestDangerCsv('words')}
             onCsvUpload={uploadWordsCsv}
             itemLabel="登録単語"
           />
@@ -484,7 +505,7 @@ export default function ExtractionSettingsPage() {
             onAdd={(before, after) => addReplace(before, after ?? '')}
             onDelete={deleteReplace}
             onClear={clearReplaces}
-            onCsvDownload={() => downloadReplaceCsv(replaces, 'replace_words.csv')}
+            onCsvDownload={() => void downloadLatestDangerCsv('replaces')}
             onCsvUpload={uploadReplacesCsv}
             itemLabel="置換前"
           />
