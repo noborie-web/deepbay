@@ -16,20 +16,29 @@ export async function GET() {
 
   const { data, error } = await admin()
     .from('inventory_settings')
-    .select('id, sync_enabled, ebay_token_expires_at, created_at, updated_at')
+    .select('id, sync_enabled, ebay_auto_sync, days_until_delist, daily_run_count, ebay_token_expires_at, ebay_token, created_at, updated_at')
     .eq('user_id', user.id)
     .maybeSingle()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  // Return whether a token exists without exposing the actual token
   return NextResponse.json({
     settings: data ? {
-      ...data,
-      has_token: true,
+      id: data.id,
+      has_token: !!data.ebay_token,
+      sync_enabled: data.sync_enabled,
+      ebay_auto_sync: data.ebay_auto_sync ?? false,
+      days_until_delist: data.days_until_delist ?? 29,
+      daily_run_count: data.daily_run_count ?? 1,
+      ebay_token_expires_at: data.ebay_token_expires_at,
+      created_at: data.created_at,
+      updated_at: data.updated_at,
     } : {
       has_token: false,
       sync_enabled: false,
+      ebay_auto_sync: false,
+      days_until_delist: 29,
+      daily_run_count: 1,
       ebay_token_expires_at: null,
     },
   })
@@ -49,6 +58,9 @@ export async function PUT(req: NextRequest) {
 
   const allowed: Record<string, unknown> = {}
   if (typeof body.sync_enabled === 'boolean') allowed.sync_enabled = body.sync_enabled
+  if (typeof body.ebay_auto_sync === 'boolean') allowed.ebay_auto_sync = body.ebay_auto_sync
+  if (typeof body.days_until_delist === 'number') allowed.days_until_delist = body.days_until_delist
+  if (typeof body.daily_run_count === 'number') allowed.daily_run_count = body.daily_run_count
   if (typeof body.ebay_token === 'string') allowed.ebay_token = body.ebay_token
   if (typeof body.ebay_refresh_token === 'string') allowed.ebay_refresh_token = body.ebay_refresh_token
   if (typeof body.ebay_token_expires_at === 'string') allowed.ebay_token_expires_at = body.ebay_token_expires_at
