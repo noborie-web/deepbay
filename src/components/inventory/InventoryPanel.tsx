@@ -12,6 +12,9 @@ interface InventoryRun {
 interface Settings {
   has_token: boolean; sync_enabled: boolean; ebay_auto_sync: boolean
   days_until_delist: number; daily_run_count: number; ebay_token_expires_at: string | null
+  auto_delist: boolean; auto_revise_price: boolean; auto_stack: boolean
+  schedule_time: string
+  payment_profile_name: string; return_profile_name: string; shipping_profile_name: string
 }
 
 interface StackingItem {
@@ -74,6 +77,9 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
   const [settings, setSettings] = useState<Settings>({
     has_token: initialHasToken, sync_enabled: false, ebay_auto_sync: false,
     days_until_delist: 29, daily_run_count: 1, ebay_token_expires_at: null,
+    auto_delist: false, auto_revise_price: false, auto_stack: false,
+    schedule_time: '09:00',
+    payment_profile_name: '', return_profile_name: '', shipping_profile_name: '',
   })
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
@@ -93,6 +99,10 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
   const [creatingDup, setCreatingDup] = useState(false)
   const [newDupCols, setNewDupCols] = useState<string[]>(['url', 'title'])
   const [runningDup, setRunningDup] = useState<string | null>(null)
+
+  // アクション確認モーダル
+  interface ActionPreviewItem { ebay_item_id: string; title?: string; old_price?: number | null; new_price?: number | null; diff?: number; new_source_url?: string | null }
+  const [actionModal, setActionModal] = useState<{ type: 'delist' | 'revise_price' | 'stack'; items: ActionPreviewItem[]; running: boolean } | null>(null)
 
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const showMsg = (type: 'success' | 'error', text: string) => {
@@ -282,6 +292,45 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
     } catch { showMsg('error', '削除に失敗しました') }
   }
 
+  // アクション: 取り下げプレビュー
+  const handlePreviewDelist = async () => {
+    const res = await fetch('/api/inventory/actions/delist')
+    if (!res.ok) { showMsg('error', '取得失敗'); return }
+    const d = await res.json()
+    setActionModal({ type: 'delist', items: d.items ?? [], running: false })
+  }
+
+  // アクション: 価格改定プレビュー
+  const handlePreviewRevisePrice = async () => {
+    const res = await fetch('/api/inventory/actions/revise-price')
+    if (!res.ok) { showMsg('error', '取得失敗'); return }
+    const d = await res.json()
+    setActionModal({ type: 'revise_price', items: d.items ?? [], running: false })
+  }
+
+  // アクション: 積み上げプレビュー
+  const handlePreviewStack = async () => {
+    const res = await fetch('/api/inventory/actions/stack')
+    if (!res.ok) { showMsg('error', '取得失敗'); return }
+    const d = await res.json()
+    setActionModal({ type: 'stack', items: d.items ?? [], running: false })
+  }
+
+  // アクション: 実行
+  const handleRunAction = async () => {
+    if (!actionModal) return
+    setActionModal(prev => prev ? { ...prev, running: true } : null)
+    const url = `/api/inventory/actions/${actionModal.type === 'revise_price' ? 'revise-price' : actionModal.type}`
+    try {
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? '実行失敗')
+      showMsg('success', `完了: ${json.succeeded}件成功 / ${json.total}件`)
+      setActionModal(null)
+      setRunsLoaded(false); loadRuns()
+    } catch (e) { showMsg('error', e instanceof Error ? e.message : '実行失敗'); setActionModal(prev => prev ? { ...prev, running: false } : null) }
+  }
+
   // 重複チェック: 自動チェックトグル
   const handleToggleAutoCheck = async (configId: string, auto_check: boolean) => {
     try {
@@ -349,6 +398,17 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
       {/* ==================== 稼働状況 ==================== */}
       {tab === '稼働状況' && (
         <div className="p-6">
+          <div className="flex gap-3 mb-5">
+            <button onClick={handlePreviewDelist}
+              className="px-4 py-2 bg-orange-600 text-white text-sm rounded hover:bg-orange-700">
+              取り下げ実行
+            </button>
+            <button onClick={handlePreviewRevisePrice}
+              className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">
+              価格改定実行
+            </button>
+          </div>
+
           <div className="bg-gray-50 border rounded p-4 mb-5 text-xs text-gray-600 space-y-1">
             <p className="font-medium text-gray-700 mb-2">在庫管理稼働に関する各時間の説明</p>
             <p><strong>7時:</strong> 自動同期が有効になっている場合、7時に最新のactiveファイルを取得します。<span className="text-gray-400 ml-1">※この時間が過ぎると翌日のタイミングで在庫管理をすることになります。</span></p>
@@ -421,8 +481,8 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
       {/* ==================== 設定 ==================== */}
       {tab === '設定' && (
         <div className="p-6 space-y-6 max-w-2xl">
-          <p className="text-xs text-amber-600 font-medium border border-amber-200 bg-amber-50 rounded px-3 py-2">
-            現在は監視モードです。eBay商品の自動取り下げ・価格変更は実行しません。
+          <p className="text-xs text-blue-700 font-medium border border-blue-200 bg-blue-50 rounded px-3 py-2">
+            手動実行ボタンまたは自動実行トグルでeBayへの変更が実行されます。実行前に内容を必ずご確認ください。
           </p>
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-3">在庫管理稼働設定</h3>
@@ -481,6 +541,50 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
               <span className="text-xs text-gray-500">回（最大3回）</span>
             </div>
           </div>
+          <hr />
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 mb-3">自動実行設定</h3>
+            <p className="text-xs text-gray-500 mb-3">ONにした機能は毎日指定時刻に自動で実行されます。実行前に対象件数を手動確認することを推奨します。</p>
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <Toggle checked={settings.auto_delist} onChange={v => saveSetting({ auto_delist: v })} disabled={savingSettings || !settings.has_token} />
+                <span className="text-sm text-gray-700">取り下げを自動実行する</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <Toggle checked={settings.auto_revise_price} onChange={v => saveSetting({ auto_revise_price: v })} disabled={savingSettings || !settings.has_token} />
+                <span className="text-sm text-gray-700">価格改定を自動実行する</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <Toggle checked={settings.auto_stack} onChange={v => saveSetting({ auto_stack: v })} disabled={savingSettings || !settings.has_token} />
+                <span className="text-sm text-gray-700">積み上げを自動実行する</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 mt-4">
+              <span className="text-xs text-gray-600">自動実行時刻（JST）</span>
+              <input type="time" value={settings.schedule_time}
+                onChange={e => setSettings(prev => ({ ...prev, schedule_time: e.target.value }))}
+                onBlur={() => saveSetting({ schedule_time: settings.schedule_time })}
+                className="border rounded px-2 py-1 text-sm" />
+            </div>
+            {!settings.has_token && <p className="text-xs text-red-500 mt-2">eBayトークンが設定されていないため自動実行は無効です。</p>}
+          </div>
+          <hr />
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">出品ポリシー設定（積み上げ用）</h3>
+            <p className="text-xs text-gray-500 mb-3">積み上げ（新規出品）を使用する場合はeBayの出品ポリシー名を入力してください。</p>
+            <div className="space-y-2">
+              {([['payment_profile_name', '支払いポリシー名'], ['return_profile_name', '返品ポリシー名'], ['shipping_profile_name', '配送ポリシー名']] as const).map(([key, label]) => (
+                <div key={key} className="flex items-center gap-3">
+                  <span className="text-xs text-gray-600 w-32">{label}</span>
+                  <input type="text" value={settings[key]}
+                    onChange={e => setSettings(prev => ({ ...prev, [key]: e.target.value }))}
+                    onBlur={() => saveSetting({ [key]: settings[key] })}
+                    placeholder={`例: ${label}`}
+                    className="flex-1 border rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -494,6 +598,10 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
             <button onClick={() => { setStackingLoaded(false); loadStacking() }}
               className="px-3 py-1.5 border border-green-600 text-green-700 text-xs rounded hover:bg-green-50">
               再読み込み
+            </button>
+            <button onClick={handlePreviewStack}
+              className="px-3 py-1.5 bg-green-600 text-white text-xs rounded hover:bg-green-700">
+              積み上げ実行
             </button>
             <input type="text" value={stackingSearch} onChange={e => setStackingSearch(e.target.value)}
               placeholder="検索" className="flex-1 border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
@@ -658,6 +766,67 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== アクション確認モーダル ==================== */}
+      {actionModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 max-h-[80vh] flex flex-col">
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">
+              {actionModal.type === 'delist' ? '取り下げ実行の確認' : actionModal.type === 'revise_price' ? '価格改定実行の確認' : '積み上げ実行の確認'}
+            </h3>
+            <p className="text-xs text-red-600 mb-3 font-medium">
+              ⚠️ 実行するとeBayへ実際に変更が送信されます。内容を確認してから実行してください。
+            </p>
+            <p className="text-xs text-gray-500 mb-3">対象: {actionModal.items.length}件</p>
+            <div className="overflow-y-auto flex-1 border rounded mb-4">
+              <table className="w-full text-xs">
+                <thead className="bg-gray-50 sticky top-0">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-medium text-gray-500">アイテムID</th>
+                    <th className="text-left px-3 py-2 font-medium text-gray-500">タイトル</th>
+                    {actionModal.type === 'revise_price' && <>
+                      <th className="text-right px-3 py-2 font-medium text-gray-500">現在価格</th>
+                      <th className="text-right px-3 py-2 font-medium text-gray-500">新価格</th>
+                      <th className="text-right px-3 py-2 font-medium text-gray-500">差分</th>
+                    </>}
+                    {actionModal.type === 'stack' && <th className="text-left px-3 py-2 font-medium text-gray-500">新仕入れURL</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {actionModal.items.length === 0 ? (
+                    <tr><td colSpan={5} className="px-3 py-6 text-center text-gray-400">対象商品がありません</td></tr>
+                  ) : actionModal.items.map(item => (
+                    <tr key={item.ebay_item_id} className="border-t">
+                      <td className="px-3 py-2 text-blue-600">{item.ebay_item_id}</td>
+                      <td className="px-3 py-2 text-gray-700 max-w-[200px] truncate">{item.title ?? '—'}</td>
+                      {actionModal.type === 'revise_price' && <>
+                        <td className="px-3 py-2 text-right text-gray-600">${item.old_price?.toFixed(2)}</td>
+                        <td className="px-3 py-2 text-right text-gray-800 font-medium">${item.new_price?.toFixed(2)}</td>
+                        <td className={`px-3 py-2 text-right font-medium ${(item.diff ?? 0) > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                          {(item.diff ?? 0) > 0 ? '+' : ''}{item.diff?.toFixed(2)}
+                        </td>
+                      </>}
+                      {actionModal.type === 'stack' && (
+                        <td className="px-3 py-2 text-blue-600 max-w-[200px] truncate">{item.new_source_url ?? '—'}</td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button onClick={handleRunAction} disabled={actionModal.running || actionModal.items.length === 0}
+                className="px-4 py-2 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:opacity-50">
+                {actionModal.running ? '実行中...' : `${actionModal.items.length}件を実行する`}
+              </button>
+              <button onClick={() => setActionModal(null)} disabled={actionModal.running}
+                className="px-4 py-2 border text-sm rounded hover:bg-gray-50 disabled:opacity-50">
+                キャンセル
+              </button>
+            </div>
           </div>
         </div>
       )}
