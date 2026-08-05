@@ -37,6 +37,53 @@ interface Props {
 
 type Tab = '暗号化復元' | '稼働状況' | '設定' | '積み上げ設定' | '重複チェック'
 
+function EbayTokenForm({ onSaved }: { onSaved: () => void }) {
+  const [token, setToken] = useState('')
+  const [refreshToken, setRefreshToken] = useState('')
+  const [expiresAt, setExpiresAt] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  async function handleSave() {
+    if (!token.trim()) { setMsg('トークンを入力してください'); return }
+    setSaving(true); setMsg(null)
+    const body: Record<string, string> = { ebay_token: token.trim() }
+    if (refreshToken.trim()) body.ebay_refresh_token = refreshToken.trim()
+    if (expiresAt.trim()) body.ebay_token_expires_at = new Date(expiresAt).toISOString()
+    const res = await fetch('/api/inventory/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    setSaving(false)
+    if (res.ok) { setMsg('保存しました'); onSaved() }
+    else { const d = await res.json().catch(() => ({})); setMsg(d.error ?? '保存に失敗しました') }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <label className="text-xs text-gray-600">Access Token <span className="text-red-500">*</span></label>
+        <textarea value={token} onChange={e => setToken(e.target.value)} rows={3}
+          placeholder="AgXXXX..."
+          className="w-full border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 mt-1" />
+      </div>
+      <div>
+        <label className="text-xs text-gray-600">Refresh Token（任意）</label>
+        <textarea value={refreshToken} onChange={e => setRefreshToken(e.target.value)} rows={2}
+          placeholder="v^1.1#i^1#..."
+          className="w-full border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 mt-1" />
+      </div>
+      <div>
+        <label className="text-xs text-gray-600">有効期限（任意・例: 2026-12-31）</label>
+        <input type="date" value={expiresAt} onChange={e => setExpiresAt(e.target.value)}
+          className="border rounded px-2 py-1 text-sm mt-1 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+      </div>
+      <button onClick={handleSave} disabled={saving}
+        className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+        {saving ? '保存中...' : 'トークンを保存'}
+      </button>
+      {msg && <p className={`text-xs mt-1 ${msg === '保存しました' ? 'text-green-600' : 'text-red-500'}`}>{msg}</p>}
+    </div>
+  )
+}
+
 function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
     <button type="button" role="switch" aria-checked={checked} disabled={disabled}
@@ -490,6 +537,15 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
               <Toggle checked={settings.sync_enabled} onChange={v => saveSetting({ sync_enabled: v })} disabled={savingSettings} />
               <span className="text-sm text-gray-700">在庫管理を行う</span>
             </div>
+          </div>
+          <hr />
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">eBayトークン設定</h3>
+            <p className="text-xs text-gray-500 mb-3">eBay Developer Portalで取得したUser Access Tokenを貼り付けてください。</p>
+            {settings.has_token
+              ? <p className="text-xs text-green-600 mb-2">✓ トークン設定済み{settings.ebay_token_expires_at ? `（有効期限: ${new Date(settings.ebay_token_expires_at).toLocaleDateString('ja-JP')}）` : ''}</p>
+              : <p className="text-xs text-red-500 mb-2">トークン未設定</p>}
+            <EbayTokenForm onSaved={() => window.location.reload()} />
           </div>
           <hr />
           <div>
