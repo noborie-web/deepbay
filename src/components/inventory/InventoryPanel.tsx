@@ -61,7 +61,7 @@ function EbayTokenForm({ onSaved }: { onSaved: () => void }) {
       <div>
         <label className="text-xs text-gray-600">Access Token <span className="text-red-500">*</span></label>
         <textarea value={token} onChange={e => setToken(e.target.value)} rows={3}
-          placeholder="AgXXXX..."
+          placeholder="v^1.1#i^1#..."
           className="w-full border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 mt-1" />
       </div>
       <div>
@@ -541,7 +541,18 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
           <hr />
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-1">eBayトークン設定</h3>
-            <p className="text-xs text-gray-500 mb-3">eBay Developer Portalで取得したUser Access Tokenを貼り付けてください。</p>
+            <p className="text-xs text-gray-500 mb-2">eBay Trading API用のOAuthユーザートークンを設定してください。</p>
+            <details className="mb-3">
+              <summary className="text-xs text-blue-600 cursor-pointer hover:underline">トークンの取得方法</summary>
+              <ol className="text-xs text-gray-600 mt-2 space-y-1 pl-4 list-decimal">
+                <li><a href="https://developer.ebay.com/my/auth" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">eBay Developer Portal</a> にアクセス</li>
+                <li>左メニューの「rakuraku Tool」アプリを選択 → 「User Tokens」リンクをクリック</li>
+                <li>「OAuth (new security)」を選択</li>
+                <li>「Sign in to Production for OAuth」をクリックしてeBayセラーアカウントでログイン</li>
+                <li>表示された <code className="bg-gray-100 px-1 rounded">v^1.1#i^1#...</code> 形式のトークンを「Copy Token to Clipboard」でコピー</li>
+                <li>下のAccess Token欄に貼り付けて「トークンを保存」</li>
+              </ol>
+            </details>
             {settings.has_token
               ? <p className="text-xs text-green-600 mb-2">✓ トークン設定済み{settings.ebay_token_expires_at ? `（有効期限: ${new Date(settings.ebay_token_expires_at).toLocaleDateString('ja-JP')}）` : ''}</p>
               : <p className="text-xs text-red-500 mb-2">トークン未設定</p>}
