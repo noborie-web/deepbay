@@ -37,7 +37,8 @@ interface Props {
 
 type Tab = '暗号化復元' | '稼働状況' | '設定' | '積み上げ設定' | '重複チェック'
 
-function EbayTokenForm({ onSaved }: { onSaved: () => void }) {
+function EbayTokenForm({ hasToken, onSaved }: { hasToken: boolean; onSaved: () => void }) {
+  const [open, setOpen] = useState(!hasToken)
   const [token, setToken] = useState('')
   const [refreshToken, setRefreshToken] = useState('')
   const [expiresAt, setExpiresAt] = useState('')
@@ -52,8 +53,24 @@ function EbayTokenForm({ onSaved }: { onSaved: () => void }) {
     if (expiresAt.trim()) body.ebay_token_expires_at = new Date(expiresAt).toISOString()
     const res = await fetch('/api/inventory/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     setSaving(false)
-    if (res.ok) { setMsg('保存しました'); onSaved() }
-    else { const d = await res.json().catch(() => ({})); setMsg(d.error ?? '保存に失敗しました') }
+    if (res.ok) {
+      setMsg('保存しました')
+      setToken(''); setRefreshToken(''); setExpiresAt('')
+      setOpen(false)
+      onSaved()
+    } else { const d = await res.json().catch(() => ({})); setMsg(d.error ?? '保存に失敗しました') }
+  }
+
+  if (!open) {
+    return (
+      <div>
+        {msg && <p className="text-xs mb-2 text-green-600">{msg}</p>}
+        <button onClick={() => { setOpen(true); setMsg(null) }}
+          className="px-3 py-1.5 border border-blue-500 text-blue-600 text-xs rounded hover:bg-blue-50">
+          トークンを更新する
+        </button>
+      </div>
+    )
   }
 
   return (
@@ -75,10 +92,18 @@ function EbayTokenForm({ onSaved }: { onSaved: () => void }) {
         <input type="date" value={expiresAt} onChange={e => setExpiresAt(e.target.value)}
           className="border rounded px-2 py-1 text-sm mt-1 focus:outline-none focus:ring-1 focus:ring-blue-500" />
       </div>
-      <button onClick={handleSave} disabled={saving}
-        className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
-        {saving ? '保存中...' : 'トークンを保存'}
-      </button>
+      <div className="flex gap-2 items-center">
+        <button onClick={handleSave} disabled={saving}
+          className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+          {saving ? '保存中...' : 'トークンを保存'}
+        </button>
+        {hasToken && (
+          <button onClick={() => { setOpen(false); setMsg(null) }}
+            className="px-3 py-2 text-sm border rounded hover:bg-gray-50 text-gray-600">
+            キャンセル
+          </button>
+        )}
+      </div>
       {msg && <p className={`text-xs mt-1 ${msg === '保存しました' ? 'text-green-600' : 'text-red-500'}`}>{msg}</p>}
     </div>
   )
@@ -556,7 +581,7 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
             {settings.has_token
               ? <p className="text-xs text-green-600 mb-2">✓ トークン設定済み{settings.ebay_token_expires_at ? `（有効期限: ${new Date(settings.ebay_token_expires_at).toLocaleDateString('ja-JP')}）` : ''}</p>
               : <p className="text-xs text-red-500 mb-2">トークン未設定</p>}
-            <EbayTokenForm onSaved={() => window.location.reload()} />
+            <EbayTokenForm hasToken={settings.has_token} onSaved={() => setSettings(prev => ({ ...prev, has_token: true }))} />
           </div>
           <hr />
           <div>
