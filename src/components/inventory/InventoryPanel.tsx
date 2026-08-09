@@ -145,6 +145,12 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
   const [dlDiffCols, setDlDiffCols] = useState<string[]>(['title', 'price'])
   const [downloading, setDownloading] = useState(false)
 
+  // 対象件数サマリー
+  interface ActionSummary { delist: number | null; revise_price: number | null; stack: number | null }
+  const [actionSummary, setActionSummary] = useState<ActionSummary>({ delist: null, revise_price: null, stack: null })
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [expandedError, setExpandedError] = useState<string | null>(null)
+
   // 設定
   const [settings, setSettings] = useState<Settings>({
     has_token: initialHasToken, sync_enabled: false, ebay_auto_sync: false,
@@ -189,6 +195,33 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
     setRunsLoaded(true)
   }, [runsLoaded])
 
+  const refreshRuns = async () => {
+    const res = await fetch('/api/inventory/runs')
+    if (res.ok) { const d = await res.json(); setRuns(d.runs ?? []) }
+  }
+
+  const loadActionSummary = useCallback(async () => {
+    setSummaryLoading(true)
+    try {
+      const [delistRes, reviseRes, stackRes] = await Promise.all([
+        fetch('/api/inventory/actions/delist'),
+        fetch('/api/inventory/actions/revise-price'),
+        fetch('/api/inventory/actions/stack'),
+      ])
+      const [delistData, reviseData, stackData] = await Promise.all([
+        delistRes.ok ? delistRes.json() : { items: [] },
+        reviseRes.ok ? reviseRes.json() : { items: [] },
+        stackRes.ok ? stackRes.json() : { items: [] },
+      ])
+      setActionSummary({
+        delist: delistData.items?.length ?? 0,
+        revise_price: reviseData.items?.length ?? 0,
+        stack: stackData.items?.length ?? 0,
+      })
+    } catch { /* サマリー取得失敗は無視 */ }
+    finally { setSummaryLoading(false) }
+  }, [])
+
   const loadSettings = useCallback(async () => {
     if (settingsLoaded) return
     const res = await fetch('/api/inventory/settings')
@@ -212,7 +245,7 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
 
   const handleTabChange = (t: Tab) => {
     setTab(t)
-    if (t === '稼働状況') loadRuns()
+    if (t === '稼働状況') { loadRuns(); loadActionSummary() }
     if (t === '設定') loadSettings()
     if (t === '積み上げ設定') loadStacking()
     if (t === '重複チェック') loadDupConfigs()
@@ -469,19 +502,76 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
 
       {/* ==================== 稼働状況 ==================== */}
       {tab === '稼働状況' && (
-        <div className="p-6">
-          <div className="flex gap-3 mb-5">
-            <button onClick={handlePreviewDelist}
-              className="px-4 py-2 bg-orange-600 text-white text-sm rounded hover:bg-orange-700">
-              取り下げ実行
-            </button>
-            <button onClick={handlePreviewRevisePrice}
-              className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">
-              価格改定実行
-            </button>
+        <div className="p-6 space-y-6">
+
+          {/* 今日の作業サマリー */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-gray-800">今日の作業内容</h3>
+              <button onClick={loadActionSummary} disabled={summaryLoading}
+                className="px-2 py-1 border text-xs rounded text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                {summaryLoading ? '確認中...' : '件数を再確認'}
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="border rounded-lg p-4 bg-orange-50 border-orange-200">
+                <p className="text-xs text-orange-600 font-medium mb-1">取り下げ対象</p>
+                <p className="text-2xl font-bold text-orange-700">
+                  {summaryLoading ? '…' : actionSummary.delist === null ? '—' : `${actionSummary.delist}件`}
+                </p>
+                <p className="text-xs text-orange-500 mt-1">{settings.days_until_delist}日経過した商品</p>
+                <button onClick={handlePreviewDelist} disabled={summaryLoading || actionSummary.delist === 0}
+                  className="mt-3 w-full px-3 py-1.5 bg-orange-600 text-white text-xs rounded hover:bg-orange-700 disabled:opacity-40">
+                  取り下げ実行
+                </button>
+              </div>
+              <div className="border rounded-lg p-4 bg-blue-50 border-blue-200">
+                <p className="text-xs text-blue-600 font-medium mb-1">価格改定対象</p>
+                <p className="text-2xl font-bold text-blue-700">
+                  {summaryLoading ? '…' : actionSummary.revise_price === null ? '—' : `${actionSummary.revise_price}件`}
+                </p>
+                <p className="text-xs text-blue-500 mt-1">仕入れ価格と乖離した商品</p>
+                <button onClick={handlePreviewRevisePrice} disabled={summaryLoading || actionSummary.revise_price === 0}
+                  className="mt-3 w-full px-3 py-1.5 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:opacity-40">
+                  価格改定実行
+                </button>
+              </div>
+              <div className="border rounded-lg p-4 bg-green-50 border-green-200">
+                <p className="text-xs text-green-600 font-medium mb-1">積み上げ対象</p>
+                <p className="text-2xl font-bold text-green-700">
+                  {summaryLoading ? '…' : actionSummary.stack === null ? '—' : `${actionSummary.stack}件`}
+                </p>
+                <p className="text-xs text-green-500 mt-1">SOLD後に再出品可能な商品</p>
+                <button onClick={handlePreviewStack} disabled={summaryLoading || actionSummary.stack === 0}
+                  className="mt-3 w-full px-3 py-1.5 bg-green-600 text-white text-xs rounded hover:bg-green-700 disabled:opacity-40">
+                  積み上げ実行
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div className="bg-gray-50 border rounded p-4 mb-5 text-xs text-gray-600 space-y-1">
+          {/* 手動データ取得 */}
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 mb-2">データ取得</h3>
+            <p className="text-xs text-gray-500 mb-3">eBayのactiveリストを最新状態に更新します。自動同期がONの場合は毎朝9時に自動実行されます。</p>
+            <div className="flex items-center gap-3 flex-wrap">
+              <button onClick={handleSync} disabled={syncing || !settings.has_token}
+                className={`px-4 py-2 text-sm rounded flex items-center gap-2 ${syncing || !settings.has_token ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+                {syncing ? '同期中...' : '🔄 eBay同期を今すぐ実行'}
+              </button>
+              <label className={`flex items-center gap-2 border rounded px-3 py-2 text-sm cursor-pointer ${uploading ? 'opacity-50 pointer-events-none bg-gray-50' : 'bg-white hover:bg-gray-50'}`}>
+                <input type="file" accept=".csv,text/csv" className="hidden" ref={fileRef} onChange={handleUpload} disabled={uploading} />
+                <span>📎</span>
+                <span className="text-gray-600">{uploading ? 'アップロード中...' : 'activeファイルをアップロード'}</span>
+              </label>
+            </div>
+            {!settings.has_token && <p className="text-xs text-red-500 mt-2">eBayトークン未設定のため同期は利用できません。設定タブからトークンを登録してください。</p>}
+          </div>
+
+          <hr />
+
+          {/* 稼働スケジュール説明 */}
+          <div className="bg-gray-50 border rounded p-4 text-xs text-gray-600 space-y-1">
             <p className="font-medium text-gray-700 mb-2">在庫管理稼働に関する各時間の説明</p>
             <p><strong>7時:</strong> 自動同期が有効になっている場合、7時に最新のactiveファイルを取得します。<span className="text-gray-400 ml-1">※この時間が過ぎると翌日のタイミングで在庫管理をすることになります。</span></p>
             <p><strong>9時:</strong> 自分でアクティブファイルをアップロードされる方は9時までにアップロードすると当日の在庫管理が可能です。<span className="text-gray-400 ml-1">※この時間が過ぎると翌日のタイミングとなります。</span></p>
@@ -489,41 +579,65 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
             <p><strong>13時:</strong> 在庫管理の本番稼働開始。9時段階でツールに存在する最新のactiveファイルを参照して在庫管理開始。</p>
           </div>
 
-          <div className="overflow-x-auto mb-6">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="bg-gray-50 border-b">
-                  {['チェック日時', 'タイプ', 'active件数', 'マッチ件数', '稼働状況', '稼働結果ファイル'].map(h => (
-                    <th key={h} className="text-left px-3 py-2 text-xs font-medium text-gray-500">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {runs.length === 0 ? (
-                  <tr><td colSpan={6} className="px-3 py-8 text-center text-gray-400 text-sm">実行履歴がありません</td></tr>
-                ) : runs.map(run => (
-                  <tr key={run.id} className="border-b hover:bg-gray-50">
-                    <td className="px-3 py-2 text-xs text-gray-600">{new Date(run.started_at).toLocaleString('ja-JP')}</td>
-                    <td className="px-3 py-2 text-xs text-gray-600">{run.run_type === 'sync' ? 'eBay同期' : 'CSVアップロード'}</td>
-                    <td className="px-3 py-2 text-xs text-gray-600 text-right">{run.items_total ?? '—'}</td>
-                    <td className="px-3 py-2 text-xs text-gray-600 text-right">{run.items_matched ?? '—'}</td>
-                    <td className="px-3 py-2">
-                      <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${run.status === 'completed' ? 'bg-green-100 text-green-700' : run.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                        {run.status === 'completed' ? '稼働' : run.status === 'failed' ? '失敗' : '実行中'}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2">
-                      {run.status === 'completed' && (
-                        <button onClick={() => setDlModal({ runId: run.id })}
-                          className="px-2 py-1 border border-green-600 text-green-600 text-xs rounded hover:bg-green-50">
-                          DL
-                        </button>
-                      )}
-                    </td>
+          {/* 実行履歴 */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-gray-800">実行履歴</h3>
+              <button onClick={refreshRuns} className="px-2 py-1 border text-xs rounded text-gray-600 hover:bg-gray-50">
+                更新
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="bg-gray-50 border-b">
+                    {['チェック日時', 'タイプ', 'active件数', 'マッチ件数', '稼働状況', '稼働結果ファイル'].map(h => (
+                      <th key={h} className="text-left px-3 py-2 text-xs font-medium text-gray-500">{h}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {runs.length === 0 ? (
+                    <tr><td colSpan={6} className="px-3 py-8 text-center text-gray-400 text-sm">実行履歴がありません</td></tr>
+                  ) : runs.map(run => (
+                    <>
+                      <tr key={run.id} className="border-b hover:bg-gray-50">
+                        <td className="px-3 py-2 text-xs text-gray-600">{new Date(run.started_at).toLocaleString('ja-JP')}</td>
+                        <td className="px-3 py-2 text-xs text-gray-600">{run.run_type === 'sync' ? 'eBay同期' : 'CSVアップロード'}</td>
+                        <td className="px-3 py-2 text-xs text-gray-600 text-right">{run.items_total ?? '—'}</td>
+                        <td className="px-3 py-2 text-xs text-gray-600 text-right">{run.items_matched ?? '—'}</td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-1">
+                            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${run.status === 'completed' ? 'bg-green-100 text-green-700' : run.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                              {run.status === 'completed' ? '稼働' : run.status === 'failed' ? '失敗' : '実行中'}
+                            </span>
+                            {run.status === 'failed' && run.error_message && (
+                              <button onClick={() => setExpandedError(expandedError === run.id ? null : run.id)}
+                                className="text-xs text-red-500 underline hover:text-red-700">
+                                {expandedError === run.id ? '閉じる' : '詳細'}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2">
+                          {run.status === 'completed' && (
+                            <button onClick={() => setDlModal({ runId: run.id })}
+                              className="px-2 py-1 border border-green-600 text-green-600 text-xs rounded hover:bg-green-50">
+                              DL
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                      {expandedError === run.id && run.error_message && (
+                        <tr className="bg-red-50">
+                          <td colSpan={6} className="px-4 py-2 text-xs text-red-700 font-mono whitespace-pre-wrap">{run.error_message}</td>
+                        </tr>
+                      )}
+                    </>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           {/* 在庫管理状況 */}
@@ -638,17 +752,29 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
             <h3 className="text-sm font-semibold text-gray-800 mb-3">自動実行設定</h3>
             <p className="text-xs text-gray-500 mb-3">ONにした機能は毎日指定時刻に自動で実行されます。実行前に対象件数を手動確認することを推奨します。</p>
             <div className="space-y-3">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <Toggle checked={settings.auto_delist} onChange={v => saveSetting({ auto_delist: v })} disabled={savingSettings || !settings.has_token} />
-                <span className="text-sm text-gray-700">取り下げを自動実行する</span>
+                <span className="text-sm text-gray-700 flex-1">取り下げを自動実行する</span>
+                <button onClick={handlePreviewDelist} disabled={!settings.has_token}
+                  className="px-3 py-1 border border-orange-500 text-orange-600 text-xs rounded hover:bg-orange-50 disabled:opacity-40">
+                  今すぐ実行
+                </button>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <Toggle checked={settings.auto_revise_price} onChange={v => saveSetting({ auto_revise_price: v })} disabled={savingSettings || !settings.has_token} />
-                <span className="text-sm text-gray-700">価格改定を自動実行する</span>
+                <span className="text-sm text-gray-700 flex-1">価格改定を自動実行する</span>
+                <button onClick={handlePreviewRevisePrice} disabled={!settings.has_token}
+                  className="px-3 py-1 border border-blue-500 text-blue-600 text-xs rounded hover:bg-blue-50 disabled:opacity-40">
+                  今すぐ実行
+                </button>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <Toggle checked={settings.auto_stack} onChange={v => saveSetting({ auto_stack: v })} disabled={savingSettings || !settings.has_token} />
-                <span className="text-sm text-gray-700">積み上げを自動実行する</span>
+                <span className="text-sm text-gray-700 flex-1">積み上げを自動実行する</span>
+                <button onClick={handlePreviewStack} disabled={!settings.has_token}
+                  className="px-3 py-1 border border-green-500 text-green-600 text-xs rounded hover:bg-green-50 disabled:opacity-40">
+                  今すぐ実行
+                </button>
               </div>
             </div>
             <div className="flex items-center gap-3 mt-4">
