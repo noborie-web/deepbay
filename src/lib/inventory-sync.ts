@@ -77,6 +77,7 @@ async function storeInventoryListings(
       listing_status: listing.listingStatus,
       start_time: listing.startTime,
       end_time: listing.endTime,
+      raw_data: listing.imageUrl ? { image_url: listing.imageUrl } : null,
       product_id: productId,
       fetched_at: now,
       updated_at: now,

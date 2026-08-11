@@ -38,6 +38,23 @@ interface Props {
 
 type Tab = '暗号化復元' | 'eBay商品一覧' | '稼働状況' | '設定' | '積み上げ設定' | '重複チェック'
 
+function getEbayListingImageUrl(listing: InventoryActiveListing): string | null {
+  const value = listing.raw_data?.image_url
+  if (typeof value !== 'string') return null
+
+  try {
+    const url = new URL(value)
+    const hostname = url.hostname.toLowerCase()
+    const allowedHost = hostname === 'ebayimg.com'
+      || hostname.endsWith('.ebayimg.com')
+      || hostname === 'ebaystatic.com'
+      || hostname.endsWith('.ebaystatic.com')
+    return url.protocol === 'https:' && allowedHost ? url.toString() : null
+  } catch {
+    return null
+  }
+}
+
 function EbayTokenForm({ hasToken, onSaved }: { hasToken: boolean; onSaved: () => void }) {
   const [open, setOpen] = useState(!hasToken)
   const [token, setToken] = useState('')
@@ -652,22 +669,41 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           )}
 
           <div className="overflow-x-auto border rounded">
-            <table className="w-full min-w-[1050px] text-sm border-collapse">
+            <table className="w-full min-w-[1130px] text-sm border-collapse">
               <thead>
                 <tr className="bg-gray-50 border-b">
-                  {['eBay商品ID', '商品名', 'Custom Label', '価格', '数量', '販売数', 'マッチ', '取得日時'].map(heading => (
+                  {['画像', 'eBay商品ID', '商品名', 'Custom Label', '価格', '数量', '販売数', 'マッチ', '取得日時'].map(heading => (
                     <th key={heading} className="text-left px-3 py-2 text-xs font-medium text-gray-500">{heading}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {ebayListingsLoading ? (
-                  <tr><td colSpan={8} className="px-3 py-12 text-center text-gray-400">読み込み中...</td></tr>
+                  <tr><td colSpan={9} className="px-3 py-12 text-center text-gray-400">読み込み中...</td></tr>
                 ) : listings.length === 0 ? (
-                  <tr><td colSpan={8} className="px-3 py-12 text-center text-gray-400">該当するeBay商品がありません</td></tr>
-                ) : listings.map(listing => (
-                  <tr key={listing.id} className="border-b last:border-0 hover:bg-gray-50">
-                    <td className="px-3 py-2 whitespace-nowrap">
+                  <tr><td colSpan={9} className="px-3 py-12 text-center text-gray-400">該当するeBay商品がありません</td></tr>
+                ) : listings.map(listing => {
+                  const imageUrl = getEbayListingImageUrl(listing)
+                  return (
+                    <tr key={listing.id} className="border-b last:border-0 hover:bg-gray-50">
+                      <td className="px-3 py-2">
+                        <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded border bg-gray-50 text-[10px] text-gray-400">
+                          {imageUrl ? (
+                            // eBay already serves a gallery thumbnail; native lazy loading avoids fetching off-screen rows.
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={imageUrl}
+                              alt=""
+                              width={80}
+                              height={80}
+                              loading="lazy"
+                              decoding="async"
+                              className="h-full w-full object-contain"
+                            />
+                          ) : '画像なし'}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
                       <a
                         href={`https://www.ebay.com/itm/${encodeURIComponent(listing.ebay_item_id)}`}
                         target="_blank"
@@ -697,8 +733,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                     <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-500">
                       {new Date(listing.fetched_at).toLocaleString('ja-JP')}
                     </td>
-                  </tr>
-                ))}
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

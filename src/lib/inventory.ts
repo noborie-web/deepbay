@@ -7,6 +7,7 @@ export interface InventoryListingInput {
   ebayItemId: string
   customLabel: string | null
   title: string
+  imageUrl?: string | null
   currentPrice: number | null
   quantity: number | null
   quantitySold: number | null
@@ -125,6 +126,7 @@ export function parseEbayActiveListingsCsv(csv: string): InventoryListingInput[]
       ebayItemId,
       customLabel: row['customLabel'] || null,
       title,
+      imageUrl: null,
       currentPrice: parseNum(row['currentPrice']),
       quantity: parseNum(row['quantity']) != null ? Math.round(parseNum(row['quantity'])!) : null,
       quantitySold: parseNum(row['quantitySold']) != null ? Math.round(parseNum(row['quantitySold'])!) : null,

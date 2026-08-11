@@ -127,6 +127,7 @@ describe('parseGetMyeBaySellingResponse', () => {
   <ItemID>${id}</ItemID>
   <SKU>${sku}</SKU>
   <Title>${title}</Title>
+  <PictureDetails><GalleryURL>https://i.ebayimg.com/images/g/test/s-l140.jpg</GalleryURL></PictureDetails>
   <CurrentPrice>${price}</CurrentPrice>
   <Quantity>2</Quantity>
   <QuantitySold>1</QuantitySold>
@@ -143,6 +144,7 @@ describe('parseGetMyeBaySellingResponse', () => {
       ebayItemId: '110000000001',
       customLabel: 'ele_20260802_abc_def',
       title: 'Test Product',
+      imageUrl: 'https://i.ebayimg.com/images/g/test/s-l140.jpg',
       currentPrice: 25.00,
       quantity: 2,
       quantitySold: 1,
