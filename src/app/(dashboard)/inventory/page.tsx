@@ -20,7 +20,7 @@ export default async function InventoryPage() {
   const db = admin()
   const [productsResult, listingsResult, settingsResult] = await Promise.all([
     supabase.from('products').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(100),
-    db.from('inventory_active_listings').select('*').eq('user_id', user.id).order('fetched_at', { ascending: false }).limit(500),
+    db.from('inventory_active_listings').select('*', { count: 'exact' }).eq('user_id', user.id).order('fetched_at', { ascending: false }).limit(50),
     db.from('inventory_settings').select('ebay_token').eq('user_id', user.id).maybeSingle(),
   ])
 
@@ -55,7 +55,11 @@ export default async function InventoryPage() {
       </div>
 
       {/* eBay在庫管理パネル */}
-      <InventoryPanel listings={activeListings} hasToken={hasToken} />
+      <InventoryPanel
+        listings={activeListings}
+        listingCount={listingsResult.count ?? activeListings.length}
+        hasToken={hasToken}
+      />
 
       {/* 商品テーブル */}
       <div className="bg-white border rounded-md overflow-hidden">
