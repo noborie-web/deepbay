@@ -24,9 +24,17 @@ async function storeInventoryListings(
   listings: InventoryListingInput[],
   options: InventorySyncOptions = {},
 ): Promise<InventorySyncResult> {
+  // eBay pagination can briefly overlap while active listings are changing.
+  // PostgreSQL upsert rejects duplicate conflict keys in the same statement,
+  // so keep the latest occurrence of each item before building write chunks.
+  const uniqueListings = Array.from(new Map(
+    listings
+      .filter(listing => listing.ebayItemId)
+      .map(listing => [listing.ebayItemId, listing]),
+  ).values())
   const now = new Date().toISOString()
 
-  const managementCodes = listings
+  const managementCodes = uniqueListings
     .map(listing => extractSourceLookupCode(listing.customLabel))
     .filter((code): code is string => code !== null)
 
@@ -45,7 +53,7 @@ async function storeInventoryListings(
   }
 
   let matched = 0
-  const rows = listings.map(listing => {
+  const rows = uniqueListings.map(listing => {
     const code = extractSourceLookupCode(listing.customLabel)
     const productId = code ? (productLookup.get(code) ?? null) : null
     if (productId) matched++
@@ -93,7 +101,7 @@ async function storeInventoryListings(
     }
   }))
 
-  return { total: listings.length, matched }
+  return { total: uniqueListings.length, matched }
 }
 
 export async function syncInventoryListingBatch(

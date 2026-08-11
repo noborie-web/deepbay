@@ -107,6 +107,39 @@ describe('syncInventoryListings', () => {
     expect(maxActiveWrites).toBe(4)
   })
 
+  it('deduplicates overlapping eBay item ids before one upsert', async () => {
+    mockFetchAllActiveListings.mockResolvedValue([
+      {
+        ebayItemId: 'item-1', customLabel: null, title: 'Older page result',
+        currentPrice: 10, quantity: 1, quantitySold: 0, listingStatus: 'Active',
+        startTime: null, endTime: null,
+      },
+      {
+        ebayItemId: 'item-1', customLabel: null, title: 'Latest page result',
+        currentPrice: 12, quantity: 1, quantitySold: 0, listingStatus: 'Active',
+        startTime: null, endTime: null,
+      },
+    ])
+
+    const db = {
+      from: vi.fn((table: string) => {
+        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        throw new Error(`Unexpected table: ${table}`)
+      }),
+    } as unknown as SupabaseClient
+
+    const result = await syncInventoryListings(db, 'user-1', 'access-token')
+
+    expect(result).toEqual({ total: 1, matched: 0 })
+    expect(mockUpsert).toHaveBeenCalledWith([
+      expect.objectContaining({
+        ebay_item_id: 'item-1',
+        title: 'Latest page result',
+        current_price: 12,
+      }),
+    ], { onConflict: 'user_id,ebay_item_id' })
+  })
+
   it('stores one resumable eBay page batch and returns its progress', async () => {
     mockFetchActiveListingsBatch.mockResolvedValue({
       items: [{
