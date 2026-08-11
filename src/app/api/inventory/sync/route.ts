@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { expireStaleInventorySyncRuns } from '@/lib/inventory-run'
 import { syncInventoryListings } from '@/lib/inventory-sync'
 
 function admin() {
@@ -26,6 +27,14 @@ export async function POST() {
     .maybeSingle()
 
   if (settingsError) return NextResponse.json({ error: settingsError.message }, { status: 500 })
+
+  try {
+    await expireStaleInventorySyncRuns(db, user.id)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return NextResponse.json({ error: msg }, { status: 500 })
+  }
+
   const { data: run, error: runError } = await db
     .from('inventory_runs')
     .insert({ user_id: user.id, run_type: 'sync', status: 'running' })
@@ -34,7 +43,6 @@ export async function POST() {
 
   if (runError || !run) return NextResponse.json({ error: 'Failed to create run record' }, { status: 500 })
   const runId = run.id
-  const now = new Date().toISOString()
 
   let accessToken: string
   try {
@@ -42,7 +50,7 @@ export async function POST() {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     await db.from('inventory_runs').update({
-      status: 'failed', error_message: msg, finished_at: now,
+      status: 'failed', error_message: msg, finished_at: new Date().toISOString(),
     }).eq('id', runId)
     return NextResponse.json({ error: `トークン更新失敗: ${msg}` }, { status: 500 })
   }
@@ -53,7 +61,7 @@ export async function POST() {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     await db.from('inventory_runs').update({
-      status: 'failed', error_message: msg, finished_at: now,
+      status: 'failed', error_message: msg, finished_at: new Date().toISOString(),
     }).eq('id', runId)
     return NextResponse.json({ error: `eBay取得失敗: ${msg}` }, { status: 500 })
   }
@@ -62,7 +70,7 @@ export async function POST() {
     status: 'completed',
     items_total: syncResult.total,
     items_matched: syncResult.matched,
-    finished_at: now,
+    finished_at: new Date().toISOString(),
   }).eq('id', runId)
 
   return NextResponse.json({ ok: true, total: syncResult.total, matched: syncResult.matched })
