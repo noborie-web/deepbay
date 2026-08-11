@@ -140,6 +140,7 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
   const [runs, setRuns] = useState<InventoryRun[]>([])
   const [runsLoaded, setRunsLoaded] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [syncProgress, setSyncProgress] = useState<string | null>(null)
   const [dlModal, setDlModal] = useState<{ runId: string } | null>(null)
   const [dlFileType, setDlFileType] = useState<'end_items' | 'diff' | 'revise' | 'duplicate'>('end_items')
   const [dlDiffCols, setDlDiffCols] = useState<string[]>(['title', 'price'])
@@ -270,14 +271,62 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
   // eBay同期
   const handleSync = async () => {
     setSyncing(true); setMessage(null)
+    setSyncProgress('開始中')
     try {
-      const res = await fetch('/api/inventory/sync', { method: 'POST' })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error ?? 'Sync failed')
-      showMsg('success', `同期完了: ${json.total}件取得、${json.matched}件マッチ`)
+      let cursor: string | null = null
+      let completed: { total: number; matched: number } | null = null
+
+      for (let requestNumber = 1; requestNumber <= 10; requestNumber++) {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 50_000)
+        try {
+          const res: Response = await fetch('/api/inventory/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cursor ? { cursor } : {}),
+            signal: controller.signal,
+          })
+          const json: {
+            error?: string
+            total: number
+            matched: number
+            done: boolean
+            cursor: string | null
+            progress?: { page: number; totalPages: number }
+          } = await res.json()
+          if (!res.ok) throw new Error(json.error ?? 'Sync failed')
+
+          if (json.progress) {
+            setSyncProgress(`${json.progress.page}/${json.progress.totalPages}ページ`)
+          }
+          if (json.done) {
+            completed = { total: json.total, matched: json.matched }
+            break
+          }
+          if (typeof json.cursor !== 'string' || !json.cursor) {
+            throw new Error('同期の継続情報を取得できませんでした')
+          }
+          cursor = json.cursor
+        } catch (error) {
+          if (controller.signal.aborted) {
+            throw new Error('同期の1回分が50秒以内に完了しませんでした。実行履歴を確認してください。')
+          }
+          throw error
+        } finally {
+          clearTimeout(timeout)
+        }
+      }
+
+      if (!completed) throw new Error('同期の分割回数が上限を超えました')
+      showMsg('success', `同期完了: ${completed.total}件取得、${completed.matched}件マッチ`)
       setRunsLoaded(false)
-    } catch (e) { showMsg('error', e instanceof Error ? e.message : '同期失敗') }
-    finally { setSyncing(false) }
+    } catch (e) {
+      showMsg('error', e instanceof Error ? e.message : '同期失敗')
+    } finally {
+      setSyncing(false)
+      setSyncProgress(null)
+      setRunsLoaded(false)
+    }
   }
 
   // CSVアップロード
@@ -568,7 +617,7 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
             <div className="flex items-center gap-3 flex-wrap">
               <button onClick={handleSync} disabled={syncing || !settings.has_token}
                 className={`px-4 py-2 text-sm rounded flex items-center gap-2 ${syncing || !settings.has_token ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
-                {syncing ? '同期中...' : '🔄 eBay同期を今すぐ実行'}
+                {syncing ? `同期中...${syncProgress ? ` (${syncProgress})` : ''}` : '🔄 eBay同期を今すぐ実行'}
               </button>
               <label className={`flex items-center gap-2 border rounded px-3 py-2 text-sm cursor-pointer ${uploading ? 'opacity-50 pointer-events-none bg-gray-50' : 'bg-white hover:bg-gray-50'}`}>
                 <input type="file" accept=".csv,text/csv" className="hidden" ref={fileRef} onChange={handleUpload} disabled={uploading} />
@@ -728,7 +777,7 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
               </label>
               <button onClick={handleSync} disabled={syncing || !settings.has_token}
                 className={`px-4 py-2 text-sm rounded ${syncing || !settings.has_token ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
-                {syncing ? 'eBay同期中...' : 'eBay同期を今すぐ実行'}
+                {syncing ? `eBay同期中...${syncProgress ? ` (${syncProgress})` : ''}` : 'eBay同期を今すぐ実行'}
               </button>
             </div>
           </div>

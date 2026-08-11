@@ -7,6 +7,20 @@ const PAGE_SIZE = 200
 const MAX_PAGES = 25
 const DEFAULT_PAGE_TIMEOUT_MS = 10_000
 const DEFAULT_TOTAL_TIMEOUT_MS = 45_000
+const DEFAULT_CONCURRENCY = 8
+const OUTPUT_SELECTORS = [
+  'PaginationResult',
+  'ItemID',
+  'Title',
+  'SKU',
+  'CurrentPrice',
+  'BuyItNowPrice',
+  'Quantity',
+  'QuantitySold',
+  'ListingStatus',
+  'StartTime',
+  'EndTime',
+] as const
 
 export interface EbayTokenSet {
   accessToken: string
@@ -15,6 +29,15 @@ export interface EbayTokenSet {
 export interface EbayInventoryFetchOptions {
   pageTimeoutMs?: number
   totalTimeoutMs?: number
+  concurrency?: number
+  signal?: AbortSignal
+}
+
+export interface EbayInventoryBatchResult {
+  items: InventoryListingInput[]
+  nextPage: number | null
+  totalPages: number
+  lastFetchedPage: number
 }
 
 /**
@@ -60,6 +83,7 @@ export async function refreshEbayToken(refreshToken: string): Promise<{
 export function parseGetMyeBaySellingResponse(xml: string): {
   items: InventoryListingInput[]
   hasMore: boolean
+  totalPages: number
 } {
   const getTag = (src: string, tag: string): string => {
     const m = src.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'))
@@ -106,13 +130,22 @@ export function parseGetMyeBaySellingResponse(xml: string): {
   const currentPage = parseInt(getTag(xml, 'PageNumber') || '1', 10)
   const hasMore = currentPage < totalPages
 
-  return { items, hasMore }
+  return { items, hasMore, totalPages }
 }
 
-async function fetchPage(accessToken: string, page: number, timeoutMs: number): Promise<{
+async function fetchPage(
+  accessToken: string,
+  page: number,
+  timeoutMs: number,
+  totalSignal?: AbortSignal,
+): Promise<{
   items: InventoryListingInput[]
   hasMore: boolean
+  totalPages: number
 }> {
+  const outputSelectors = OUTPUT_SELECTORS
+    .map((field) => `  <OutputSelector>${field}</OutputSelector>`)
+    .join('\n')
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <ActiveList>
@@ -123,14 +156,20 @@ async function fetchPage(accessToken: string, page: number, timeoutMs: number): 
     </Pagination>
   </ActiveList>
   <DetailLevel>ReturnAll</DetailLevel>
+${outputSelectors}
 </GetMyeBaySellingRequest>`
 
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  let pageTimedOut = false
+  const timeout = setTimeout(() => {
+    pageTimedOut = true
+    controller.abort()
+  }, timeoutMs)
+  const abortForTotalTimeout = () => controller.abort(totalSignal?.reason)
+  totalSignal?.addEventListener('abort', abortForTotalTimeout, { once: true })
 
-  let res: Response
   try {
-    res = await fetch(EBAY_TRADING_API_URL, {
+    const res = await fetch(EBAY_TRADING_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'text/xml',
@@ -142,21 +181,142 @@ async function fetchPage(accessToken: string, page: number, timeoutMs: number): 
       body: xml,
       signal: controller.signal,
     })
+
+    if (!res.ok) {
+      throw new Error(`eBay API HTTP error: ${res.status}`)
+    }
+
+    // Keep the timeout active until the response body has been consumed.
+    // fetch() can resolve after headers arrive even if the XML body stalls.
+    const text = await res.text()
+    return parseGetMyeBaySellingResponse(text)
   } catch (error) {
-    if (controller.signal.aborted) {
+    if (totalSignal?.aborted) {
+      throw totalSignal.reason instanceof Error
+        ? totalSignal.reason
+        : new Error('eBay inventory sync timeout')
+    }
+    if (pageTimedOut) {
       throw new Error(`eBay API timeout: page ${page} exceeded ${timeoutMs}ms`)
     }
     throw error
   } finally {
     clearTimeout(timeout)
+    totalSignal?.removeEventListener('abort', abortForTotalTimeout)
+  }
+}
+
+async function fetchActiveListingRange(
+  tokens: EbayTokenSet,
+  startPage: number,
+  pageCount: number,
+  options: EbayInventoryFetchOptions = {},
+): Promise<EbayInventoryBatchResult> {
+  if (!Number.isInteger(startPage) || startPage < 1 || startPage > MAX_PAGES) {
+    throw new Error(`Invalid eBay inventory start page: ${startPage}`)
+  }
+  if (!Number.isInteger(pageCount) || pageCount < 1) {
+    throw new Error(`Invalid eBay inventory page count: ${pageCount}`)
   }
 
-  if (!res.ok) {
-    throw new Error(`eBay API HTTP error: ${res.status}`)
+  const all: InventoryListingInput[] = []
+  const pageTimeoutMs = options.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS
+  const totalTimeoutMs = options.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS
+  const concurrency = Math.max(1, Math.floor(options.concurrency ?? DEFAULT_CONCURRENCY))
+  const startedAt = Date.now()
+  const totalController = new AbortController()
+  const abortForCaller = () => totalController.abort(options.signal?.reason)
+  options.signal?.addEventListener('abort', abortForCaller, { once: true })
+  const totalTimeout = setTimeout(() => {
+    totalController.abort(new Error(`eBay inventory sync timeout: exceeded ${totalTimeoutMs}ms`))
+  }, totalTimeoutMs)
+
+  const getRemainingMs = (): number => {
+    const remainingMs = totalTimeoutMs - (Date.now() - startedAt)
+    if (remainingMs <= 0) {
+      throw new Error(`eBay inventory sync timeout: exceeded ${totalTimeoutMs}ms`)
+    }
+    return remainingMs
   }
 
-  const text = await res.text()
-  return parseGetMyeBaySellingResponse(text)
+  const fetchPageWithRetry = async (page: number) => {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await fetchPage(
+          tokens.accessToken,
+          page,
+          Math.min(pageTimeoutMs, getRemainingMs()),
+          totalController.signal,
+        )
+      } catch (error) {
+        const isPageTimeout = error instanceof Error
+          && error.message.startsWith(`eBay API timeout: page ${page} `)
+        if (!isPageTimeout || attempt === 2 || totalController.signal.aborted) throw error
+      }
+    }
+    throw new Error(`eBay API timeout: page ${page}`)
+  }
+
+  try {
+    if (options.signal?.aborted) abortForCaller()
+
+    const firstPage = await fetchPageWithRetry(startPage)
+    all.push(...firstPage.items)
+
+    const totalPages = Math.min(firstPage.totalPages, MAX_PAGES)
+    const lastPage = Math.min(totalPages, startPage + pageCount - 1)
+    if (lastPage <= startPage) {
+      return {
+        items: all,
+        nextPage: null,
+        totalPages,
+        lastFetchedPage: startPage,
+      }
+    }
+
+    // The first response confirms the actual total. Fetch the rest of this
+    // bounded range concurrently, then restore page order before returning.
+    const pageItems: InventoryListingInput[][] = []
+    let nextPage = startPage + 1
+    const workerCount = Math.min(concurrency, lastPage - startPage)
+
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextPage <= lastPage) {
+        const page = nextPage++
+        const result = await fetchPageWithRetry(page)
+        pageItems[page] = result.items
+      }
+    }))
+
+    for (let page = startPage + 1; page <= lastPage; page++) {
+      all.push(...(pageItems[page] ?? []))
+    }
+
+    return {
+      items: all,
+      nextPage: lastPage < totalPages ? lastPage + 1 : null,
+      totalPages,
+      lastFetchedPage: lastPage,
+    }
+  } catch (error) {
+    if (!totalController.signal.aborted) totalController.abort(error)
+    throw error
+  } finally {
+    clearTimeout(totalTimeout)
+    options.signal?.removeEventListener('abort', abortForCaller)
+  }
+}
+
+/**
+ * Fetch one bounded batch of active listings for resumable manual sync.
+ */
+export async function fetchActiveListingsBatch(
+  tokens: EbayTokenSet,
+  startPage: number,
+  pageCount: number,
+  options: EbayInventoryFetchOptions = {},
+): Promise<EbayInventoryBatchResult> {
+  return fetchActiveListingRange(tokens, startPage, pageCount, options)
 }
 
 /**
@@ -166,25 +326,6 @@ export async function fetchAllActiveListings(
   tokens: EbayTokenSet,
   options: EbayInventoryFetchOptions = {},
 ): Promise<InventoryListingInput[]> {
-  const all: InventoryListingInput[] = []
-  const pageTimeoutMs = options.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS
-  const totalTimeoutMs = options.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS
-  const startedAt = Date.now()
-
-  for (let page = 1; page <= MAX_PAGES; page++) {
-    const remainingMs = totalTimeoutMs - (Date.now() - startedAt)
-    if (remainingMs <= 0) {
-      throw new Error(`eBay inventory sync timeout: exceeded ${totalTimeoutMs}ms`)
-    }
-
-    const { items, hasMore } = await fetchPage(
-      tokens.accessToken,
-      page,
-      Math.min(pageTimeoutMs, remainingMs),
-    )
-    all.push(...items)
-    if (!hasMore) break
-  }
-
-  return all
+  const result = await fetchActiveListingRange(tokens, 1, MAX_PAGES, options)
+  return result.items
 }

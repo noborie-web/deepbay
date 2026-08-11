@@ -137,7 +137,7 @@ describe('parseGetMyeBaySellingResponse', () => {
 
   it('parses a single item', () => {
     const xml = makeXml(item('110000000001', 'ele_20260802_abc_def', 'Test Product', '25.00'))
-    const { items, hasMore } = parseGetMyeBaySellingResponse(xml)
+    const { items, hasMore, totalPages } = parseGetMyeBaySellingResponse(xml)
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({
       ebayItemId: '110000000001',
@@ -149,6 +149,7 @@ describe('parseGetMyeBaySellingResponse', () => {
       listingStatus: 'Active',
     })
     expect(hasMore).toBe(false)
+    expect(totalPages).toBe(1)
   })
 
   it('parses multiple items', () => {
@@ -163,8 +164,9 @@ describe('parseGetMyeBaySellingResponse', () => {
 
   it('reports hasMore when more pages exist', () => {
     const xml = makeXml(item('110000000001', 'S', 'T', '5.00'), 3, 1)
-    const { hasMore } = parseGetMyeBaySellingResponse(xml)
+    const { hasMore, totalPages } = parseGetMyeBaySellingResponse(xml)
     expect(hasMore).toBe(true)
+    expect(totalPages).toBe(3)
   })
 
   it('reports hasMore=false on last page', () => {
