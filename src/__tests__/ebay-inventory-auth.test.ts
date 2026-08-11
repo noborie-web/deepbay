@@ -130,7 +130,7 @@ describe('eBay inventory OAuth authentication', () => {
     expect(listings.map(listing => listing.ebayItemId)).toEqual(['1', '2'])
   })
 
-  it('fetches remaining pages concurrently and preserves page order', async () => {
+  it('uses bounded default concurrency and preserves page order', async () => {
     let activeRequests = 0
     let maxActiveRequests = 0
 
@@ -149,7 +149,7 @@ describe('eBay inventory OAuth authentication', () => {
               <Item><ItemID>${page}</ItemID><Title>Page ${page}</Title></Item>
             </ItemArray>
             <PaginationResult>
-              <TotalNumberOfPages>4</TotalNumberOfPages>
+              <TotalNumberOfPages>9</TotalNumberOfPages>
               <PageNumber>${page}</PageNumber>
             </PaginationResult>
           </ActiveList>
@@ -157,13 +157,12 @@ describe('eBay inventory OAuth authentication', () => {
       `, { status: 200 })
     })
 
-    const listings = await fetchAllActiveListings(
-      { accessToken: 'oauth-user-token' },
-      { concurrency: 3 },
-    )
+    const listings = await fetchAllActiveListings({ accessToken: 'oauth-user-token' })
 
-    expect(fetchMock).toHaveBeenCalledTimes(4)
-    expect(maxActiveRequests).toBe(3)
-    expect(listings.map((listing) => listing.ebayItemId)).toEqual(['1', '2', '3', '4'])
+    expect(fetchMock).toHaveBeenCalledTimes(9)
+    expect(maxActiveRequests).toBe(8)
+    expect(listings.map((listing) => listing.ebayItemId)).toEqual([
+      '1', '2', '3', '4', '5', '6', '7', '8', '9',
+    ])
   })
 })

@@ -7,7 +7,7 @@ const PAGE_SIZE = 200
 const MAX_PAGES = 25
 const DEFAULT_PAGE_TIMEOUT_MS = 10_000
 const DEFAULT_TOTAL_TIMEOUT_MS = 45_000
-const DEFAULT_CONCURRENCY = 4
+const DEFAULT_CONCURRENCY = 8
 
 export interface EbayTokenSet {
   accessToken: string
