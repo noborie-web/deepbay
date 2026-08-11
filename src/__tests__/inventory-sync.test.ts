@@ -25,6 +25,7 @@ describe('syncInventoryListings', () => {
     mockFetchAllActiveListings.mockResolvedValue([
       {
         ebayItemId: 'item-1', customLabel: managementCode, title: 'Matched item',
+        imageUrl: 'https://i.ebayimg.com/images/g/item-1/s-l140.jpg',
         currentPrice: 20, quantity: 1, quantitySold: 0, listingStatus: 'Active',
         startTime: '2026-07-01T00:00:00.000Z', endTime: null,
       },
@@ -60,7 +61,10 @@ describe('syncInventoryListings', () => {
       { signal: undefined },
     )
     expect(mockUpsert).toHaveBeenCalledWith([
-      expect.objectContaining({ ebay_item_id: 'item-1', product_id: 'product-1', user_id: 'user-1' }),
+      expect.objectContaining({
+        ebay_item_id: 'item-1', product_id: 'product-1', user_id: 'user-1',
+        raw_data: { image_url: 'https://i.ebayimg.com/images/g/item-1/s-l140.jpg' },
+      }),
       expect.objectContaining({ ebay_item_id: 'item-2', product_id: null, user_id: 'user-1' }),
     ], { onConflict: 'user_id,ebay_item_id' })
   })

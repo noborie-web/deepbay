@@ -18,6 +18,7 @@ const OUTPUT_SELECTORS = [
   'Quantity',
   'QuantitySold',
   'ListingStatus',
+  'PictureDetails',
   'StartTime',
   'EndTime',
 ] as const
@@ -101,6 +102,7 @@ export function parseGetMyeBaySellingResponse(xml: string): {
     const itemId = getTag(block, 'ItemID')
     const title = getTag(block, 'Title')
     const sku = getTag(block, 'SKU')
+    const imageUrl = getTag(block, 'GalleryURL') || getTag(block, 'PictureURL')
     const priceStr = getTag(block, 'CurrentPrice') || getTag(block, 'BuyItNowPrice')
     const qty = getTag(block, 'Quantity')
     const qtySold = getTag(block, 'QuantitySold')
@@ -117,6 +119,7 @@ export function parseGetMyeBaySellingResponse(xml: string): {
       ebayItemId: itemId,
       customLabel: sku || null,
       title,
+      imageUrl: imageUrl || null,
       currentPrice: parseNum(priceStr),
       quantity: parseNum(qty) != null ? Math.round(parseNum(qty)!) : null,
       quantitySold: parseNum(qtySold) != null ? Math.round(parseNum(qtySold)!) : null,
