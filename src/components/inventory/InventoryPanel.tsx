@@ -270,14 +270,23 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
   // eBay同期
   const handleSync = async () => {
     setSyncing(true); setMessage(null)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 50_000)
     try {
-      const res = await fetch('/api/inventory/sync', { method: 'POST' })
+      const res = await fetch('/api/inventory/sync', { method: 'POST', signal: controller.signal })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Sync failed')
       showMsg('success', `同期完了: ${json.total}件取得、${json.matched}件マッチ`)
       setRunsLoaded(false)
-    } catch (e) { showMsg('error', e instanceof Error ? e.message : '同期失敗') }
-    finally { setSyncing(false) }
+    } catch (e) {
+      showMsg('error', controller.signal.aborted
+        ? '同期が50秒以内に完了しませんでした。実行履歴を確認してください。'
+        : e instanceof Error ? e.message : '同期失敗')
+    } finally {
+      clearTimeout(timeout)
+      setSyncing(false)
+      setRunsLoaded(false)
+    }
   }
 
   // CSVアップロード

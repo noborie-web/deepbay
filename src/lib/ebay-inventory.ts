@@ -17,6 +17,7 @@ export interface EbayInventoryFetchOptions {
   pageTimeoutMs?: number
   totalTimeoutMs?: number
   concurrency?: number
+  signal?: AbortSignal
 }
 
 /**
@@ -112,7 +113,12 @@ export function parseGetMyeBaySellingResponse(xml: string): {
   return { items, hasMore, totalPages }
 }
 
-async function fetchPage(accessToken: string, page: number, timeoutMs: number): Promise<{
+async function fetchPage(
+  accessToken: string,
+  page: number,
+  timeoutMs: number,
+  totalSignal?: AbortSignal,
+): Promise<{
   items: InventoryListingInput[]
   hasMore: boolean
   totalPages: number
@@ -130,11 +136,16 @@ async function fetchPage(accessToken: string, page: number, timeoutMs: number): 
 </GetMyeBaySellingRequest>`
 
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  let pageTimedOut = false
+  const timeout = setTimeout(() => {
+    pageTimedOut = true
+    controller.abort()
+  }, timeoutMs)
+  const abortForTotalTimeout = () => controller.abort(totalSignal?.reason)
+  totalSignal?.addEventListener('abort', abortForTotalTimeout, { once: true })
 
-  let res: Response
   try {
-    res = await fetch(EBAY_TRADING_API_URL, {
+    const res = await fetch(EBAY_TRADING_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'text/xml',
@@ -146,21 +157,29 @@ async function fetchPage(accessToken: string, page: number, timeoutMs: number): 
       body: xml,
       signal: controller.signal,
     })
+
+    if (!res.ok) {
+      throw new Error(`eBay API HTTP error: ${res.status}`)
+    }
+
+    // Keep the timeout active until the response body has been consumed.
+    // fetch() can resolve after headers arrive even if the XML body stalls.
+    const text = await res.text()
+    return parseGetMyeBaySellingResponse(text)
   } catch (error) {
-    if (controller.signal.aborted) {
+    if (totalSignal?.aborted) {
+      throw totalSignal.reason instanceof Error
+        ? totalSignal.reason
+        : new Error('eBay inventory sync timeout')
+    }
+    if (pageTimedOut) {
       throw new Error(`eBay API timeout: page ${page} exceeded ${timeoutMs}ms`)
     }
     throw error
   } finally {
     clearTimeout(timeout)
+    totalSignal?.removeEventListener('abort', abortForTotalTimeout)
   }
-
-  if (!res.ok) {
-    throw new Error(`eBay API HTTP error: ${res.status}`)
-  }
-
-  const text = await res.text()
-  return parseGetMyeBaySellingResponse(text)
 }
 
 /**
@@ -175,6 +194,12 @@ export async function fetchAllActiveListings(
   const totalTimeoutMs = options.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS
   const concurrency = Math.max(1, Math.floor(options.concurrency ?? DEFAULT_CONCURRENCY))
   const startedAt = Date.now()
+  const totalController = new AbortController()
+  const abortForCaller = () => totalController.abort(options.signal?.reason)
+  options.signal?.addEventListener('abort', abortForCaller, { once: true })
+  const totalTimeout = setTimeout(() => {
+    totalController.abort(new Error(`eBay inventory sync timeout: exceeded ${totalTimeoutMs}ms`))
+  }, totalTimeoutMs)
 
   const getRemainingMs = (): number => {
     const remainingMs = totalTimeoutMs - (Date.now() - startedAt)
@@ -184,37 +209,46 @@ export async function fetchAllActiveListings(
     return remainingMs
   }
 
-  const firstPage = await fetchPage(
-    tokens.accessToken,
-    1,
-    Math.min(pageTimeoutMs, getRemainingMs()),
-  )
-  all.push(...firstPage.items)
+  try {
+    if (options.signal?.aborted) abortForCaller()
 
-  const lastPage = Math.min(firstPage.totalPages, MAX_PAGES)
-  if (lastPage <= 1) return all
+    const firstPage = await fetchPage(
+      tokens.accessToken,
+      1,
+      Math.min(pageTimeoutMs, getRemainingMs()),
+      totalController.signal,
+    )
+    all.push(...firstPage.items)
 
-  // The first response tells us the remaining page numbers. Fetch a small,
-  // bounded number concurrently, then restore page order before returning.
-  const pageItems: InventoryListingInput[][] = []
-  let nextPage = 2
-  const workerCount = Math.min(concurrency, lastPage - 1)
+    const lastPage = Math.min(firstPage.totalPages, MAX_PAGES)
+    if (lastPage <= 1) return all
 
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (nextPage <= lastPage) {
-      const page = nextPage++
-      const result = await fetchPage(
-        tokens.accessToken,
-        page,
-        Math.min(pageTimeoutMs, getRemainingMs()),
-      )
-      pageItems[page] = result.items
+    // The first response tells us the remaining page numbers. Fetch a small,
+    // bounded number concurrently, then restore page order before returning.
+    const pageItems: InventoryListingInput[][] = []
+    let nextPage = 2
+    const workerCount = Math.min(concurrency, lastPage - 1)
+
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextPage <= lastPage) {
+        const page = nextPage++
+        const result = await fetchPage(
+          tokens.accessToken,
+          page,
+          Math.min(pageTimeoutMs, getRemainingMs()),
+          totalController.signal,
+        )
+        pageItems[page] = result.items
+      }
+    }))
+
+    for (let page = 2; page <= lastPage; page++) {
+      all.push(...(pageItems[page] ?? []))
     }
-  }))
 
-  for (let page = 2; page <= lastPage; page++) {
-    all.push(...(pageItems[page] ?? []))
+    return all
+  } finally {
+    clearTimeout(totalTimeout)
+    options.signal?.removeEventListener('abort', abortForCaller)
   }
-
-  return all
 }

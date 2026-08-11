@@ -58,6 +58,36 @@ describe('eBay inventory OAuth authentication', () => {
     expect(request.signal?.aborted).toBe(true)
   })
 
+  it('keeps the page timeout active while reading the response body', async () => {
+    fetchMock.mockImplementation(async (_url: string, request: RequestInit) => ({
+      ok: true,
+      status: 200,
+      text: () => new Promise((_resolve, reject) => {
+        request.signal?.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'))
+        })
+      }),
+    }) as Response)
+
+    await expect(fetchAllActiveListings(
+      { accessToken: 'oauth-user-token' },
+      { pageTimeoutMs: 5, totalTimeoutMs: 50 },
+    )).rejects.toThrow('eBay API timeout: page 1 exceeded 5ms')
+  })
+
+  it('aborts all page requests when the total timeout is exceeded', async () => {
+    fetchMock.mockImplementation((_url: string, request: RequestInit) => new Promise((_resolve, reject) => {
+      request.signal?.addEventListener('abort', () => {
+        reject(new DOMException('Aborted', 'AbortError'))
+      })
+    }))
+
+    await expect(fetchAllActiveListings(
+      { accessToken: 'oauth-user-token' },
+      { pageTimeoutMs: 100, totalTimeoutMs: 5 },
+    )).rejects.toThrow('eBay inventory sync timeout: exceeded 5ms')
+  })
+
   it('fetches remaining pages concurrently and preserves page order', async () => {
     let activeRequests = 0
     let maxActiveRequests = 0

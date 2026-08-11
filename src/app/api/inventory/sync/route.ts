@@ -6,6 +6,8 @@ import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { expireStaleInventorySyncRuns } from '@/lib/inventory-run'
 import { syncInventoryListings } from '@/lib/inventory-sync'
 
+const ROUTE_TIMEOUT_MS = 40_000
+
 function admin() {
   return createServiceClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -56,14 +58,27 @@ export async function POST() {
   }
 
   let syncResult
+  const syncController = new AbortController()
+  const routeTimeout = setTimeout(() => {
+    syncController.abort(new Error(`在庫同期が${ROUTE_TIMEOUT_MS / 1000}秒を超えたため終了しました`))
+  }, ROUTE_TIMEOUT_MS)
   try {
-    syncResult = await syncInventoryListings(db, user.id, accessToken)
+    syncResult = await Promise.race([
+      syncInventoryListings(db, user.id, accessToken, { signal: syncController.signal }),
+      new Promise<never>((_, reject) => {
+        syncController.signal.addEventListener('abort', () => {
+          reject(syncController.signal.reason)
+        }, { once: true })
+      }),
+    ])
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     await db.from('inventory_runs').update({
       status: 'failed', error_message: msg, finished_at: new Date().toISOString(),
     }).eq('id', runId)
     return NextResponse.json({ error: `eBay取得失敗: ${msg}` }, { status: 500 })
+  } finally {
+    clearTimeout(routeTimeout)
   }
 
   await db.from('inventory_runs').update({

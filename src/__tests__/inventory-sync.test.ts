@@ -52,10 +52,55 @@ describe('syncInventoryListings', () => {
     const result = await syncInventoryListings(db, 'user-1', 'access-token')
 
     expect(result).toEqual({ total: 2, matched: 1 })
-    expect(mockFetchAllActiveListings).toHaveBeenCalledWith({ accessToken: 'access-token' })
+    expect(mockFetchAllActiveListings).toHaveBeenCalledWith(
+      { accessToken: 'access-token' },
+      { signal: undefined },
+    )
     expect(mockUpsert).toHaveBeenCalledWith([
       expect.objectContaining({ ebay_item_id: 'item-1', product_id: 'product-1', user_id: 'user-1' }),
       expect.objectContaining({ ebay_item_id: 'item-2', product_id: null, user_id: 'user-1' }),
     ], { onConflict: 'user_id,ebay_item_id' })
+  })
+
+  it('stores listing chunks concurrently', async () => {
+    mockFetchAllActiveListings.mockResolvedValue(Array.from({ length: 450 }, (_, index) => ({
+      ebayItemId: `item-${index}`,
+      customLabel: null,
+      title: `Item ${index}`,
+      currentPrice: 10,
+      quantity: 1,
+      quantitySold: 0,
+      listingStatus: 'Active',
+      startTime: null,
+      endTime: null,
+    })))
+
+    let activeWrites = 0
+    let maxActiveWrites = 0
+    mockUpsert.mockImplementation(async () => {
+      activeWrites += 1
+      maxActiveWrites = Math.max(maxActiveWrites, activeWrites)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      activeWrites -= 1
+      return { error: null }
+    })
+
+    const db = {
+      from: vi.fn((table: string) => {
+        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        throw new Error(`Unexpected table: ${table}`)
+      }),
+    } as unknown as SupabaseClient
+
+    const result = await syncInventoryListings(
+      db,
+      'user-1',
+      'access-token',
+      { writeConcurrency: 4 },
+    )
+
+    expect(result).toEqual({ total: 450, matched: 0 })
+    expect(mockUpsert).toHaveBeenCalledTimes(5)
+    expect(maxActiveWrites).toBe(4)
   })
 })

@@ -7,12 +7,21 @@ export interface InventorySyncResult {
   matched: number
 }
 
+export interface InventorySyncOptions {
+  signal?: AbortSignal
+  writeConcurrency?: number
+}
+
 export async function syncInventoryListings(
   db: SupabaseClient,
   userId: string,
   accessToken: string,
+  options: InventorySyncOptions = {},
 ): Promise<InventorySyncResult> {
-  const listings = await fetchAllActiveListings({ accessToken })
+  const listings = await fetchAllActiveListings(
+    { accessToken },
+    { signal: options.signal },
+  )
   const now = new Date().toISOString()
 
   const managementCodes = listings
@@ -57,12 +66,30 @@ export async function syncInventoryListings(
   })
 
   const chunkSize = 100
-  for (let index = 0; index < rows.length; index += chunkSize) {
-    const { error } = await db
-      .from('inventory_active_listings')
-      .upsert(rows.slice(index, index + chunkSize), { onConflict: 'user_id,ebay_item_id' })
-    if (error) throw new Error(error.message)
-  }
+  const chunks = Array.from(
+    { length: Math.ceil(rows.length / chunkSize) },
+    (_, index) => rows.slice(index * chunkSize, (index + 1) * chunkSize),
+  )
+  let nextChunk = 0
+  const workerCount = Math.min(
+    Math.max(1, Math.floor(options.writeConcurrency ?? 4)),
+    chunks.length,
+  )
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextChunk < chunks.length) {
+      if (options.signal?.aborted) {
+        throw options.signal.reason instanceof Error
+          ? options.signal.reason
+          : new Error('Inventory sync aborted')
+      }
+      const chunk = chunks[nextChunk++]
+      const { error } = await db
+        .from('inventory_active_listings')
+        .upsert(chunk, { onConflict: 'user_id,ebay_item_id' })
+      if (error) throw new Error(error.message)
+    }
+  }))
 
   return { total: listings.length, matched }
 }
