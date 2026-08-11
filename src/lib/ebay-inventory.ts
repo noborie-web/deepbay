@@ -5,9 +5,16 @@ import type { InventoryListingInput } from './inventory'
 const EBAY_TRADING_API_URL = 'https://api.ebay.com/ws/api.dll'
 const PAGE_SIZE = 200
 const MAX_PAGES = 25
+const DEFAULT_PAGE_TIMEOUT_MS = 10_000
+const DEFAULT_TOTAL_TIMEOUT_MS = 45_000
 
 export interface EbayTokenSet {
   accessToken: string
+}
+
+export interface EbayInventoryFetchOptions {
+  pageTimeoutMs?: number
+  totalTimeoutMs?: number
 }
 
 /**
@@ -102,7 +109,7 @@ export function parseGetMyeBaySellingResponse(xml: string): {
   return { items, hasMore }
 }
 
-async function fetchPage(accessToken: string, page: number): Promise<{
+async function fetchPage(accessToken: string, page: number, timeoutMs: number): Promise<{
   items: InventoryListingInput[]
   hasMore: boolean
 }> {
@@ -118,17 +125,31 @@ async function fetchPage(accessToken: string, page: number): Promise<{
   <DetailLevel>ReturnAll</DetailLevel>
 </GetMyeBaySellingRequest>`
 
-  const res = await fetch(EBAY_TRADING_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/xml',
-      'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
-      'X-EBAY-API-CALL-NAME': 'GetMyeBaySelling',
-      'X-EBAY-API-IAF-TOKEN': accessToken,
-      'X-EBAY-API-SITEID': '0',
-    },
-    body: xml,
-  })
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+
+  let res: Response
+  try {
+    res = await fetch(EBAY_TRADING_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml',
+        'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+        'X-EBAY-API-CALL-NAME': 'GetMyeBaySelling',
+        'X-EBAY-API-IAF-TOKEN': accessToken,
+        'X-EBAY-API-SITEID': '0',
+      },
+      body: xml,
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`eBay API timeout: page ${page} exceeded ${timeoutMs}ms`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timeout)
+  }
 
   if (!res.ok) {
     throw new Error(`eBay API HTTP error: ${res.status}`)
@@ -141,11 +162,26 @@ async function fetchPage(accessToken: string, page: number): Promise<{
 /**
  * Fetch all active eBay listings (read-only, up to MAX_PAGES pages).
  */
-export async function fetchAllActiveListings(tokens: EbayTokenSet): Promise<InventoryListingInput[]> {
+export async function fetchAllActiveListings(
+  tokens: EbayTokenSet,
+  options: EbayInventoryFetchOptions = {},
+): Promise<InventoryListingInput[]> {
   const all: InventoryListingInput[] = []
+  const pageTimeoutMs = options.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS
+  const totalTimeoutMs = options.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS
+  const startedAt = Date.now()
 
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const { items, hasMore } = await fetchPage(tokens.accessToken, page)
+    const remainingMs = totalTimeoutMs - (Date.now() - startedAt)
+    if (remainingMs <= 0) {
+      throw new Error(`eBay inventory sync timeout: exceeded ${totalTimeoutMs}ms`)
+    }
+
+    const { items, hasMore } = await fetchPage(
+      tokens.accessToken,
+      page,
+      Math.min(pageTimeoutMs, remainingMs),
+    )
     all.push(...items)
     if (!hasMore) break
   }

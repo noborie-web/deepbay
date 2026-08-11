@@ -41,4 +41,20 @@ describe('eBay inventory OAuth authentication', () => {
     expect(body).not.toContain('RequesterCredentials')
     expect(body).not.toContain('eBayAuthToken')
   })
+
+  it('aborts an eBay page request that exceeds the timeout', async () => {
+    fetchMock.mockImplementation((_url: string, request: RequestInit) => new Promise((_resolve, reject) => {
+      request.signal?.addEventListener('abort', () => {
+        reject(new DOMException('Aborted', 'AbortError'))
+      })
+    }))
+
+    await expect(fetchAllActiveListings(
+      { accessToken: 'oauth-user-token' },
+      { pageTimeoutMs: 5, totalTimeoutMs: 50 },
+    )).rejects.toThrow('eBay API timeout: page 1 exceeded 5ms')
+
+    const [, request] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(request.signal?.aborted).toBe(true)
+  })
 })
