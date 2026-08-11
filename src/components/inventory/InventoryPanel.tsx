@@ -583,11 +583,9 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
 
           {/* 稼働スケジュール説明 */}
           <div className="bg-gray-50 border rounded p-4 text-xs text-gray-600 space-y-1">
-            <p className="font-medium text-gray-700 mb-2">在庫管理稼働に関する各時間の説明</p>
-            <p><strong>7時:</strong> 自動同期が有効になっている場合、7時に最新のactiveファイルを取得します。<span className="text-gray-400 ml-1">※この時間が過ぎると翌日のタイミングで在庫管理をすることになります。</span></p>
-            <p><strong>9時:</strong> 自分でアクティブファイルをアップロードされる方は9時までにアップロードすると当日の在庫管理が可能です。<span className="text-gray-400 ml-1">※この時間が過ぎると翌日のタイミングとなります。</span></p>
-            <p><strong>11時:</strong> 在庫管理の本番稼働前の状況確認。</p>
-            <p><strong>13時:</strong> 在庫管理の本番稼働開始。9時段階でツールに存在する最新のactiveファイルを参照して在庫管理開始。</p>
+            <p className="font-medium text-gray-700 mb-2">在庫管理の実行時刻</p>
+            <p><strong>毎日9時台（JST）:</strong> 自動同期と有効な在庫管理機能を1回実行します。</p>
+            <p className="text-gray-400">Vercel Hobbyプランでは9:00〜9:59の間で開始時刻が変動する場合があります。手動でactiveファイルをアップロードする場合は、実行前に完了してください。</p>
           </div>
 
           {/* 実行履歴 */}
