@@ -132,7 +132,6 @@ async function fetchPage(
       <PageNumber>${page}</PageNumber>
     </Pagination>
   </ActiveList>
-  <DetailLevel>ReturnAll</DetailLevel>
 </GetMyeBaySellingRequest>`
 
   const controller = new AbortController()

@@ -40,6 +40,7 @@ describe('eBay inventory OAuth authentication', () => {
     expect(body).not.toContain('oauth-user-token')
     expect(body).not.toContain('RequesterCredentials')
     expect(body).not.toContain('eBayAuthToken')
+    expect(body).not.toContain('<DetailLevel>ReturnAll</DetailLevel>')
   })
 
   it('aborts an eBay page request that exceeds the timeout', async () => {
