@@ -41,6 +41,11 @@ describe('eBay inventory OAuth authentication', () => {
     expect(body).not.toContain('RequesterCredentials')
     expect(body).not.toContain('eBayAuthToken')
     expect(body).toContain('<DetailLevel>ReturnAll</DetailLevel>')
+    expect(body).toContain('<OutputSelector>PaginationResult</OutputSelector>')
+    expect(body).toContain('<OutputSelector>ItemID</OutputSelector>')
+    expect(body).toContain('<OutputSelector>CurrentPrice</OutputSelector>')
+    expect(body).toContain('<OutputSelector>QuantitySold</OutputSelector>')
+    expect(body).not.toContain('<OutputSelector>Description</OutputSelector>')
   })
 
   it('aborts an eBay page request that exceeds the timeout', async () => {

@@ -8,6 +8,21 @@ const MAX_PAGES = 25
 const DEFAULT_PAGE_TIMEOUT_MS = 10_000
 const DEFAULT_TOTAL_TIMEOUT_MS = 45_000
 const DEFAULT_CONCURRENCY = 8
+const OUTPUT_SELECTORS = [
+  'Ack',
+  'Errors',
+  'PaginationResult',
+  'ItemID',
+  'Title',
+  'SKU',
+  'CurrentPrice',
+  'BuyItNowPrice',
+  'Quantity',
+  'QuantitySold',
+  'ListingStatus',
+  'StartTime',
+  'EndTime',
+] as const
 
 export interface EbayTokenSet {
   accessToken: string
@@ -123,6 +138,9 @@ async function fetchPage(
   hasMore: boolean
   totalPages: number
 }> {
+  const outputSelectors = OUTPUT_SELECTORS
+    .map((field) => `  <OutputSelector>${field}</OutputSelector>`)
+    .join('\n')
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <ActiveList>
@@ -133,6 +151,7 @@ async function fetchPage(
     </Pagination>
   </ActiveList>
   <DetailLevel>ReturnAll</DetailLevel>
+${outputSelectors}
 </GetMyeBaySellingRequest>`
 
   const controller = new AbortController()
