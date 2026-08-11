@@ -131,9 +131,23 @@ export async function POST(request: Request) {
     clearTimeout(routeTimeout)
   }
 
-  const total = previousTotal + syncResult.total
+  const fetchedTotal = previousTotal + syncResult.total
   const matched = previousMatched + syncResult.matched
   const done = syncResult.nextPage === null
+  let total = fetchedTotal
+
+  if (done) {
+    const { count: storedTotal, error: countError } = await db
+      .from('inventory_active_listings')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+
+    // The eBay result pages can overlap while listings are changing. The
+    // stored table is unique by user and eBay item ID, so use its exact count
+    // for the completed run instead of the inflated sum of fetched pages.
+    if (!countError && storedTotal !== null) total = storedTotal
+  }
+
   const { error: updateError } = await db.from('inventory_runs').update({
     status: done ? 'completed' : 'running',
     items_total: total,

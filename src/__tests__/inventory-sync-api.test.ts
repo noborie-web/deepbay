@@ -6,6 +6,7 @@ const {
   mockRunInsert,
   mockRunSelect,
   mockRunUpdate,
+  mockListingCountSelect,
   mockSyncBatch,
 } = vi.hoisted(() => ({
   mockExpireStaleRuns: vi.fn(),
@@ -13,6 +14,7 @@ const {
   mockRunInsert: vi.fn(),
   mockRunSelect: vi.fn(),
   mockRunUpdate: vi.fn(),
+  mockListingCountSelect: vi.fn(),
   mockSyncBatch: vi.fn(),
 }))
 
@@ -54,6 +56,9 @@ vi.mock('@supabase/supabase-js', () => ({
           update: mockRunUpdate,
         }
       }
+      if (table === 'inventory_active_listings') {
+        return { select: mockListingCountSelect }
+      }
       throw new Error(`Unexpected table: ${table}`)
     }),
   })),
@@ -77,6 +82,9 @@ describe('POST /api/inventory/sync', () => {
       }),
     }))
     mockRunSelect.mockReset()
+    mockListingCountSelect.mockReset().mockImplementation(() => ({
+      eq: vi.fn(async () => ({ count: 1050, error: null })),
+    }))
   })
 
   it('starts a run and returns a signed continuation cursor', async () => {
@@ -115,7 +123,7 @@ describe('POST /api/inventory/sync', () => {
     )
   })
 
-  it('continues the same run and accumulates totals', async () => {
+  it('uses the stored unique listing count when the run completes', async () => {
     mockSyncBatch
       .mockResolvedValueOnce({
         total: 600, matched: 10, nextPage: 5, totalPages: 8, lastFetchedPage: 4,
@@ -151,7 +159,7 @@ describe('POST /api/inventory/sync', () => {
     expect(secondResponse.status).toBe(200)
     expect(secondJson).toEqual({
       ok: true,
-      total: 1150,
+      total: 1050,
       matched: 18,
       done: true,
       cursor: null,
@@ -166,6 +174,33 @@ describe('POST /api/inventory/sync', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
     expect(mockRunInsert).toHaveBeenCalledTimes(1)
+    expect(mockListingCountSelect).toHaveBeenCalledWith('id', { count: 'exact', head: true })
+    expect(mockRunUpdate).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: 'completed',
+      items_total: 1050,
+    }))
+  })
+
+  it('falls back to the fetched total if the unique count cannot be read', async () => {
+    mockSyncBatch.mockResolvedValue({
+      total: 550, matched: 8, nextPage: null, totalPages: 4, lastFetchedPage: 4,
+    })
+    mockListingCountSelect.mockImplementation(() => ({
+      eq: vi.fn(async () => ({ count: null, error: { message: 'count failed' } })),
+    }))
+
+    const { POST } = await import('@/app/api/inventory/sync/route')
+    const response = await POST(new Request('http://localhost/api/inventory/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    }))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      total: 550,
+      done: true,
+    })
   })
 
   it('rejects a modified continuation cursor', async () => {
