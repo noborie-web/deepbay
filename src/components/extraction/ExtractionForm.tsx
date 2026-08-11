@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import { Search } from 'lucide-react'
 import type { SellerAccount, ListingCategory, BulkEditSetting } from '@/types/database'
 
 interface Props {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
+import { hasInventoryAuthentication } from '@/lib/inventory-auth'
 
 function admin() {
   return createServiceClient(
@@ -14,7 +15,8 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { data, error } = await admin()
+  const db = admin()
+  const { data, error } = await db
     .from('inventory_settings')
     .select('id, sync_enabled, ebay_auto_sync, days_until_delist, daily_run_count, ebay_token_expires_at, ebay_token, auto_delist, auto_revise_price, auto_stack, schedule_time, payment_profile_name, return_profile_name, shipping_profile_name, created_at, updated_at')
     .eq('user_id', user.id)
@@ -22,10 +24,18 @@ export async function GET() {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
+  let hasToken: boolean
+  try {
+    hasToken = await hasInventoryAuthentication(db, user.id, data?.ebay_token)
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : String(caught)
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
+
   return NextResponse.json({
     settings: data ? {
       id: data.id,
-      has_token: !!data.ebay_token,
+      has_token: hasToken,
       sync_enabled: data.sync_enabled,
       ebay_auto_sync: data.ebay_auto_sync ?? false,
       days_until_delist: data.days_until_delist ?? 29,
@@ -41,7 +51,7 @@ export async function GET() {
       created_at: data.created_at,
       updated_at: data.updated_at,
     } : {
-      has_token: false,
+      has_token: hasToken,
       sync_enabled: false,
       ebay_auto_sync: false,
       days_until_delist: 29,
@@ -101,4 +111,3 @@ export async function PUT(req: NextRequest) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })
 }
-

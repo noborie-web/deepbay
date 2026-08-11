@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import type { Product, InventoryActiveListing } from '@/types/database'
 import InventoryPanel from '@/components/inventory/InventoryPanel'
+import { hasInventoryAuthentication } from '@/lib/inventory-auth'
 
 function admin() {
   return createServiceClient(
@@ -25,7 +26,7 @@ export default async function InventoryPage() {
 
   const items = (productsResult.data ?? []) as Product[]
   const activeListings = (listingsResult.data ?? []) as InventoryActiveListing[]
-  const hasToken = !!(settingsResult.data?.ebay_token)
+  const hasToken = await hasInventoryAuthentication(db, user.id, settingsResult.data?.ebay_token)
 
   const counts = {
     total: items.length,

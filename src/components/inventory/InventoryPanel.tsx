@@ -381,7 +381,10 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
       // 重複CSVをダウンロード
       const dlRes = await fetch('/api/inventory/runs/download', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_type: 'duplicate' }),
+        body: JSON.stringify({
+          file_type: 'duplicate',
+          duplicate_items: json.duplicates ?? [],
+        }),
       })
       if (dlRes.ok) { const d = await dlRes.json(); downloadCsvBlob(d.csv, d.filename) }
     } catch (e) { showMsg('error', e instanceof Error ? e.message : 'チェック失敗') }
@@ -427,10 +430,18 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
     setActionModal(prev => prev ? { ...prev, running: true } : null)
     const url = `/api/inventory/actions/${actionModal.type === 'revise_price' ? 'revise-price' : actionModal.type}`
     try {
-      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item_ids: actionModal.items.map(item => item.ebay_item_id) }),
+      })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? '実行失敗')
-      showMsg('success', `完了: ${json.succeeded}件成功 / ${json.total}件`)
+      const failedCount = Array.isArray(json.failed) ? json.failed.length : 0
+      showMsg(failedCount > 0 ? 'error' : 'success',
+        failedCount > 0
+          ? `一部失敗: ${json.succeeded}件成功 / ${json.total}件（${failedCount}件失敗）`
+          : `完了: ${json.succeeded}件成功 / ${json.total}件`)
       setActionModal(null)
       setRunsLoaded(false); loadRuns()
     } catch (e) { showMsg('error', e instanceof Error ? e.message : '実行失敗'); setActionModal(prev => prev ? { ...prev, running: false } : null) }
@@ -679,8 +690,8 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
           </div>
           <hr />
           <div>
-            <h3 className="text-sm font-semibold text-gray-800 mb-1">eBayトークン設定</h3>
-            <p className="text-xs text-gray-500 mb-2">eBay Trading API用のOAuthユーザートークンを設定してください。</p>
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">eBay接続設定</h3>
+            <p className="text-xs text-gray-500 mb-2">接続済みのeBayセラーが1件の場合は、そのOAuth認証を自動利用します。</p>
             <details className="mb-3">
               <summary className="text-xs text-blue-600 cursor-pointer hover:underline">トークンの取得方法</summary>
               <ol className="text-xs text-gray-600 mt-2 space-y-1 pl-4 list-decimal">
@@ -693,8 +704,8 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
               </ol>
             </details>
             {settings.has_token
-              ? <p className="text-xs text-green-600 mb-2">✓ トークン設定済み{settings.ebay_token_expires_at ? `（有効期限: ${new Date(settings.ebay_token_expires_at).toLocaleDateString('ja-JP')}）` : ''}</p>
-              : <p className="text-xs text-red-500 mb-2">トークン未設定</p>}
+              ? <p className="text-xs text-green-600 mb-2">✓ eBay認証設定済み{settings.ebay_token_expires_at ? `（手動トークン有効期限: ${new Date(settings.ebay_token_expires_at).toLocaleDateString('ja-JP')}）` : ''}</p>
+              : <p className="text-xs text-red-500 mb-2">eBay認証未設定</p>}
             <EbayTokenForm hasToken={settings.has_token} onSaved={() => setSettings(prev => ({ ...prev, has_token: true }))} />
           </div>
           <hr />
@@ -726,7 +737,7 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
           <hr />
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-1">N日経過取り下げ</h3>
-            <p className="text-xs text-gray-500 mb-3">出品から指定した日数が経過した商品を取り下げます。（監視モードでは実行されません）</p>
+            <p className="text-xs text-gray-500 mb-3">eBayの出品開始日時から指定した日数が経過した商品を対象にします。出品開始日時が取得できない商品は対象外です。</p>
             <div className="flex items-center gap-3">
               <span className="text-xs text-gray-500">取り下げ対象の経過日数</span>
               <input type="number" value={settings.days_until_delist} min={1} max={365}
@@ -738,19 +749,12 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
           <hr />
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-1">1日の全体在庫管理の稼働回数</h3>
-            <p className="text-xs text-gray-500 mb-3">最大3回まで設定可能。2回: 約11時間ごと、3回: 約7時間ごとに実行。</p>
-            <div className="flex items-center gap-2">
-              <input type="number" value={settings.daily_run_count} min={1} max={3}
-                onChange={e => setSettings(prev => ({ ...prev, daily_run_count: Number(e.target.value) }))}
-                onBlur={() => saveSetting({ daily_run_count: settings.daily_run_count })}
-                className="w-20 border rounded px-2 py-1 text-sm text-center" />
-              <span className="text-xs text-gray-500">回（最大3回）</span>
-            </div>
+            <p className="text-xs text-gray-500">毎日1回、9時台（JST）に実行します。Vercel Hobbyプランでは実行時刻が9:00〜9:59の間で変動する場合があります。</p>
           </div>
           <hr />
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-3">自動実行設定</h3>
-            <p className="text-xs text-gray-500 mb-3">ONにした機能は毎日指定時刻に自動で実行されます。実行前に対象件数を手動確認することを推奨します。</p>
+            <p className="text-xs text-gray-500 mb-3">ONにした機能は毎日9時台（JST）に自動で実行されます。実行前に対象件数を手動確認することを推奨します。</p>
             <div className="space-y-3">
               <div className="flex items-center gap-3 flex-wrap">
                 <Toggle checked={settings.auto_delist} onChange={v => saveSetting({ auto_delist: v })} disabled={savingSettings || !settings.has_token} />
@@ -776,13 +780,6 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
                   今すぐ実行
                 </button>
               </div>
-            </div>
-            <div className="flex items-center gap-3 mt-4">
-              <span className="text-xs text-gray-600">自動実行時刻（JST）</span>
-              <input type="time" value={settings.schedule_time}
-                onChange={e => setSettings(prev => ({ ...prev, schedule_time: e.target.value }))}
-                onBlur={() => saveSetting({ schedule_time: settings.schedule_time })}
-                className="border rounded px-2 py-1 text-sm" />
             </div>
             {!settings.has_token && <p className="text-xs text-red-500 mt-2">eBayトークンが設定されていないため自動実行は無効です。</p>}
           </div>
@@ -848,7 +845,10 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
                   <tr key={item.ebay_item_id} className="border-b hover:bg-gray-50">
                     <td className="px-3 py-2">
                       <div className="w-12 h-12 bg-gray-100 rounded overflow-hidden">
-                        {item.image_url && <img src={item.image_url} alt="" className="w-full h-full object-cover" />}
+                        {item.image_url && (
+                          // eslint-disable-next-line @next/next/no-img-element -- Marketplace image hosts are dynamic and cannot be safely allowlisted for next/image.
+                          <img src={item.image_url} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover" />
+                        )}
                       </div>
                     </td>
                     <td className="px-3 py-2">

@@ -25,7 +25,6 @@ export async function refreshEbayToken(refreshToken: string): Promise<{
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
-    scope: 'https://api.ebay.com/oauth/api_scope/sell.inventory',
   })
 
   const res = await fetch('https://api.ebay.com/identity/v1/oauth2/token', {
@@ -107,15 +106,8 @@ async function fetchPage(accessToken: string, page: number): Promise<{
   items: InventoryListingInput[]
   hasMore: boolean
 }> {
-  const devId = process.env.EBAY_DEV_ID ?? ''
-  const appId = process.env.EBAY_APP_ID ?? ''
-  const certId = process.env.EBAY_CERT_ID ?? ''
-
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
-  <RequesterCredentials>
-    <eBayAuthToken>${accessToken}</eBayAuthToken>
-  </RequesterCredentials>
   <ActiveList>
     <Include>true</Include>
     <Pagination>
@@ -131,10 +123,8 @@ async function fetchPage(accessToken: string, page: number): Promise<{
     headers: {
       'Content-Type': 'text/xml',
       'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
-      'X-EBAY-API-DEV-NAME': devId,
-      'X-EBAY-API-APP-NAME': appId,
-      'X-EBAY-API-CERT-NAME': certId,
       'X-EBAY-API-CALL-NAME': 'GetMyeBaySelling',
+      'X-EBAY-API-IAF-TOKEN': accessToken,
       'X-EBAY-API-SITEID': '0',
     },
     body: xml,

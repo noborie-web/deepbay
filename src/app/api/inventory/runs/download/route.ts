@@ -14,6 +14,24 @@ function buildCsv(rows: string[][]): string {
   return rows.map(row => row.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')
 }
 
+function normalizeDuplicateItems(value: unknown): Array<{ ebay_item_id: string; reason: string }> {
+  if (!Array.isArray(value)) return []
+
+  const seenIds = new Set<string>()
+  const items: Array<{ ebay_item_id: string; reason: string }> = []
+  for (const valueItem of value) {
+    if (!valueItem || typeof valueItem !== 'object') continue
+    const item = valueItem as Record<string, unknown>
+    const ebayItemId = typeof item.ebay_item_id === 'string' ? item.ebay_item_id.trim() : ''
+    if (!ebayItemId || seenIds.has(ebayItemId)) continue
+
+    const reason = item.reason === 'duplicate_title' ? 'duplicate_title' : 'duplicate_url'
+    seenIds.add(ebayItemId)
+    items.push({ ebay_item_id: ebayItemId, reason })
+  }
+  return items
+}
+
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -22,6 +40,21 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
   const fileType: string = body.file_type ?? 'end_items' // end_items | diff | revise | duplicate
   const diffColumns: string[] = body.diff_columns ?? ['title', 'price']
+
+  const seller = user.email?.split('@')[0] ?? 'user'
+  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+
+  if (fileType === 'duplicate') {
+    const rows: string[][] = [['#INFO', 'col1', 'col2', 'col3', 'col4', 'col5']]
+    rows.push(['Action', 'Item number', 'EndCode', 'Available quantity', 'master_seller_id', 'reason'])
+    for (const item of normalizeDuplicateItems(body.duplicate_items)) {
+      rows.push(['End', item.ebay_item_id, 'NotAvailable', '', seller, item.reason])
+    }
+    return NextResponse.json({
+      csv: '\uFEFF' + buildCsv(rows),
+      filename: `${seller}_duplicate_${dateStr}.csv`,
+    })
+  }
 
   const db = admin()
 
@@ -45,8 +78,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const seller = user.email?.split('@')[0] ?? 'user'
-  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '')
   let csv = ''
   let filename = ''
 
@@ -121,34 +152,6 @@ export async function POST(req: NextRequest) {
     csv = buildCsv(rows)
     filename = `${seller}_revise_${dateStr}.csv`
 
-  } else if (fileType === 'duplicate') {
-    // 重複チェックファイル（重複なしの場合はヘッダーのみ）
-    const rows: string[][] = [['#INFO', 'col1', 'col2', 'col3', 'col4', 'col5']]
-    rows.push(['Action', 'Item number', 'EndCode', 'Available quantity', 'master_seller_id', 'reason'])
-    // 重複検知: same source_url or same title
-    const urlToItems = new Map<string, string[]>()
-    for (const l of listings ?? []) {
-      if (!l.product_id) continue
-      const product = productMap.get(l.product_id)
-      const url = product?.source_url
-      if (!url) continue
-      const existing = urlToItems.get(url) ?? []
-      existing.push(l.ebay_item_id)
-      urlToItems.set(url, existing)
-    }
-    const seenIds = new Set<string>()
-    for (const [, ids] of urlToItems) {
-      if (ids.length > 1) {
-        for (const itemId of ids.slice(1)) {
-          if (!seenIds.has(itemId)) {
-            rows.push(['End', itemId, 'NotAvailable', '', seller, 'duplicate'])
-            seenIds.add(itemId)
-          }
-        }
-      }
-    }
-    csv = buildCsv(rows)
-    filename = `${seller}_duplicate_${dateStr}.csv`
   }
 
   return NextResponse.json({ csv: '﻿' + csv, filename })

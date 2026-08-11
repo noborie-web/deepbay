@@ -8,16 +8,6 @@ const BASE_HEADERS = {
   'Origin': 'https://snkrdunk.com',
 }
 
-// Various endpoint patterns to try for snkrdunk search API
-const ENDPOINTS = [
-  (params: URLSearchParams) => `https://snkrdunk.com/v3/search?${params}`,
-  (params: URLSearchParams) => `https://snkrdunk.com/v1/search?${params}`,
-  (params: URLSearchParams) => `https://snkrdunk.com/v1/apparel/used/listings?${params}`,
-  (params: URLSearchParams) => `https://snkrdunk.com/v3/apparel/used/listings?${params}`,
-  (params: URLSearchParams) => `https://snkrdunk.com/v3/apparel/used/search?${params}`,
-  (params: URLSearchParams) => `https://snkrdunk.com/v1/apparel/used/search?${params}`,
-]
-
 export async function POST(req: NextRequest) {
   const body = await req.json()
   const { token, cookie, keyword, categoryIds, minPrice, maxPrice, page = 1 } = body

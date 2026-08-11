@@ -1207,9 +1207,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                       {/* メイン画像 */}
                       <div className={`shrink-0 ${IMAGE_SIZE_MAP[imageSize]}`}>
                         {getImages(product)[0] ? (
+                          // eslint-disable-next-line @next/next/no-img-element -- Marketplace image hosts are dynamic and cannot be safely allowlisted for next/image.
                           <img
                             src={getImages(product)[0]}
                             alt=""
+                            loading="lazy"
+                            decoding="async"
                             className="w-full h-full object-cover rounded border"
                           />
                         ) : (
@@ -1351,10 +1354,13 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     {getImages(product).length > 1 && (
                       <div className="flex gap-2 mt-3 ml-[5.5rem] overflow-x-auto pb-1">
                         {getImages(product).slice(0, 12).map((img, i) => (
+                          // eslint-disable-next-line @next/next/no-img-element -- Marketplace image hosts are dynamic and cannot be safely allowlisted for next/image.
                           <img
                             key={i}
                             src={img}
                             alt=""
+                            loading="lazy"
+                            decoding="async"
                             className="w-14 h-14 object-cover rounded border shrink-0"
                           />
                         ))}

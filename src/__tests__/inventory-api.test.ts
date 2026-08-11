@@ -8,6 +8,11 @@ let mockUser: { id: string } | null = { id: 'user-1' }
 let mockSettingsData: Record<string, unknown> | null = null
 let mockSettingsError: { message: string } | null = null
 let mockUpsertError: { message: string } | null = null
+const mockHasInventoryAuthentication = vi.fn()
+
+vi.mock('@/lib/inventory-auth', () => ({
+  hasInventoryAuthentication: mockHasInventoryAuthentication,
+}))
 
 vi.mock('@/lib/supabase/server', () => ({
   createClient: vi.fn(async () => ({
@@ -45,6 +50,9 @@ describe('GET /api/inventory/settings', () => {
     mockUser = { id: 'user-1' }
     mockSettingsData = null
     mockSettingsError = null
+    mockHasInventoryAuthentication.mockReset().mockImplementation(
+      async (_db: unknown, _userId: string, token?: string | null) => !!token,
+    )
   })
 
   it('returns 401 when not authenticated', async () => {
@@ -68,6 +76,16 @@ describe('GET /api/inventory/settings', () => {
     const res = await GET()
     const json = await res.json()
     expect(json.settings.has_token).toBe(true)
+  })
+
+  it('returns has_token=true when one connected seller can authenticate inventory', async () => {
+    mockHasInventoryAuthentication.mockResolvedValue(true)
+    const { GET } = await import('@/app/api/inventory/settings/route')
+    const res = await GET()
+    const json = await res.json()
+
+    expect(json.settings.has_token).toBe(true)
+    expect(mockHasInventoryAuthentication).toHaveBeenCalledWith(expect.anything(), 'user-1', undefined)
   })
 })
 

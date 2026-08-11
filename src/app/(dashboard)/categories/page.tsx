@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { EBAY_CATEGORIES } from '@/data/ebay-categories'
@@ -20,20 +20,28 @@ export default function CategoriesPage() {
   const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
 
-  const supabase = createClient()
+  const [supabase] = useState(createClient)
 
-  useEffect(() => {
-    fetchCategories()
-  }, [])
-
-  async function fetchCategories() {
+  const loadCategories = useCallback(async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data } = await (supabase as any)
       .from('listing_categories')
       .select('*')
       .order('sort_order', { ascending: true })
-    setCategories(data ?? [])
-  }
+    return (data ?? []) as ListingCategory[]
+  }, [supabase])
+
+  const fetchCategories = useCallback(async () => {
+    setCategories(await loadCategories())
+  }, [loadCategories])
+
+  useEffect(() => {
+    let active = true
+    void loadCategories().then((data) => {
+      if (active) setCategories(data)
+    })
+    return () => { active = false }
+  }, [loadCategories])
 
   async function handleSearch() {
     const q = searchTitle.trim()
