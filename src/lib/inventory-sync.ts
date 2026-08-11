@@ -18,6 +18,8 @@ export interface InventorySyncBatchResult extends InventorySyncResult {
   lastFetchedPage: number
 }
 
+const DB_CHUNK_SIZE = 100
+
 async function storeInventoryListings(
   db: SupabaseClient,
   userId: string,
@@ -34,19 +36,25 @@ async function storeInventoryListings(
   ).values())
   const now = new Date().toISOString()
 
-  const managementCodes = uniqueListings
-    .map(listing => extractSourceLookupCode(listing.customLabel))
-    .filter((code): code is string => code !== null)
+  const managementCodes = Array.from(new Set(
+    uniqueListings
+      .map(listing => extractSourceLookupCode(listing.customLabel))
+      .filter((code): code is string => code !== null),
+  ))
 
   const productLookup = new Map<string, string>()
-  if (managementCodes.length > 0) {
+  const managementCodeChunks = Array.from(
+    { length: Math.ceil(managementCodes.length / DB_CHUNK_SIZE) },
+    (_, index) => managementCodes.slice(index * DB_CHUNK_SIZE, (index + 1) * DB_CHUNK_SIZE),
+  )
+  for (const managementCodeChunk of managementCodeChunks) {
     const { data: matchedProducts, error: productError } = await db
       .from('products')
       .select('id, source_item_id')
       .eq('user_id', userId)
-      .in('source_item_id', managementCodes)
+      .in('source_item_id', managementCodeChunk)
 
-    if (productError) throw new Error(productError.message)
+    if (productError) throw new Error(`Product lookup failed: ${productError.message}`)
     for (const product of matchedProducts ?? []) {
       if (product.source_item_id) productLookup.set(product.source_item_id, product.id)
     }
@@ -75,10 +83,9 @@ async function storeInventoryListings(
     }
   })
 
-  const chunkSize = 100
   const chunks = Array.from(
-    { length: Math.ceil(rows.length / chunkSize) },
-    (_, index) => rows.slice(index * chunkSize, (index + 1) * chunkSize),
+    { length: Math.ceil(rows.length / DB_CHUNK_SIZE) },
+    (_, index) => rows.slice(index * DB_CHUNK_SIZE, (index + 1) * DB_CHUNK_SIZE),
   )
   let nextChunk = 0
   const workerCount = Math.min(
@@ -97,7 +104,7 @@ async function storeInventoryListings(
       const { error } = await db
         .from('inventory_active_listings')
         .upsert(chunk, { onConflict: 'user_id,ebay_item_id' })
-      if (error) throw new Error(error.message)
+      if (error) throw new Error(`Inventory listing upsert failed: ${error.message}`)
     }
   }))
 

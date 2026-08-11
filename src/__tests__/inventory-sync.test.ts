@@ -107,6 +107,48 @@ describe('syncInventoryListings', () => {
     expect(maxActiveWrites).toBe(4)
   })
 
+  it('chunks large product lookups to keep Supabase filter requests bounded', async () => {
+    const listings = Array.from({ length: 205 }, (_, index) => {
+      const hex = index.toString(16).padStart(8, '0')
+      return {
+        ebayItemId: `item-${index}`,
+        customLabel: `ele_20260802_${hex}_f456_7890_abcd_ef1234567890`,
+        title: `Item ${index}`,
+        currentPrice: 10,
+        quantity: 1,
+        quantitySold: 0,
+        listingStatus: 'Active',
+        startTime: null,
+        endTime: null,
+      }
+    })
+    mockFetchAllActiveListings.mockResolvedValue(listings)
+
+    const productLookupCalls: string[][] = []
+    const db = {
+      from: vi.fn((table: string) => {
+        if (table === 'products') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            in: vi.fn(async (_column: string, values: string[]) => {
+              productLookupCalls.push(values)
+              return { data: [], error: null }
+            }),
+          }
+        }
+        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        throw new Error(`Unexpected table: ${table}`)
+      }),
+    } as unknown as SupabaseClient
+
+    const result = await syncInventoryListings(db, 'user-1', 'access-token')
+
+    expect(result).toEqual({ total: 205, matched: 0 })
+    expect(productLookupCalls.map(values => values.length)).toEqual([100, 100, 5])
+    expect(mockUpsert).toHaveBeenCalledTimes(3)
+  })
+
   it('deduplicates overlapping eBay item ids before one upsert', async () => {
     mockFetchAllActiveListings.mockResolvedValue([
       {
