@@ -209,15 +209,28 @@ export async function fetchAllActiveListings(
     return remainingMs
   }
 
+  const fetchPageWithRetry = async (page: number) => {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await fetchPage(
+          tokens.accessToken,
+          page,
+          Math.min(pageTimeoutMs, getRemainingMs()),
+          totalController.signal,
+        )
+      } catch (error) {
+        const isPageTimeout = error instanceof Error
+          && error.message.startsWith(`eBay API timeout: page ${page} `)
+        if (!isPageTimeout || attempt === 2 || totalController.signal.aborted) throw error
+      }
+    }
+    throw new Error(`eBay API timeout: page ${page}`)
+  }
+
   try {
     if (options.signal?.aborted) abortForCaller()
 
-    const firstPage = await fetchPage(
-      tokens.accessToken,
-      1,
-      Math.min(pageTimeoutMs, getRemainingMs()),
-      totalController.signal,
-    )
+    const firstPage = await fetchPageWithRetry(1)
     all.push(...firstPage.items)
 
     const lastPage = Math.min(firstPage.totalPages, MAX_PAGES)
@@ -232,12 +245,7 @@ export async function fetchAllActiveListings(
     await Promise.all(Array.from({ length: workerCount }, async () => {
       while (nextPage <= lastPage) {
         const page = nextPage++
-        const result = await fetchPage(
-          tokens.accessToken,
-          page,
-          Math.min(pageTimeoutMs, getRemainingMs()),
-          totalController.signal,
-        )
+        const result = await fetchPageWithRetry(page)
         pageItems[page] = result.items
       }
     }))
@@ -247,6 +255,9 @@ export async function fetchAllActiveListings(
     }
 
     return all
+  } catch (error) {
+    if (!totalController.signal.aborted) totalController.abort(error)
+    throw error
   } finally {
     clearTimeout(totalTimeout)
     options.signal?.removeEventListener('abort', abortForCaller)

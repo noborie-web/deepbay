@@ -88,6 +88,48 @@ describe('eBay inventory OAuth authentication', () => {
     )).rejects.toThrow('eBay inventory sync timeout: exceeded 5ms')
   })
 
+  it('retries one timed-out page once and then continues', async () => {
+    const attempts = new Map<number, number>()
+
+    fetchMock.mockImplementation(async (_url: string, request: RequestInit) => {
+      const page = Number(String(request.body).match(/<PageNumber>(\d+)<\/PageNumber>/)?.[1])
+      const attempt = (attempts.get(page) ?? 0) + 1
+      attempts.set(page, attempt)
+
+      if (page === 2 && attempt === 1) {
+        return await new Promise((_resolve, reject) => {
+          request.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'))
+          })
+        })
+      }
+
+      return new Response(`
+        <GetMyeBaySellingResponse>
+          <Ack>Success</Ack>
+          <ActiveList>
+            <ItemArray>
+              <Item><ItemID>${page}</ItemID><Title>Page ${page}</Title></Item>
+            </ItemArray>
+            <PaginationResult>
+              <TotalNumberOfPages>2</TotalNumberOfPages>
+              <PageNumber>${page}</PageNumber>
+            </PaginationResult>
+          </ActiveList>
+        </GetMyeBaySellingResponse>
+      `, { status: 200 })
+    })
+
+    const listings = await fetchAllActiveListings(
+      { accessToken: 'oauth-user-token' },
+      { pageTimeoutMs: 5, totalTimeoutMs: 50 },
+    )
+
+    expect(attempts.get(1)).toBe(1)
+    expect(attempts.get(2)).toBe(2)
+    expect(listings.map(listing => listing.ebayItemId)).toEqual(['1', '2'])
+  })
+
   it('fetches remaining pages concurrently and preserves page order', async () => {
     let activeRequests = 0
     let maxActiveRequests = 0
