@@ -1,18 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { syncInventoryListings } from '@/lib/inventory-sync'
+import { syncInventoryListingBatch, syncInventoryListings } from '@/lib/inventory-sync'
 
-const { mockFetchAllActiveListings, mockUpsert } = vi.hoisted(() => ({
+const { mockFetchActiveListingsBatch, mockFetchAllActiveListings, mockUpsert } = vi.hoisted(() => ({
+  mockFetchActiveListingsBatch: vi.fn(),
   mockFetchAllActiveListings: vi.fn(),
   mockUpsert: vi.fn(),
 }))
 
 vi.mock('@/lib/ebay-inventory', () => ({
+  fetchActiveListingsBatch: mockFetchActiveListingsBatch,
   fetchAllActiveListings: mockFetchAllActiveListings,
 }))
 
 describe('syncInventoryListings', () => {
   beforeEach(() => {
+    mockFetchActiveListingsBatch.mockReset()
     mockFetchAllActiveListings.mockReset()
     mockUpsert.mockReset().mockResolvedValue({ error: null })
   })
@@ -102,5 +105,47 @@ describe('syncInventoryListings', () => {
     expect(result).toEqual({ total: 450, matched: 0 })
     expect(mockUpsert).toHaveBeenCalledTimes(5)
     expect(maxActiveWrites).toBe(4)
+  })
+
+  it('stores one resumable eBay page batch and returns its progress', async () => {
+    mockFetchActiveListingsBatch.mockResolvedValue({
+      items: [{
+        ebayItemId: 'item-5', customLabel: null, title: 'Page 5 item',
+        currentPrice: 10, quantity: 1, quantitySold: 0, listingStatus: 'Active',
+        startTime: null, endTime: null,
+      }],
+      nextPage: 9,
+      totalPages: 12,
+      lastFetchedPage: 8,
+    })
+
+    const db = {
+      from: vi.fn((table: string) => {
+        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        throw new Error(`Unexpected table: ${table}`)
+      }),
+    } as unknown as SupabaseClient
+
+    const result = await syncInventoryListingBatch(
+      db,
+      'user-1',
+      'access-token',
+      5,
+      4,
+    )
+
+    expect(mockFetchActiveListingsBatch).toHaveBeenCalledWith(
+      { accessToken: 'access-token' },
+      5,
+      4,
+      { signal: undefined },
+    )
+    expect(result).toEqual({
+      total: 1,
+      matched: 0,
+      nextPage: 9,
+      totalPages: 12,
+      lastFetchedPage: 8,
+    })
   })
 })

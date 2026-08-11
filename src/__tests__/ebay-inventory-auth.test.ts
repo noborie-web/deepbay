@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fetchAllActiveListings } from '@/lib/ebay-inventory'
+import { fetchActiveListingsBatch, fetchAllActiveListings } from '@/lib/ebay-inventory'
 
 const fetchMock = vi.fn()
 
@@ -172,5 +172,32 @@ describe('eBay inventory OAuth authentication', () => {
     expect(listings.map((listing) => listing.ebayItemId)).toEqual([
       '1', '2', '3', '4', '5', '6', '7', '8', '9',
     ])
+  })
+
+  it('fetches a bounded resumable page range', async () => {
+    fetchMock.mockImplementation(async (_url: string, request: RequestInit) => {
+      const page = Number(String(request.body).match(/<PageNumber>(\d+)<\/PageNumber>/)?.[1])
+      return new Response(`
+        <GetMyeBaySellingResponse>
+          <Ack>Success</Ack>
+          <ActiveList>
+            <ItemArray><Item><ItemID>${page}</ItemID><Title>Page ${page}</Title></Item></ItemArray>
+            <PaginationResult>
+              <TotalNumberOfPages>9</TotalNumberOfPages>
+              <PageNumber>${page}</PageNumber>
+            </PaginationResult>
+          </ActiveList>
+        </GetMyeBaySellingResponse>
+      `, { status: 200 })
+    })
+
+    const result = await fetchActiveListingsBatch(
+      { accessToken: 'oauth-user-token' },
+      5,
+      3,
+    )
+
+    expect(result.items.map(item => item.ebayItemId)).toEqual(['5', '6', '7'])
+    expect(result).toMatchObject({ nextPage: 8, totalPages: 9, lastFetchedPage: 7 })
   })
 })

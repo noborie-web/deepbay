@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { fetchAllActiveListings } from './ebay-inventory'
-import { extractSourceLookupCode } from './inventory'
+import { fetchActiveListingsBatch, fetchAllActiveListings } from './ebay-inventory'
+import { extractSourceLookupCode, type InventoryListingInput } from './inventory'
 
 export interface InventorySyncResult {
   total: number
@@ -12,16 +12,18 @@ export interface InventorySyncOptions {
   writeConcurrency?: number
 }
 
-export async function syncInventoryListings(
+export interface InventorySyncBatchResult extends InventorySyncResult {
+  nextPage: number | null
+  totalPages: number
+  lastFetchedPage: number
+}
+
+async function storeInventoryListings(
   db: SupabaseClient,
   userId: string,
-  accessToken: string,
+  listings: InventoryListingInput[],
   options: InventorySyncOptions = {},
 ): Promise<InventorySyncResult> {
-  const listings = await fetchAllActiveListings(
-    { accessToken },
-    { signal: options.signal },
-  )
   const now = new Date().toISOString()
 
   const managementCodes = listings
@@ -92,4 +94,41 @@ export async function syncInventoryListings(
   }))
 
   return { total: listings.length, matched }
+}
+
+export async function syncInventoryListingBatch(
+  db: SupabaseClient,
+  userId: string,
+  accessToken: string,
+  startPage: number,
+  pageCount: number,
+  options: InventorySyncOptions = {},
+): Promise<InventorySyncBatchResult> {
+  const batch = await fetchActiveListingsBatch(
+    { accessToken },
+    startPage,
+    pageCount,
+    { signal: options.signal },
+  )
+  const stored = await storeInventoryListings(db, userId, batch.items, options)
+
+  return {
+    ...stored,
+    nextPage: batch.nextPage,
+    totalPages: batch.totalPages,
+    lastFetchedPage: batch.lastFetchedPage,
+  }
+}
+
+export async function syncInventoryListings(
+  db: SupabaseClient,
+  userId: string,
+  accessToken: string,
+  options: InventorySyncOptions = {},
+): Promise<InventorySyncResult> {
+  const listings = await fetchAllActiveListings(
+    { accessToken },
+    { signal: options.signal },
+  )
+  return storeInventoryListings(db, userId, listings, options)
 }

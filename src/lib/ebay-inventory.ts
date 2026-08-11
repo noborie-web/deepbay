@@ -33,6 +33,13 @@ export interface EbayInventoryFetchOptions {
   signal?: AbortSignal
 }
 
+export interface EbayInventoryBatchResult {
+  items: InventoryListingInput[]
+  nextPage: number | null
+  totalPages: number
+  lastFetchedPage: number
+}
+
 /**
  * Refresh an eBay OAuth token using the refresh token.
  */
@@ -199,13 +206,19 @@ ${outputSelectors}
   }
 }
 
-/**
- * Fetch all active eBay listings (read-only, up to MAX_PAGES pages).
- */
-export async function fetchAllActiveListings(
+async function fetchActiveListingRange(
   tokens: EbayTokenSet,
+  startPage: number,
+  pageCount: number,
   options: EbayInventoryFetchOptions = {},
-): Promise<InventoryListingInput[]> {
+): Promise<EbayInventoryBatchResult> {
+  if (!Number.isInteger(startPage) || startPage < 1 || startPage > MAX_PAGES) {
+    throw new Error(`Invalid eBay inventory start page: ${startPage}`)
+  }
+  if (!Number.isInteger(pageCount) || pageCount < 1) {
+    throw new Error(`Invalid eBay inventory page count: ${pageCount}`)
+  }
+
   const all: InventoryListingInput[] = []
   const pageTimeoutMs = options.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS
   const totalTimeoutMs = options.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS
@@ -247,17 +260,25 @@ export async function fetchAllActiveListings(
   try {
     if (options.signal?.aborted) abortForCaller()
 
-    const firstPage = await fetchPageWithRetry(1)
+    const firstPage = await fetchPageWithRetry(startPage)
     all.push(...firstPage.items)
 
-    const lastPage = Math.min(firstPage.totalPages, MAX_PAGES)
-    if (lastPage <= 1) return all
+    const totalPages = Math.min(firstPage.totalPages, MAX_PAGES)
+    const lastPage = Math.min(totalPages, startPage + pageCount - 1)
+    if (lastPage <= startPage) {
+      return {
+        items: all,
+        nextPage: null,
+        totalPages,
+        lastFetchedPage: startPage,
+      }
+    }
 
-    // The first response tells us the remaining page numbers. Fetch a small,
-    // bounded number concurrently, then restore page order before returning.
+    // The first response confirms the actual total. Fetch the rest of this
+    // bounded range concurrently, then restore page order before returning.
     const pageItems: InventoryListingInput[][] = []
-    let nextPage = 2
-    const workerCount = Math.min(concurrency, lastPage - 1)
+    let nextPage = startPage + 1
+    const workerCount = Math.min(concurrency, lastPage - startPage)
 
     await Promise.all(Array.from({ length: workerCount }, async () => {
       while (nextPage <= lastPage) {
@@ -267,11 +288,16 @@ export async function fetchAllActiveListings(
       }
     }))
 
-    for (let page = 2; page <= lastPage; page++) {
+    for (let page = startPage + 1; page <= lastPage; page++) {
       all.push(...(pageItems[page] ?? []))
     }
 
-    return all
+    return {
+      items: all,
+      nextPage: lastPage < totalPages ? lastPage + 1 : null,
+      totalPages,
+      lastFetchedPage: lastPage,
+    }
   } catch (error) {
     if (!totalController.signal.aborted) totalController.abort(error)
     throw error
@@ -279,4 +305,27 @@ export async function fetchAllActiveListings(
     clearTimeout(totalTimeout)
     options.signal?.removeEventListener('abort', abortForCaller)
   }
+}
+
+/**
+ * Fetch one bounded batch of active listings for resumable manual sync.
+ */
+export async function fetchActiveListingsBatch(
+  tokens: EbayTokenSet,
+  startPage: number,
+  pageCount: number,
+  options: EbayInventoryFetchOptions = {},
+): Promise<EbayInventoryBatchResult> {
+  return fetchActiveListingRange(tokens, startPage, pageCount, options)
+}
+
+/**
+ * Fetch all active eBay listings (read-only, up to MAX_PAGES pages).
+ */
+export async function fetchAllActiveListings(
+  tokens: EbayTokenSet,
+  options: EbayInventoryFetchOptions = {},
+): Promise<InventoryListingInput[]> {
+  const result = await fetchActiveListingRange(tokens, 1, MAX_PAGES, options)
+  return result.items
 }
