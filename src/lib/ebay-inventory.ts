@@ -7,6 +7,7 @@ const PAGE_SIZE = 200
 const MAX_PAGES = 25
 const DEFAULT_PAGE_TIMEOUT_MS = 10_000
 const DEFAULT_TOTAL_TIMEOUT_MS = 45_000
+const DEFAULT_CONCURRENCY = 4
 
 export interface EbayTokenSet {
   accessToken: string
@@ -15,6 +16,7 @@ export interface EbayTokenSet {
 export interface EbayInventoryFetchOptions {
   pageTimeoutMs?: number
   totalTimeoutMs?: number
+  concurrency?: number
 }
 
 /**
@@ -60,6 +62,7 @@ export async function refreshEbayToken(refreshToken: string): Promise<{
 export function parseGetMyeBaySellingResponse(xml: string): {
   items: InventoryListingInput[]
   hasMore: boolean
+  totalPages: number
 } {
   const getTag = (src: string, tag: string): string => {
     const m = src.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'))
@@ -106,12 +109,13 @@ export function parseGetMyeBaySellingResponse(xml: string): {
   const currentPage = parseInt(getTag(xml, 'PageNumber') || '1', 10)
   const hasMore = currentPage < totalPages
 
-  return { items, hasMore }
+  return { items, hasMore, totalPages }
 }
 
 async function fetchPage(accessToken: string, page: number, timeoutMs: number): Promise<{
   items: InventoryListingInput[]
   hasMore: boolean
+  totalPages: number
 }> {
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
@@ -169,21 +173,47 @@ export async function fetchAllActiveListings(
   const all: InventoryListingInput[] = []
   const pageTimeoutMs = options.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS
   const totalTimeoutMs = options.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS
+  const concurrency = Math.max(1, Math.floor(options.concurrency ?? DEFAULT_CONCURRENCY))
   const startedAt = Date.now()
 
-  for (let page = 1; page <= MAX_PAGES; page++) {
+  const getRemainingMs = (): number => {
     const remainingMs = totalTimeoutMs - (Date.now() - startedAt)
     if (remainingMs <= 0) {
       throw new Error(`eBay inventory sync timeout: exceeded ${totalTimeoutMs}ms`)
     }
+    return remainingMs
+  }
 
-    const { items, hasMore } = await fetchPage(
-      tokens.accessToken,
-      page,
-      Math.min(pageTimeoutMs, remainingMs),
-    )
-    all.push(...items)
-    if (!hasMore) break
+  const firstPage = await fetchPage(
+    tokens.accessToken,
+    1,
+    Math.min(pageTimeoutMs, getRemainingMs()),
+  )
+  all.push(...firstPage.items)
+
+  const lastPage = Math.min(firstPage.totalPages, MAX_PAGES)
+  if (lastPage <= 1) return all
+
+  // The first response tells us the remaining page numbers. Fetch a small,
+  // bounded number concurrently, then restore page order before returning.
+  const pageItems: InventoryListingInput[][] = []
+  let nextPage = 2
+  const workerCount = Math.min(concurrency, lastPage - 1)
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextPage <= lastPage) {
+      const page = nextPage++
+      const result = await fetchPage(
+        tokens.accessToken,
+        page,
+        Math.min(pageTimeoutMs, getRemainingMs()),
+      )
+      pageItems[page] = result.items
+    }
+  }))
+
+  for (let page = 2; page <= lastPage; page++) {
+    all.push(...(pageItems[page] ?? []))
   }
 
   return all

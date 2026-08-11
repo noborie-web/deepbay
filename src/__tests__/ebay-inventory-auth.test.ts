@@ -57,4 +57,41 @@ describe('eBay inventory OAuth authentication', () => {
     const [, request] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(request.signal?.aborted).toBe(true)
   })
+
+  it('fetches remaining pages concurrently and preserves page order', async () => {
+    let activeRequests = 0
+    let maxActiveRequests = 0
+
+    fetchMock.mockImplementation(async (_url: string, request: RequestInit) => {
+      const page = Number(String(request.body).match(/<PageNumber>(\d+)<\/PageNumber>/)?.[1])
+      activeRequests += 1
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      activeRequests -= 1
+
+      return new Response(`
+        <GetMyeBaySellingResponse>
+          <Ack>Success</Ack>
+          <ActiveList>
+            <ItemArray>
+              <Item><ItemID>${page}</ItemID><Title>Page ${page}</Title></Item>
+            </ItemArray>
+            <PaginationResult>
+              <TotalNumberOfPages>4</TotalNumberOfPages>
+              <PageNumber>${page}</PageNumber>
+            </PaginationResult>
+          </ActiveList>
+        </GetMyeBaySellingResponse>
+      `, { status: 200 })
+    })
+
+    const listings = await fetchAllActiveListings(
+      { accessToken: 'oauth-user-token' },
+      { concurrency: 3 },
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(maxActiveRequests).toBe(3)
+    expect(listings.map((listing) => listing.ebayItemId)).toEqual(['1', '2', '3', '4'])
+  })
 })
