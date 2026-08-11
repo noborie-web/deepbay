@@ -1,7 +1,11 @@
-// Vercel Cron Job — 自動実行エンドポイント（毎時0分に起動、schedule_timeと照合）
+// Vercel Cron Job — Hobbyプラン向けに毎日0時UTC（9時台JST）に1回起動
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { endItem, reviseQuantityToZero, revisePrice, addFixedPriceItem, resolveAccessToken } from '@/lib/ebay-actions'
+import { endItem, reviseQuantityToZero, revisePrice, addFixedPriceItem } from '@/lib/ebay-actions'
+import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { getDelistCutoffIso } from '@/lib/inventory-delist'
+import { summarizeInventoryActionRun } from '@/lib/inventory-run'
+import { syncInventoryListings } from '@/lib/inventory-sync'
 
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
@@ -15,30 +19,70 @@ export async function GET(req: NextRequest) {
   }
 
   const db = admin()
-  const nowJST = new Date(Date.now() + 9 * 60 * 60 * 1000)
-  const currentHour = nowJST.getUTCHours().toString().padStart(2, '0')
-  const currentMin = nowJST.getUTCMinutes().toString().padStart(2, '0')
-  const currentTime = `${currentHour}:${currentMin}`
 
-  // schedule_timeが現在時刻に一致するユーザーのみ実行（±1分の許容）
+  // Vercel側で日次スケジュールを制御するため、ユーザー別の時刻照合は行わない
   const { data: allSettings } = await db
     .from('inventory_settings')
-    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, auto_delist, auto_revise_price, auto_stack, schedule_time, payment_profile_name, return_profile_name, shipping_profile_name')
+    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, payment_profile_name, return_profile_name, shipping_profile_name')
     .eq('sync_enabled', true)
 
   const results: Record<string, unknown>[] = []
 
   for (const settings of allSettings ?? []) {
-    if (!settings.schedule_time || !settings.ebay_token) continue
-
-    // 時刻マッチング（HH:MM形式）
-    const [sH, sM] = (settings.schedule_time as string).split(':').map(Number)
-    const [cH, cM] = currentTime.split(':').map(Number)
-    if (sH !== cH || Math.abs(sM - cM) > 1) continue
+    const hasEnabledAction = settings.ebay_auto_sync || settings.auto_delist || settings.auto_revise_price || settings.auto_stack
+    if (!hasEnabledAction) continue
 
     const userId = settings.user_id
-    const accessToken = await resolveAccessToken(settings as { ebay_token: string; ebay_refresh_token?: string | null; ebay_token_expires_at?: string | null })
     const userResult: Record<string, unknown> = { user_id: userId }
+    let accessToken: string
+    try {
+      accessToken = await resolveInventoryAccessToken(db, userId, settings)
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      userResult.auth = { error: errorMessage }
+      const now = new Date().toISOString()
+      await db.from('inventory_runs').insert({
+        user_id: userId,
+        run_type: 'sync',
+        status: 'failed',
+        error_message: `トークン取得失敗: ${errorMessage}`,
+        started_at: now,
+        finished_at: now,
+      })
+      results.push(userResult)
+      continue
+    }
+
+    // eBay同期を先に実行し、失敗時は古い在庫情報で後続操作を行わない
+    if (settings.ebay_auto_sync) {
+      const startedAt = new Date().toISOString()
+      try {
+        const syncResult = await syncInventoryListings(db, userId, accessToken)
+        userResult.sync = syncResult
+        await db.from('inventory_runs').insert({
+          user_id: userId,
+          run_type: 'sync',
+          status: 'completed',
+          items_total: syncResult.total,
+          items_matched: syncResult.matched,
+          started_at: startedAt,
+          finished_at: new Date().toISOString(),
+        })
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        userResult.sync = { error: errorMessage }
+        await db.from('inventory_runs').insert({
+          user_id: userId,
+          run_type: 'sync',
+          status: 'failed',
+          error_message: errorMessage,
+          started_at: startedAt,
+          finished_at: new Date().toISOString(),
+        })
+        results.push(userResult)
+        continue
+      }
+    }
 
     // 取り下げ
     if (settings.auto_delist) {
@@ -47,6 +91,7 @@ export async function GET(req: NextRequest) {
         .select('ebay_item_id, product_id')
         .eq('user_id', userId)
         .eq('quantity', 0)
+        .lte('start_time', getDelistCutoffIso(settings.days_until_delist))
 
       const delistResults = []
       for (const l of listings ?? []) {
@@ -56,9 +101,11 @@ export async function GET(req: NextRequest) {
         delistResults.push(r)
       }
       userResult.delist = { total: delistResults.length, succeeded: delistResults.filter(r => r.success).length }
+      const delistRun = summarizeInventoryActionRun(delistResults)
 
       await db.from('inventory_runs').insert({
-        user_id: userId, run_type: 'auto_delist', status: 'completed',
+        user_id: userId, run_type: 'auto_delist', status: delistRun.status,
+        error_message: delistRun.errorMessage,
         result_summary: userResult.delist,
         started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
       })
@@ -88,9 +135,11 @@ export async function GET(req: NextRequest) {
         reviseResults.push(r)
       }
       userResult.revise_price = { total: reviseResults.length, succeeded: reviseResults.filter(r => r.success).length }
+      const reviseRun = summarizeInventoryActionRun(reviseResults)
 
       await db.from('inventory_runs').insert({
-        user_id: userId, run_type: 'auto_revise_price', status: 'completed',
+        user_id: userId, run_type: 'auto_revise_price', status: reviseRun.status,
+        error_message: reviseRun.errorMessage,
         result_summary: userResult.revise_price,
         started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
       })
@@ -146,9 +195,11 @@ export async function GET(req: NextRequest) {
         }
       }
       userResult.stack = { total: stackResults.length, succeeded: stackResults.filter(r => r.success).length }
+      const stackRun = summarizeInventoryActionRun(stackResults)
 
       await db.from('inventory_runs').insert({
-        user_id: userId, run_type: 'auto_stack', status: 'completed',
+        user_id: userId, run_type: 'auto_stack', status: stackRun.status,
+        error_message: stackRun.errorMessage,
         result_summary: userResult.stack,
         started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
       })

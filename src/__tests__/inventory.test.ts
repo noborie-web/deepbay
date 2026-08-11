@@ -75,9 +75,6 @@ describe('parseEbayActiveListingsCsv', () => {
   })
 
   it('parses price with comma thousands separator', () => {
-    const csv = makecsv(['110222333444,SKU-Z,Item,1,234.56,0,Active,,'])
-    const result = parseEbayActiveListingsCsv(csv)
-    // price is in the 5th field (Quantity column) here — let's use a proper CSV
     const csv2 = makecsv(['110222333444,SKU-Z,Item,"1,234.56",5,0,Active,,'])
     const r2 = parseEbayActiveListingsCsv(csv2)
     expect(r2[0].currentPrice).toBe(1234.56)

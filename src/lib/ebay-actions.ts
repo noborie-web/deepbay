@@ -25,13 +25,42 @@ async function tradingCall(accessToken: string, callName: string, body: string):
     },
     body,
   })
-  return res.text()
+  const responseBody = await res.text()
+  if (!res.ok) {
+    const apiMessage = getTag(responseBody, 'LongMessage') || getTag(responseBody, 'ShortMessage')
+    throw new Error(`eBay API HTTP error: ${res.status}${apiMessage ? `: ${apiMessage}` : ''}`)
+  }
+  if (!responseBody.trim()) throw new Error('eBay API returned an empty response')
+  return responseBody
 }
 
 export interface EbayActionResult {
   itemId: string
   success: boolean
   error?: string
+}
+
+function parseActionResponse(xml: string): { success: boolean; error?: string } {
+  const ack = getTag(xml, 'Ack')
+  if (ack === 'Success' || ack === 'Warning') return { success: true }
+
+  const apiMessage = getTag(xml, 'LongMessage') || getTag(xml, 'ShortMessage')
+  if (apiMessage) return { success: false, error: apiMessage }
+  if (ack) return { success: false, error: `eBay API returned unexpected Ack: ${ack}` }
+  return { success: false, error: 'eBay API response did not include Ack' }
+}
+
+function actionError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+async function runItemAction(accessToken: string, callName: string, xml: string, itemId: string): Promise<EbayActionResult> {
+  try {
+    const response = await tradingCall(accessToken, callName, xml)
+    return { itemId, ...parseActionResponse(response) }
+  } catch (error) {
+    return { itemId, success: false, error: actionError(error) }
+  }
 }
 
 // EndItem — 完全取り下げ
@@ -41,12 +70,7 @@ export async function endItem(accessToken: string, itemId: string): Promise<Ebay
   <ItemID>${escapeXml(itemId)}</ItemID>
   <EndingReason>NotAvailable</EndingReason>
 </EndItemRequest>`
-  const res = await tradingCall(accessToken, 'EndItem', xml)
-  const ack = getTag(res, 'Ack')
-  if (ack === 'Failure' || ack === 'PartialFailure') {
-    return { itemId, success: false, error: getTag(res, 'LongMessage') || getTag(res, 'ShortMessage') }
-  }
-  return { itemId, success: true }
+  return runItemAction(accessToken, 'EndItem', xml, itemId)
 }
 
 // ReviseInventoryStatus — quantity=0 に設定（出品継続のまま在庫0）
@@ -58,12 +82,7 @@ export async function reviseQuantityToZero(accessToken: string, itemId: string):
     <Quantity>0</Quantity>
   </InventoryStatus>
 </ReviseInventoryStatusRequest>`
-  const res = await tradingCall(accessToken, 'ReviseInventoryStatus', xml)
-  const ack = getTag(res, 'Ack')
-  if (ack === 'Failure' || ack === 'PartialFailure') {
-    return { itemId, success: false, error: getTag(res, 'LongMessage') || getTag(res, 'ShortMessage') }
-  }
-  return { itemId, success: true }
+  return runItemAction(accessToken, 'ReviseInventoryStatus', xml, itemId)
 }
 
 // ReviseInventoryStatus — 価格変更
@@ -75,12 +94,7 @@ export async function revisePrice(accessToken: string, itemId: string, newPrice:
     <StartPrice currencyID="USD">${newPrice.toFixed(2)}</StartPrice>
   </InventoryStatus>
 </ReviseInventoryStatusRequest>`
-  const res = await tradingCall(accessToken, 'ReviseInventoryStatus', xml)
-  const ack = getTag(res, 'Ack')
-  if (ack === 'Failure' || ack === 'PartialFailure') {
-    return { itemId, success: false, error: getTag(res, 'LongMessage') || getTag(res, 'ShortMessage') }
-  }
-  return { itemId, success: true }
+  return runItemAction(accessToken, 'ReviseInventoryStatus', xml, itemId)
 }
 
 export interface StackItemInput {
@@ -123,12 +137,17 @@ export async function addFixedPriceItem(accessToken: string, item: StackItemInpu
     </SellerProfiles>
   </Item>
 </AddFixedPriceItemRequest>`
-  const res = await tradingCall(accessToken, 'AddFixedPriceItem', xml)
-  const ack = getTag(res, 'Ack')
-  if (ack === 'Failure') {
-    return { success: false, error: getTag(res, 'LongMessage') || getTag(res, 'ShortMessage') }
+  try {
+    const response = await tradingCall(accessToken, 'AddFixedPriceItem', xml)
+    const result = parseActionResponse(response)
+    if (!result.success) return result
+
+    const itemId = getTag(response, 'ItemID')
+    if (!itemId) return { success: false, error: 'eBay API response did not include ItemID' }
+    return { success: true, itemId }
+  } catch (error) {
+    return { success: false, error: actionError(error) }
   }
-  return { success: true, itemId: getTag(res, 'ItemID') }
 }
 
 // トークン取得ヘルパー（refreshTokenがあればrefresh、なければaccessTokenをそのまま使用）
@@ -136,11 +155,12 @@ export async function resolveAccessToken(settings: {
   ebay_token: string
   ebay_refresh_token?: string | null
   ebay_token_expires_at?: string | null
-}): Promise<string> {
+}, onRefresh?: (token: { accessToken: string; expiresAt: Date }) => Promise<void>): Promise<string> {
   if (settings.ebay_refresh_token && settings.ebay_token_expires_at) {
     const expiresAt = new Date(settings.ebay_token_expires_at)
     if (expiresAt.getTime() - Date.now() < 5 * 60 * 1000) {
       const refreshed = await refreshEbayToken(settings.ebay_refresh_token)
+      await onRefresh?.(refreshed)
       return refreshed.accessToken
     }
   }

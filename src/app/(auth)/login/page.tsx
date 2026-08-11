@@ -15,13 +15,19 @@ export default function LoginPage() {
     e.preventDefault()
     setError('')
     setLoading(true)
-    const supabase = createClient()
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    setLoading(false)
-    if (error) {
-      setError(error.message)
-    } else {
-      router.push('/extraction')
+    try {
+      const supabase = createClient()
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
+      if (signInError) {
+        setError(signInError.message)
+      } else {
+        router.push('/extraction')
+      }
+    } catch (caught) {
+      console.error('Login initialization failed', caught)
+      setError('ログイン設定が未完了です。Supabaseの環境変数を確認してください。')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -33,8 +39,9 @@ export default function LoginPage() {
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-600 mb-1">メールアドレス</label>
+            <label htmlFor="email" className="block text-sm text-gray-600 mb-1">メールアドレス</label>
             <input
+              id="email"
               type="email"
               required
               value={email}
@@ -43,8 +50,9 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">パスワード</label>
+            <label htmlFor="password" className="block text-sm text-gray-600 mb-1">パスワード</label>
             <input
+              id="password"
               type="password"
               required
               value={password}

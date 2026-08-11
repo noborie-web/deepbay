@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { scrapeUrl, findScraper, ScraperError } from '@/lib/scrapers'
+import { scrapeUrl, findScraper } from '@/lib/scrapers'
 import { translateTitles } from '@/lib/translate'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import type { Extraction, Profile } from '@/types/database'
@@ -207,9 +207,9 @@ async function runScrape(
     const excludeTitle: boolean = extractionSettings?.exclude_title_duplicate ?? false
     const excludeTranslated: boolean = extractionSettings?.exclude_translated_duplicate ?? false
 
-    let existingSourceUrls = new Set<string>()
-    let existingOriginalTitles = new Set<string>()
-    let existingEbayTitles = new Set<string>()
+    const existingSourceUrls = new Set<string>()
+    const existingOriginalTitles = new Set<string>()
+    const existingEbayTitles = new Set<string>()
 
     if (excludeActive || excludeTitle || excludeTranslated) {
       const selectCols = [

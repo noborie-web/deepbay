@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { addFixedPriceItem, resolveAccessToken } from '@/lib/ebay-actions'
+import { addFixedPriceItem } from '@/lib/ebay-actions'
+import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
@@ -62,12 +64,11 @@ export async function POST(req: NextRequest) {
     .eq('user_id', user.id)
     .maybeSingle()
 
-  if (!settings?.ebay_token) return NextResponse.json({ error: 'eBayトークンが設定されていません' }, { status: 400 })
-  if (!settings.payment_profile_name || !settings.shipping_profile_name || !settings.return_profile_name) {
+  if (!settings?.payment_profile_name || !settings.shipping_profile_name || !settings.return_profile_name) {
     return NextResponse.json({ error: '出品ポリシー（支払い・配送・返品）が設定されていません。設定タブで入力してください。' }, { status: 400 })
   }
 
-  const accessToken = await resolveAccessToken(settings as { ebay_token: string; ebay_refresh_token?: string | null; ebay_token_expires_at?: string | null })
+  const accessToken = await resolveInventoryAccessToken(db, user.id, settings)
 
   // 積み上げ対象を取得
   let stackQuery = db
@@ -142,11 +143,13 @@ export async function POST(req: NextRequest) {
 
   const succeeded = results.filter(r => r.success).length
   const failed = results.filter(r => !r.success).map(r => ({ id: r.ebay_item_id, error: r.error }))
+  const runSummary = summarizeInventoryActionRun(results)
 
   await db.from('inventory_runs').insert({
     user_id: user.id,
     run_type: 'stack',
-    status: failed.length === 0 ? 'completed' : 'partial',
+    status: runSummary.status,
+    error_message: runSummary.errorMessage,
     result_summary: { total: results.length, succeeded, failed },
     started_at: new Date().toISOString(),
     finished_at: new Date().toISOString(),

@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { revisePrice, resolveAccessToken } from '@/lib/ebay-actions'
+import { revisePrice } from '@/lib/ebay-actions'
+import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
@@ -68,9 +70,7 @@ export async function POST(req: NextRequest) {
     .eq('user_id', user.id)
     .maybeSingle()
 
-  if (!settings?.ebay_token) return NextResponse.json({ error: 'eBayトークンが設定されていません' }, { status: 400 })
-
-  const accessToken = await resolveAccessToken(settings as { ebay_token: string; ebay_refresh_token?: string | null; ebay_token_expires_at?: string | null })
+  const accessToken = await resolveInventoryAccessToken(db, user.id, settings ?? {})
 
   let query = db
     .from('inventory_active_listings')
@@ -100,11 +100,13 @@ export async function POST(req: NextRequest) {
 
   const succeeded = results.filter(r => r.success).length
   const failed = results.filter(r => !r.success)
+  const runSummary = summarizeInventoryActionRun(results)
 
   await db.from('inventory_runs').insert({
     user_id: user.id,
     run_type: 'revise_price',
-    status: failed.length === 0 ? 'completed' : 'partial',
+    status: runSummary.status,
+    error_message: runSummary.errorMessage,
     result_summary: { total: results.length, succeeded, failed: failed.map(f => ({ id: f.itemId, error: f.error })) },
     started_at: new Date().toISOString(),
     finished_at: new Date().toISOString(),

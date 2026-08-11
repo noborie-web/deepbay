@@ -37,7 +37,7 @@ export async function GET() {
     .filter(l => l.product_id)
     .map(l => l.product_id as string)
 
-  let productMap = new Map<string, { source_url: string | null; original_images: string[] }>()
+  const productMap = new Map<string, { source_url: string | null; original_images: string[] }>()
   if (productIds.length > 0) {
     const { data: products } = await db
       .from('products')

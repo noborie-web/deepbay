@@ -35,6 +35,51 @@ The easiest way to deploy your Next.js app is to use the [Vercel Platform](https
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
 
+### Environment variables
+
+Copy `.env.example` to `.env.local` for local development. Configure the same
+variables in the Vercel project for Production before deploying. Never commit
+real secret values.
+
+Required for login and database-backed features:
+
+```text
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+```
+
+Required for eBay OAuth, token refresh, inventory sync, and inventory actions:
+
+```text
+EBAY_CLIENT_ID=
+EBAY_CLIENT_SECRET=
+EBAY_REDIRECT_URI_NAME=
+EBAY_TOKEN_ENCRYPTION_KEY=
+```
+
+`EBAY_TOKEN_ENCRYPTION_KEY` must be a Base64-encoded 32-byte key. Keep the
+same value after OAuth tokens are stored; changing it makes existing encrypted
+refresh tokens unreadable.
+
+Required for the scheduled inventory job in `vercel.json`:
+
+```text
+CRON_SECRET=
+```
+
+Optional title translation:
+
+```text
+OPENAI_API_KEY=
+```
+
+When `OPENAI_API_KEY` is omitted, extraction continues using the original
+titles. Vercel provides `NODE_ENV` automatically; do not add it manually.
+
+Before enabling eBay connection, configure the eBay RuName callback for the
+production domain as documented below and apply all Supabase migrations.
+
 ## eBay account and business-policy sync
 
 The listing flow can connect an existing DeepBay seller to eBay OAuth and load
