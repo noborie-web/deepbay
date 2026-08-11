@@ -32,10 +32,11 @@ interface DupCheckConfig {
 
 interface Props {
   listings: InventoryActiveListing[]
+  listingCount: number
   hasToken: boolean
 }
 
-type Tab = '暗号化復元' | '稼働状況' | '設定' | '積み上げ設定' | '重複チェック'
+type Tab = '暗号化復元' | 'eBay商品一覧' | '稼働状況' | '設定' | '積み上げ設定' | '重複チェック'
 
 function EbayTokenForm({ hasToken, onSaved }: { hasToken: boolean; onSaved: () => void }) {
   const [open, setOpen] = useState(!hasToken)
@@ -127,9 +128,19 @@ function downloadCsvBlob(csv: string, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-export default function InventoryPanel({ listings: initialListings, hasToken: initialHasToken }: Props) {
+export default function InventoryPanel({ listings: initialListings, listingCount: initialListingCount, hasToken: initialHasToken }: Props) {
   const [tab, setTab] = useState<Tab>('暗号化復元')
-  const [listings] = useState<InventoryActiveListing[]>(initialListings)
+  const [listings, setListings] = useState<InventoryActiveListing[]>(initialListings)
+
+  // eBay商品一覧
+  const [inventoryListingCount, setInventoryListingCount] = useState(initialListingCount)
+  const [ebayListingTotal, setEbayListingTotal] = useState(initialListingCount)
+  const [ebayListingPage, setEbayListingPage] = useState(1)
+  const [ebayListingTotalPages, setEbayListingTotalPages] = useState(Math.max(1, Math.ceil(initialListingCount / 50)))
+  const [ebayListingSearch, setEbayListingSearch] = useState('')
+  const [ebayAppliedSearch, setEbayAppliedSearch] = useState('')
+  const [ebayListingsLoading, setEbayListingsLoading] = useState(false)
+  const [ebayListingsError, setEbayListingsError] = useState<string | null>(null)
 
   // 暗号化復元
   const [dbkId, setDbkId] = useState('')
@@ -244,8 +255,31 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
     setDupLoaded(true)
   }, [dupLoaded])
 
+  const loadEbayListings = useCallback(async (pageNumber: number, searchValue: string) => {
+    setEbayListingsLoading(true)
+    setEbayListingsError(null)
+    try {
+      const params = new URLSearchParams({ page: String(pageNumber) })
+      if (searchValue) params.set('q', searchValue)
+      const res = await fetch(`/api/inventory/listings?${params.toString()}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'eBay商品一覧の取得に失敗しました')
+      setListings(data.listings ?? [])
+      setEbayListingTotal(data.total ?? 0)
+      if (!searchValue) setInventoryListingCount(data.total ?? 0)
+      setEbayListingPage(data.page ?? pageNumber)
+      setEbayListingTotalPages(data.totalPages ?? 1)
+      setEbayAppliedSearch(searchValue)
+    } catch (error) {
+      setEbayListingsError(error instanceof Error ? error.message : 'eBay商品一覧の取得に失敗しました')
+    } finally {
+      setEbayListingsLoading(false)
+    }
+  }, [])
+
   const handleTabChange = (t: Tab) => {
     setTab(t)
+    if (t === 'eBay商品一覧') loadEbayListings(1, ebayAppliedSearch)
     if (t === '稼働状況') { loadRuns(); loadActionSummary() }
     if (t === '設定') loadSettings()
     if (t === '積み上げ設定') loadStacking()
@@ -512,7 +546,7 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
     !stackingSearch || i.title?.includes(stackingSearch) || i.ebay_item_id.includes(stackingSearch)
   )
 
-  const tabs: Tab[] = ['暗号化復元', '稼働状況', '設定', '積み上げ設定', '重複チェック']
+  const tabs: Tab[] = ['暗号化復元', 'eBay商品一覧', '稼働状況', '設定', '積み上げ設定', '重複チェック']
 
   return (
     <div className="bg-white border rounded-md mb-6">
@@ -556,6 +590,141 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
                     : <p className="text-gray-500">URLが登録されていません。</p>}
                 </div>
               ) : <p className="text-gray-500">該当する商品が見つかりませんでした。</p>}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== eBay商品一覧 ==================== */}
+      {tab === 'eBay商品一覧' && (
+        <div className="p-6 space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-800">同期済みeBay Active商品</h3>
+              <p className="mt-1 text-xs text-gray-500">
+                eBayから取得した商品を表示しています。閲覧専用のため、出品内容は変更されません。
+              </p>
+            </div>
+            <p className="text-sm text-gray-600">
+              全 <strong className="text-gray-900">{ebayListingTotal.toLocaleString()}</strong> 件
+            </p>
+          </div>
+
+          <form
+            className="flex gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              loadEbayListings(1, ebayListingSearch.trim())
+            }}
+          >
+            <input
+              type="search"
+              value={ebayListingSearch}
+              onChange={event => setEbayListingSearch(event.target.value)}
+              placeholder="商品ID・商品名・Custom Labelで検索"
+              className="w-full max-w-xl border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <button
+              type="submit"
+              disabled={ebayListingsLoading}
+              className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
+            >
+              検索
+            </button>
+            {ebayAppliedSearch && (
+              <button
+                type="button"
+                disabled={ebayListingsLoading}
+                onClick={() => {
+                  setEbayListingSearch('')
+                  loadEbayListings(1, '')
+                }}
+                className="px-3 py-2 border text-gray-600 text-sm rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                解除
+              </button>
+            )}
+          </form>
+
+          {ebayListingsError && (
+            <div className="rounded border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+              {ebayListingsError}
+            </div>
+          )}
+
+          <div className="overflow-x-auto border rounded">
+            <table className="w-full min-w-[1050px] text-sm border-collapse">
+              <thead>
+                <tr className="bg-gray-50 border-b">
+                  {['eBay商品ID', '商品名', 'Custom Label', '価格', '数量', '販売数', 'マッチ', '取得日時'].map(heading => (
+                    <th key={heading} className="text-left px-3 py-2 text-xs font-medium text-gray-500">{heading}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {ebayListingsLoading ? (
+                  <tr><td colSpan={8} className="px-3 py-12 text-center text-gray-400">読み込み中...</td></tr>
+                ) : listings.length === 0 ? (
+                  <tr><td colSpan={8} className="px-3 py-12 text-center text-gray-400">該当するeBay商品がありません</td></tr>
+                ) : listings.map(listing => (
+                  <tr key={listing.id} className="border-b last:border-0 hover:bg-gray-50">
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <a
+                        href={`https://www.ebay.com/itm/${encodeURIComponent(listing.ebay_item_id)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        {listing.ebay_item_id}
+                      </a>
+                    </td>
+                    <td className="px-3 py-2 max-w-[320px]">
+                      <p className="truncate text-gray-800" title={listing.title}>{listing.title || '—'}</p>
+                      <p className="text-xs text-gray-400">{listing.listing_status ?? '—'}</p>
+                    </td>
+                    <td className="px-3 py-2 max-w-[220px] truncate text-xs text-gray-600" title={listing.custom_label ?? ''}>
+                      {listing.custom_label ?? '—'}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap text-gray-700">
+                      {listing.current_price != null ? `$${listing.current_price.toLocaleString()}` : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-700">{listing.quantity ?? '—'}</td>
+                    <td className="px-3 py-2 text-right text-gray-700">{listing.quantity_sold ?? '—'}</td>
+                    <td className="px-3 py-2">
+                      <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${listing.product_id ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                        {listing.product_id ? '一致' : '未一致'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-500">
+                      {new Date(listing.fetched_at).toLocaleString('ja-JP')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-gray-500">
+              {ebayListingTotal.toLocaleString()}件中 {ebayListingPage} / {ebayListingTotalPages}ページ
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={ebayListingsLoading || ebayListingPage <= 1}
+                onClick={() => loadEbayListings(ebayListingPage - 1, ebayAppliedSearch)}
+                className="px-3 py-1.5 border rounded text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+              >
+                前へ
+              </button>
+              <button
+                type="button"
+                disabled={ebayListingsLoading || ebayListingPage >= ebayListingTotalPages}
+                onClick={() => loadEbayListings(ebayListingPage + 1, ebayAppliedSearch)}
+                className="px-3 py-1.5 border rounded text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+              >
+                次へ
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -713,8 +882,8 @@ export default function InventoryPanel({ listings: initialListings, hasToken: in
                 <tr>
                   <td className="px-4 py-2 text-sm text-gray-700">{settings.daily_run_count * 10000}</td>
                   <td className="px-4 py-2 text-sm text-gray-700">{settings.daily_run_count * 310000}</td>
-                  <td className="px-4 py-2 text-sm text-gray-700">{listings.length}</td>
-                  <td className="px-4 py-2 text-sm text-gray-700">{Math.max(0, settings.daily_run_count * 310000 - listings.length)}</td>
+                  <td className="px-4 py-2 text-sm text-gray-700">{inventoryListingCount}</td>
+                  <td className="px-4 py-2 text-sm text-gray-700">{Math.max(0, settings.daily_run_count * 310000 - inventoryListingCount)}</td>
                 </tr>
               </tbody>
             </table>
