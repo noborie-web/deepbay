@@ -9,8 +9,6 @@ const DEFAULT_PAGE_TIMEOUT_MS = 10_000
 const DEFAULT_TOTAL_TIMEOUT_MS = 45_000
 const DEFAULT_CONCURRENCY = 8
 const OUTPUT_SELECTORS = [
-  'Ack',
-  'Errors',
   'PaginationResult',
   'ItemID',
   'Title',

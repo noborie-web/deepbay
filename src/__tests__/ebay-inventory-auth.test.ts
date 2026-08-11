@@ -45,6 +45,8 @@ describe('eBay inventory OAuth authentication', () => {
     expect(body).toContain('<OutputSelector>ItemID</OutputSelector>')
     expect(body).toContain('<OutputSelector>CurrentPrice</OutputSelector>')
     expect(body).toContain('<OutputSelector>QuantitySold</OutputSelector>')
+    expect(body).not.toContain('<OutputSelector>Ack</OutputSelector>')
+    expect(body).not.toContain('<OutputSelector>Errors</OutputSelector>')
     expect(body).not.toContain('<OutputSelector>Description</OutputSelector>')
   })
 
