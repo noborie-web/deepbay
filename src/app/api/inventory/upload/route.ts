@@ -64,15 +64,26 @@ export async function POST(req: NextRequest) {
   const productIds = listings
     .map((l) => extractProductIdFromCustomLabel(l.customLabel))
     .filter((id): id is string => id !== null)
+  const ebayItemIds = Array.from(new Set(listings.map((l) => l.ebayItemId).filter(Boolean)))
 
   const productLookup = new Map<string, string>()
   if (productIds.length > 0) {
     const { data: directProducts } = await db
       .from('products')
-      .select('id')
+      .select('id, ebay_item_id')
       .eq('user_id', user.id)
       .in('id', Array.from(new Set(productIds)))
     for (const p of directProducts ?? []) productLookup.set(p.id, p.id)
+  }
+  if (ebayItemIds.length > 0 && listings.some((l) => l.customLabel)) {
+    const { data: ebayProducts } = await db
+      .from('products')
+      .select('id, ebay_item_id')
+      .eq('user_id', user.id)
+      .in('ebay_item_id', ebayItemIds)
+    for (const p of ebayProducts ?? []) {
+      if (p.ebay_item_id) productLookup.set(`ebay:${p.ebay_item_id}`, p.id)
+    }
   }
   if (managementCodes.length > 0) {
     const { data: matchedProducts } = await db
@@ -92,7 +103,9 @@ export async function POST(req: NextRequest) {
     const directProductId = extractProductIdFromCustomLabel(l.customLabel)
     const productId = directProductId
       ? (productLookup.get(directProductId) ?? null)
-      : code ? (productLookup.get(code) ?? null) : null
+      : code
+        ? (productLookup.get(code) ?? productLookup.get(`ebay:${l.ebayItemId}`) ?? null)
+        : productLookup.get(`ebay:${l.ebayItemId}`) ?? null
     if (productId) matched++
 
     return {
