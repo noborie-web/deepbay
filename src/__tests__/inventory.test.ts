@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractSourceLookupCode, parseEbayActiveListingsCsv } from '@/lib/inventory'
+import { extractProductIdFromCustomLabel, extractSourceLookupCode, parseEbayActiveListingsCsv } from '@/lib/inventory'
 import { parseGetMyeBaySellingResponse } from '@/lib/ebay-inventory'
 
 // ---------------------------------------------------------------------------
@@ -27,6 +27,18 @@ describe('extractSourceLookupCode', () => {
   it('returns null for partial code (too short uuid part)', () => {
     // uuid part must be at least 32 hex/underscore chars
     expect(extractSourceLookupCode('ele_20260802_abc')).toBeNull()
+  })
+})
+
+describe('extractProductIdFromCustomLabel', () => {
+  it('extracts a product UUID from the current DeepBay label', () => {
+    expect(extractProductIdFromCustomLabel('deepbay_01234567_89ab_cdef_0123_456789abcdef'))
+      .toBe('01234567-89ab-cdef-0123-456789abcdef')
+  })
+
+  it('returns null for legacy or arbitrary labels', () => {
+    expect(extractProductIdFromCustomLabel('ele_20260802_abc123de_f456_7890_abcd_ef1234567890')).toBeNull()
+    expect(extractProductIdFromCustomLabel('SKU-001')).toBeNull()
   })
 })
 

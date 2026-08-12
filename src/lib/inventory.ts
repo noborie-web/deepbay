@@ -2,6 +2,7 @@
 // e.g. ele_20260802_abc123de_f456_7890_abcd_ef1234567890
 // Format: ele_YYYYMMDD_xxxxxxxx_xxxx_xxxx_xxxx_xxxxxxxxxxxx (UUID with _ instead of -)
 const MANAGEMENT_CODE_RE = /ele_\d{8}_[0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12}/i
+const PRODUCT_LABEL_RE = /deepbay_([0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12})/i
 
 export interface InventoryListingInput {
   ebayItemId: string
@@ -24,6 +25,13 @@ export function extractSourceLookupCode(customLabel: string | null): string | nu
   if (!customLabel) return null
   const m = customLabel.match(MANAGEMENT_CODE_RE)
   return m ? m[0] : null
+}
+
+/** Extract the product UUID encoded by the current DeepBay listing exporter. */
+export function extractProductIdFromCustomLabel(customLabel: string | null): string | null {
+  if (!customLabel) return null
+  const match = customLabel.match(PRODUCT_LABEL_RE)
+  return match ? match[1].replaceAll('_', '-') : null
 }
 
 // CSV column name aliases (eBay File Exchange header names)
