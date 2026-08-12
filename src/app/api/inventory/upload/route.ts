@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { parseEbayActiveListingsCsv, extractSourceLookupCode } from '@/lib/inventory'
+import { parseEbayActiveListingsCsv, extractProductIdFromCustomLabel, extractSourceLookupCode } from '@/lib/inventory'
 
 function admin() {
   return createServiceClient(
@@ -61,8 +61,19 @@ export async function POST(req: NextRequest) {
   const managementCodes = listings
     .map((l) => extractSourceLookupCode(l.customLabel))
     .filter((c): c is string => c !== null)
+  const productIds = listings
+    .map((l) => extractProductIdFromCustomLabel(l.customLabel))
+    .filter((id): id is string => id !== null)
 
   const productLookup = new Map<string, string>()
+  if (productIds.length > 0) {
+    const { data: directProducts } = await db
+      .from('products')
+      .select('id')
+      .eq('user_id', user.id)
+      .in('id', Array.from(new Set(productIds)))
+    for (const p of directProducts ?? []) productLookup.set(p.id, p.id)
+  }
   if (managementCodes.length > 0) {
     const { data: matchedProducts } = await db
       .from('products')
@@ -78,7 +89,10 @@ export async function POST(req: NextRequest) {
   let matched = 0
   const rows = listings.map((l) => {
     const code = extractSourceLookupCode(l.customLabel)
-    const productId = code ? (productLookup.get(code) ?? null) : null
+    const directProductId = extractProductIdFromCustomLabel(l.customLabel)
+    const productId = directProductId
+      ? (productLookup.get(directProductId) ?? null)
+      : code ? (productLookup.get(code) ?? null) : null
     if (productId) matched++
 
     return {

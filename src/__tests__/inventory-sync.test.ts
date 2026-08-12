@@ -69,6 +69,26 @@ describe('syncInventoryListings', () => {
     ], { onConflict: 'user_id,ebay_item_id' })
   })
 
+  it('matches current DeepBay labels by product UUID', async () => {
+    const productId = '01234567-89ab-cdef-0123-456789abcdef'
+    mockFetchAllActiveListings.mockResolvedValue([{
+      ebayItemId: 'item-current', customLabel: 'deepbay_01234567_89ab_cdef_0123_456789abcdef', title: 'Current label',
+      currentPrice: 20, quantity: 1, quantitySold: 0, listingStatus: 'Active', startTime: null, endTime: null,
+    }])
+    const db = {
+      from: vi.fn((table: string) => {
+        if (table === 'products') return {
+          select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(),
+          in: vi.fn(async (column: string) => ({ data: column === 'id' ? [{ id: productId }] : [], error: null })),
+        }
+        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        throw new Error(`Unexpected table: ${table}`)
+      }),
+    } as unknown as SupabaseClient
+    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1 })
+    expect(mockUpsert).toHaveBeenCalledWith([expect.objectContaining({ product_id: productId })], { onConflict: 'user_id,ebay_item_id' })
+  })
+
   it('stores listing chunks concurrently', async () => {
     mockFetchAllActiveListings.mockResolvedValue(Array.from({ length: 450 }, (_, index) => ({
       ebayItemId: `item-${index}`,
