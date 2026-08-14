@@ -44,16 +44,28 @@ async function storeInventoryListings(
   const productIds = Array.from(new Set(
     uniqueListings.map(listing => extractProductIdFromCustomLabel(listing.customLabel)).filter((id): id is string => id !== null),
   ))
+  const ebayItemIds = Array.from(new Set(uniqueListings.map(listing => listing.ebayItemId).filter(Boolean)))
 
   const productLookup = new Map<string, string>()
   if (productIds.length > 0) {
     const { data: directProducts, error: directProductError } = await db
       .from('products')
-      .select('id, source_item_id')
+      .select('id, source_item_id, ebay_item_id')
       .eq('user_id', userId)
       .in('id', productIds)
     if (directProductError) throw new Error(`Product lookup failed: ${directProductError.message}`)
     for (const product of directProducts ?? []) productLookup.set(product.id, product.id)
+  }
+  if (ebayItemIds.length > 0 && uniqueListings.some(listing => listing.customLabel)) {
+    const { data: ebayProducts, error: ebayProductError } = await db
+      .from('products')
+      .select('id, source_item_id, ebay_item_id')
+      .eq('user_id', userId)
+      .in('ebay_item_id', ebayItemIds)
+    if (ebayProductError) throw new Error(`Product lookup failed: ${ebayProductError.message}`)
+    for (const product of ebayProducts ?? []) {
+      if (product.ebay_item_id) productLookup.set(`ebay:${product.ebay_item_id}`, product.id)
+    }
   }
   const managementCodeChunks = Array.from(
     { length: Math.ceil(managementCodes.length / DB_CHUNK_SIZE) },
@@ -62,7 +74,7 @@ async function storeInventoryListings(
   for (const managementCodeChunk of managementCodeChunks) {
     const { data: matchedProducts, error: productError } = await db
       .from('products')
-      .select('id, source_item_id')
+      .select('id, source_item_id, ebay_item_id')
       .eq('user_id', userId)
       .in('source_item_id', managementCodeChunk)
 
@@ -78,7 +90,8 @@ async function storeInventoryListings(
     const directProductId = extractProductIdFromCustomLabel(listing.customLabel)
     const productId = directProductId
       ? (productLookup.get(directProductId) ?? null)
-      : code ? (productLookup.get(code) ?? null) : null
+      : code ? (productLookup.get(code) ?? productLookup.get(`ebay:${listing.ebayItemId}`) ?? null)
+        : productLookup.get(`ebay:${listing.ebayItemId}`) ?? null
     if (productId) matched++
 
     return {

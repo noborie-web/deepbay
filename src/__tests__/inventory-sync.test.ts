@@ -169,7 +169,7 @@ describe('syncInventoryListings', () => {
     const result = await syncInventoryListings(db, 'user-1', 'access-token')
 
     expect(result).toEqual({ total: 205, matched: 0 })
-    expect(productLookupCalls.map(values => values.length)).toEqual([100, 100, 5])
+    expect(productLookupCalls.map(values => values.length)).toEqual([205, 100, 100, 5])
     expect(mockUpsert).toHaveBeenCalledTimes(3)
   })
 
