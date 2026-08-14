@@ -169,6 +169,8 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [matchingLoading, setMatchingLoading] = useState(false)
   const [matchingSaving, setMatchingSaving] = useState(false)
   const [matchingError, setMatchingError] = useState<string | null>(null)
+  const [selectedUnmatchedIds, setSelectedUnmatchedIds] = useState<string[]>([])
+  const [matchingQueue, setMatchingQueue] = useState<InventoryActiveListing[]>([])
 
   // 暗号化復元
   const [dbkId, setDbkId] = useState('')
@@ -322,6 +324,12 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     if (listing.title) searchMatchingProducts(listing.title)
   }
 
+  const openBulkMatching = () => {
+    const queue = listings.filter(item => selectedUnmatchedIds.includes(item.id) && !item.product_id)
+    if (!queue.length) return
+    setMatchingQueue(queue.slice(1)); openMatching(queue[0])
+  }
+
   const saveMatching = async (productId: string) => {
     if (!matchingListing) return
     setMatchingSaving(true); setMatchingError(null)
@@ -333,8 +341,16 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? '紐付けに失敗しました')
       setListings(current => current.map(item => item.id === matchingListing.id ? { ...item, product_id: productId } : item))
-      setMatchingListing(null)
-      setMessage({ type: 'success', text: 'DeepBay商品と紐付けました。次回同期から自動一致します。' })
+      const [next, ...rest] = matchingQueue
+      setMatchingQueue(rest)
+      setSelectedUnmatchedIds(current => current.filter(id => id !== matchingListing.id))
+      if (next) {
+        setMatchingListing(null)
+        window.setTimeout(() => openMatching(next), 0)
+      } else {
+        setMatchingListing(null)
+        setMessage({ type: 'success', text: '選択した商品をすべて紐付けました。次回同期から自動一致します。' })
+      }
     } catch (error) {
       setMatchingError(error instanceof Error ? error.message : '紐付けに失敗しました')
     } finally { setMatchingSaving(false) }
@@ -672,6 +688,19 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             </p>
           </div>
 
+          <div className="mb-3 flex items-center justify-between rounded border bg-gray-50 px-3 py-2">
+            <label className="flex items-center gap-2 text-xs text-gray-700">
+              <input type="checkbox"
+                checked={listings.some(item => !item.product_id) && listings.filter(item => !item.product_id).every(item => selectedUnmatchedIds.includes(item.id))}
+                onChange={event => setSelectedUnmatchedIds(event.target.checked ? listings.filter(item => !item.product_id).map(item => item.id) : [])} />
+              未一致商品をこのページで全選択
+            </label>
+            <button type="button" onClick={openBulkMatching} disabled={selectedUnmatchedIds.length === 0}
+              className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-700 disabled:opacity-40">
+              選択した商品を順番に紐付け（{selectedUnmatchedIds.length}件）
+            </button>
+          </div>
+
           <form
             className="flex gap-2"
             onSubmit={(event) => {
@@ -715,23 +744,27 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           )}
 
           <div className="overflow-x-auto border rounded">
-            <table className="w-full min-w-[1230px] text-sm border-collapse">
+            <table className="w-full min-w-[1280px] text-sm border-collapse">
               <thead>
                 <tr className="bg-gray-50 border-b">
-                  {['画像', 'eBay商品ID', '商品名', 'Custom Label', '価格', '数量', '販売数', 'マッチ', '取得日時', '操作'].map(heading => (
+                  {['選択', '画像', 'eBay商品ID', '商品名', 'Custom Label', '価格', '数量', '販売数', 'マッチ', '取得日時', '操作'].map(heading => (
                     <th key={heading} className="text-left px-3 py-2 text-xs font-medium text-gray-500">{heading}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {ebayListingsLoading ? (
-                  <tr><td colSpan={10} className="px-3 py-12 text-center text-gray-400">読み込み中...</td></tr>
+                  <tr><td colSpan={11} className="px-3 py-12 text-center text-gray-400">読み込み中...</td></tr>
                 ) : listings.length === 0 ? (
-                  <tr><td colSpan={10} className="px-3 py-12 text-center text-gray-400">該当するeBay商品がありません</td></tr>
+                  <tr><td colSpan={11} className="px-3 py-12 text-center text-gray-400">該当するeBay商品がありません</td></tr>
                 ) : listings.map(listing => {
                   const imageUrl = getEbayListingImageUrl(listing)
                   return (
                     <tr key={listing.id} className="border-b last:border-0 hover:bg-gray-50">
+                      <td className="px-3 py-2">
+                        {!listing.product_id && <input type="checkbox" checked={selectedUnmatchedIds.includes(listing.id)}
+                          onChange={event => setSelectedUnmatchedIds(current => event.target.checked ? [...current, listing.id] : current.filter(id => id !== listing.id))} />}
+                      </td>
                       <td className="px-3 py-2">
                         <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded border bg-gray-50 text-[10px] text-gray-400">
                           {imageUrl ? (
