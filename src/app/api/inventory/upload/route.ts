@@ -11,7 +11,9 @@ function admin() {
   )
 }
 
-const MAX_CSV_BYTES = 5 * 1024 * 1024 // 5 MB
+// eBayのAll active listingsレポートは件数が多いと数十MBになるため、
+// 余裕を持って50MBまで受け付ける。
+const MAX_CSV_BYTES = 50 * 1024 * 1024 // 50 MB
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -20,7 +22,7 @@ export async function POST(req: NextRequest) {
 
   const contentLength = req.headers.get('content-length')
   if (contentLength && parseInt(contentLength, 10) > MAX_CSV_BYTES) {
-    return NextResponse.json({ error: 'ファイルサイズが5MBを超えています' }, { status: 413 })
+    return NextResponse.json({ error: 'ファイルサイズが50MBを超えています' }, { status: 413 })
   }
 
   let csvText: string
@@ -32,7 +34,7 @@ export async function POST(req: NextRequest) {
     }
     const buf = await (file as File).arrayBuffer()
     if (buf.byteLength > MAX_CSV_BYTES) {
-      return NextResponse.json({ error: 'ファイルサイズが5MBを超えています' }, { status: 413 })
+      return NextResponse.json({ error: 'ファイルサイズが50MBを超えています' }, { status: 413 })
     }
     csvText = new TextDecoder('utf-8').decode(buf)
   } catch {
