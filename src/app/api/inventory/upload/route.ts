@@ -20,13 +20,26 @@ export async function POST(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const contentType = req.headers.get('content-type') ?? ''
+  let csvText = ''
+  if (contentType.includes('application/json')) {
+    const body = await req.json().catch(() => null) as { path?: string } | null
+    if (!body?.path || !body.path.startsWith(`${user.id}/`)) return NextResponse.json({ error: 'アップロードファイルが不正です' }, { status: 400 })
+    const storage = admin().storage.from('inventory-uploads')
+    const { data: downloaded, error } = await storage.download(body.path)
+    if (error || !downloaded) return NextResponse.json({ error: error?.message ?? 'ファイルを取得できません' }, { status: 400 })
+    const buf = await downloaded.arrayBuffer()
+    if (buf.byteLength > MAX_CSV_BYTES) return NextResponse.json({ error: 'ファイルサイズが50MBを超えています' }, { status: 413 })
+    csvText = new TextDecoder('utf-8').decode(buf)
+  }
   const contentLength = req.headers.get('content-length')
-  if (contentLength && parseInt(contentLength, 10) > MAX_CSV_BYTES) {
+  if (contentType.includes('application/json')) {
+    if (!csvText) return NextResponse.json({ error: 'ファイルを読み込めません' }, { status: 400 })
+  } else if (contentLength && parseInt(contentLength, 10) > MAX_CSV_BYTES) {
     return NextResponse.json({ error: 'ファイルサイズが50MBを超えています' }, { status: 413 })
   }
 
-  let csvText: string
-  try {
+  if (!contentType.includes('application/json')) try {
     const formData = await req.formData()
     const file = formData.get('file')
     if (!file || typeof file === 'string') {
