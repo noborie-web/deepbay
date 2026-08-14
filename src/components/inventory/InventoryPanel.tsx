@@ -36,6 +36,11 @@ interface Props {
   hasToken: boolean
 }
 
+interface MatchingProduct {
+  id: string; source_item_id: string | null; source_url: string
+  original_title: string; original_images: string[]; ebay_item_id: string | null
+}
+
 type Tab = '暗号化復元' | 'eBay商品一覧' | '稼働状況' | '設定' | '積み上げ設定' | '重複チェック'
 
 function getEbayListingImageUrl(listing: InventoryActiveListing): string | null {
@@ -158,6 +163,12 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [ebayAppliedSearch, setEbayAppliedSearch] = useState('')
   const [ebayListingsLoading, setEbayListingsLoading] = useState(false)
   const [ebayListingsError, setEbayListingsError] = useState<string | null>(null)
+  const [matchingListing, setMatchingListing] = useState<InventoryActiveListing | null>(null)
+  const [matchingQuery, setMatchingQuery] = useState('')
+  const [matchingProducts, setMatchingProducts] = useState<MatchingProduct[]>([])
+  const [matchingLoading, setMatchingLoading] = useState(false)
+  const [matchingSaving, setMatchingSaving] = useState(false)
+  const [matchingError, setMatchingError] = useState<string | null>(null)
 
   // 暗号化復元
   const [dbkId, setDbkId] = useState('')
@@ -293,6 +304,41 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       setEbayListingsLoading(false)
     }
   }, [])
+
+  const searchMatchingProducts = async (query: string) => {
+    setMatchingLoading(true); setMatchingError(null)
+    try {
+      const res = await fetch(`/api/inventory/matching?q=${encodeURIComponent(query)}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'DeepBay商品の検索に失敗しました')
+      setMatchingProducts(data.products ?? [])
+    } catch (error) {
+      setMatchingError(error instanceof Error ? error.message : 'DeepBay商品の検索に失敗しました')
+    } finally { setMatchingLoading(false) }
+  }
+
+  const openMatching = (listing: InventoryActiveListing) => {
+    setMatchingListing(listing); setMatchingQuery(listing.title ?? ''); setMatchingProducts([]); setMatchingError(null)
+    if (listing.title) searchMatchingProducts(listing.title)
+  }
+
+  const saveMatching = async (productId: string) => {
+    if (!matchingListing) return
+    setMatchingSaving(true); setMatchingError(null)
+    try {
+      const res = await fetch('/api/inventory/matching', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ listingId: matchingListing.id, productId }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? '紐付けに失敗しました')
+      setListings(current => current.map(item => item.id === matchingListing.id ? { ...item, product_id: productId } : item))
+      setMatchingListing(null)
+      setMessage({ type: 'success', text: 'DeepBay商品と紐付けました。次回同期から自動一致します。' })
+    } catch (error) {
+      setMatchingError(error instanceof Error ? error.message : '紐付けに失敗しました')
+    } finally { setMatchingSaving(false) }
+  }
 
   const handleTabChange = (t: Tab) => {
     setTab(t)
@@ -669,19 +715,19 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           )}
 
           <div className="overflow-x-auto border rounded">
-            <table className="w-full min-w-[1130px] text-sm border-collapse">
+            <table className="w-full min-w-[1230px] text-sm border-collapse">
               <thead>
                 <tr className="bg-gray-50 border-b">
-                  {['画像', 'eBay商品ID', '商品名', 'Custom Label', '価格', '数量', '販売数', 'マッチ', '取得日時'].map(heading => (
+                  {['画像', 'eBay商品ID', '商品名', 'Custom Label', '価格', '数量', '販売数', 'マッチ', '取得日時', '操作'].map(heading => (
                     <th key={heading} className="text-left px-3 py-2 text-xs font-medium text-gray-500">{heading}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {ebayListingsLoading ? (
-                  <tr><td colSpan={9} className="px-3 py-12 text-center text-gray-400">読み込み中...</td></tr>
+                  <tr><td colSpan={10} className="px-3 py-12 text-center text-gray-400">読み込み中...</td></tr>
                 ) : listings.length === 0 ? (
-                  <tr><td colSpan={9} className="px-3 py-12 text-center text-gray-400">該当するeBay商品がありません</td></tr>
+                  <tr><td colSpan={10} className="px-3 py-12 text-center text-gray-400">該当するeBay商品がありません</td></tr>
                 ) : listings.map(listing => {
                   const imageUrl = getEbayListingImageUrl(listing)
                   return (
@@ -732,6 +778,14 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-500">
                       {new Date(listing.fetched_at).toLocaleString('ja-JP')}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {!listing.product_id && (
+                        <button type="button" onClick={() => openMatching(listing)}
+                          className="px-2 py-1 border border-blue-500 text-blue-600 text-xs rounded hover:bg-blue-50">
+                          DeepBay商品を選択
+                        </button>
+                      )}
                     </td>
                     </tr>
                   )
@@ -1346,6 +1400,46 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 className="px-4 py-2 border border-red-500 text-red-600 text-sm rounded hover:bg-red-50">
                 閉じる
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {matchingListing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-2xl rounded-lg bg-white p-6 shadow-xl">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-base font-semibold text-gray-800">DeepBay商品を選択</h3>
+                <p className="mt-1 text-xs text-gray-500">eBay商品ID: {matchingListing.ebay_item_id}</p>
+                <p className="text-xs text-gray-500">{matchingListing.title}</p>
+              </div>
+              <button type="button" onClick={() => setMatchingListing(null)} className="text-gray-500 hover:text-gray-800">✕</button>
+            </div>
+            <form className="mb-4 flex gap-2" onSubmit={event => { event.preventDefault(); searchMatchingProducts(matchingQuery) }}>
+              <input type="search" value={matchingQuery} onChange={event => setMatchingQuery(event.target.value)}
+                placeholder="DeepBay商品名・仕入れ先ID・URLで検索" className="min-w-0 flex-1 rounded border px-3 py-2 text-sm" />
+              <button type="submit" disabled={matchingLoading || !matchingQuery.trim()} className="rounded bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-50">検索</button>
+            </form>
+            {matchingError && <p className="mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700">{matchingError}</p>}
+            <div className="max-h-80 overflow-y-auto rounded border">
+              {matchingLoading ? <p className="p-6 text-center text-sm text-gray-400">検索中...</p> : matchingProducts.length === 0 ? (
+                <p className="p-6 text-center text-sm text-gray-400">候補がありません</p>
+              ) : matchingProducts.map(product => (
+                <div key={product.id} className="flex items-center gap-3 border-b p-3 last:border-b-0">
+                  <div className="h-12 w-12 shrink-0 overflow-hidden rounded border bg-gray-50">
+                    {product.original_images?.[0] && <img src={product.original_images[0]} alt="" loading="lazy" className="h-full w-full object-contain" />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-gray-800" title={product.original_title}>{product.original_title}</p>
+                    <p className="truncate text-xs text-gray-500">{product.source_item_id ?? product.source_url}</p>
+                  </div>
+                  <button type="button" onClick={() => saveMatching(product.id)} disabled={matchingSaving}
+                    className="shrink-0 rounded border border-blue-500 px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50">
+                    {matchingSaving ? '保存中...' : 'この商品に紐付け'}
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         </div>
