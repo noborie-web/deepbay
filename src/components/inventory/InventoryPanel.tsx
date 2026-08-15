@@ -172,6 +172,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [matchingError, setMatchingError] = useState<string | null>(null)
   const [selectedUnmatchedIds, setSelectedUnmatchedIds] = useState<string[]>([])
   const [matchingQueue, setMatchingQueue] = useState<InventoryActiveListing[]>([])
+  const [bulkMatchingLoading, setBulkMatchingLoading] = useState(false)
 
   // 暗号化復元
   const [dbkId, setDbkId] = useState('')
@@ -330,6 +331,45 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     const queue = listings.filter(item => selectedUnmatchedIds.includes(item.id) && !item.product_id)
     if (!queue.length) return
     setMatchingQueue(queue.slice(1)); openMatching(queue[0])
+  }
+
+  // ID/Custom Label だけを使って安全に自動照合し、判断できない商品だけ手動確認へ回す。
+  const autoMatchSelected = async () => {
+    const queue = listings.filter(item => selectedUnmatchedIds.includes(item.id) && !item.product_id)
+    if (!queue.length || bulkMatchingLoading) return
+    setBulkMatchingLoading(true); setMatchingError(null)
+    const unresolved: InventoryActiveListing[] = []
+    let matched = 0
+    try {
+      for (const listing of queue) {
+        const queries = [listing.custom_label, listing.ebay_item_id].filter(Boolean) as string[]
+        let candidates: MatchingProduct[] = []
+        for (const query of queries) {
+          const res = await fetch(`/api/inventory/matching?q=${encodeURIComponent(query)}`)
+          const data = await res.json()
+          if (res.ok && Array.isArray(data.products) && data.products.length > 0) {
+            candidates = data.products
+            break
+          }
+        }
+        if (candidates.length !== 1) { unresolved.push(listing); continue }
+        const res = await fetch('/api/inventory/matching', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ listingId: listing.id, productId: candidates[0].id }),
+        })
+        if (res.ok) {
+          matched++
+          setListings(current => current.map(item => item.id === listing.id ? { ...item, product_id: candidates[0].id } : item))
+        } else unresolved.push(listing)
+      }
+      setSelectedUnmatchedIds(unresolved.map(item => item.id))
+      if (unresolved.length) {
+        setMatchingQueue(unresolved.slice(1)); openMatching(unresolved[0])
+        setMessage({ type: 'success', text: `${matched}件を自動紐付けしました。残り${unresolved.length}件だけ確認してください。` })
+      } else {
+        setMessage({ type: 'success', text: `${matched}件を自動紐付けしました。` })
+      }
+    } finally { setBulkMatchingLoading(false) }
   }
 
   const saveMatching = async (productId: string) => {
@@ -709,6 +749,10 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             <button type="button" onClick={openBulkMatching} disabled={selectedUnmatchedIds.length === 0}
               className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-700 disabled:opacity-40">
               選択した商品を順番に紐付け（{selectedUnmatchedIds.length}件）
+            </button>
+            <button type="button" onClick={autoMatchSelected} disabled={selectedUnmatchedIds.length === 0 || bulkMatchingLoading}
+              className="rounded border border-blue-600 px-3 py-1.5 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-40">
+              {bulkMatchingLoading ? '自動照合中...' : 'IDで自動紐付け'}
             </button>
           </div>
 
