@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
       .in('id', Array.from(new Set(productIds)))
     for (const p of directProducts ?? []) productLookup.set(p.id, p.id)
   }
-  if (ebayItemIds.length > 0 && listings.some((l) => l.customLabel)) {
+  if (ebayItemIds.length > 0) {
     const { data: ebayProducts } = await db
       .from('products')
       .select('id, ebay_item_id')

@@ -342,15 +342,20 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     let matched = 0
     try {
       for (const listing of queue) {
-        const queries = [listing.custom_label, listing.ebay_item_id].filter(Boolean) as string[]
         let candidates: MatchingProduct[] = []
-        for (const query of queries) {
-          const res = await fetch(`/api/inventory/matching?q=${encodeURIComponent(query)}`)
+        // eBay item ID is the authoritative key. Only fall back to the
+        // existing custom-label lookup when no exact ID match exists.
+        if (listing.ebay_item_id) {
+          const res = await fetch(`/api/inventory/matching?ebayItemId=${encodeURIComponent(listing.ebay_item_id)}`)
           const data = await res.json()
           if (res.ok && Array.isArray(data.products) && data.products.length > 0) {
             candidates = data.products
-            break
           }
+        }
+        if (candidates.length === 0 && listing.custom_label) {
+          const res = await fetch(`/api/inventory/matching?q=${encodeURIComponent(listing.custom_label)}`)
+          const data = await res.json()
+          if (res.ok && Array.isArray(data.products)) candidates = data.products
         }
         if (candidates.length !== 1) { unresolved.push(listing); continue }
         const res = await fetch('/api/inventory/matching', {
