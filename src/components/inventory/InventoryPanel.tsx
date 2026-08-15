@@ -205,6 +205,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState<'preparing' | 'transferring' | 'processing' | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   // 積み上げ設定
@@ -446,22 +447,26 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // CSVアップロード
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return
-    setUploading(true); setMessage(null)
+    setUploading(true); setUploadStatus('preparing'); setMessage(null)
     try {
       const urlRes = await fetch('/api/inventory/upload-url', { method: 'POST' })
       const uploadInfo = await urlRes.json()
       if (!urlRes.ok) throw new Error(uploadInfo.error ?? 'アップロードURLの取得に失敗しました')
       const supabase = createClient()
+      setUploadStatus('transferring')
       const { error: storageError } = await supabase.storage.from('inventory-uploads').uploadToSignedUrl(uploadInfo.path, uploadInfo.token, file)
       if (storageError) throw new Error(storageError.message)
+      setUploadStatus('processing')
       const res = await fetch('/api/inventory/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: uploadInfo.path }) })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Upload failed')
       showMsg('success', `アップロード完了: ${json.total}件取得、${json.matched}件マッチ`)
       setRunsLoaded(false)
     } catch (e) { showMsg('error', e instanceof Error ? e.message : 'アップロード失敗') }
-    finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
+    finally { setUploading(false); setUploadStatus(null); if (fileRef.current) fileRef.current.value = '' }
   }
+
+  const uploadStatusText = uploadStatus === 'preparing' ? 'アップロード準備中...' : uploadStatus === 'transferring' ? 'Storageへ転送中...' : uploadStatus === 'processing' ? '商品データを反映中...' : ''
 
   // 設定保存
   const saveSetting = async (patch: Partial<Settings>) => {
@@ -924,6 +929,10 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 <span className="text-gray-600">{uploading ? 'アップロード中...' : 'activeファイルをアップロード'}</span>
               </label>
             </div>
+            {uploading && <div className="mt-3 max-w-xl rounded border border-blue-100 bg-blue-50 p-3 text-xs text-blue-800" role="status" aria-live="polite">
+              <div className="flex items-center justify-between gap-3"><span>{uploadStatusText}</span><span>画面を閉じずにお待ちください</span></div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-blue-100"><div className="h-full w-1/3 animate-pulse rounded-full bg-blue-600" /></div>
+            </div>}
             {!settings.has_token && <p className="text-xs text-red-500 mt-2">eBayトークン未設定のため同期は利用できません。設定タブからトークンを登録してください。</p>}
           </div>
 
