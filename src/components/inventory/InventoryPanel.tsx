@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react'
 import type { InventoryActiveListing } from '@/types/database'
+import { createClient } from '@/lib/supabase/client'
 
 interface InventoryRun {
   id: string; run_type: string; status: string
@@ -447,8 +448,13 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     const file = e.target.files?.[0]; if (!file) return
     setUploading(true); setMessage(null)
     try {
-      const formData = new FormData(); formData.append('file', file)
-      const res = await fetch('/api/inventory/upload', { method: 'POST', body: formData })
+      const urlRes = await fetch('/api/inventory/upload-url', { method: 'POST' })
+      const uploadInfo = await urlRes.json()
+      if (!urlRes.ok) throw new Error(uploadInfo.error ?? 'アップロードURLの取得に失敗しました')
+      const supabase = createClient()
+      const { error: storageError } = await supabase.storage.from('inventory-uploads').uploadToSignedUrl(uploadInfo.path, uploadInfo.token, file)
+      if (storageError) throw new Error(storageError.message)
+      const res = await fetch('/api/inventory/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: uploadInfo.path }) })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Upload failed')
       showMsg('success', `アップロード完了: ${json.total}件取得、${json.matched}件マッチ`)
