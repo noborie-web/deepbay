@@ -62,6 +62,15 @@ export async function POST(req: NextRequest) {
   const db = admin()
   const now = new Date().toISOString()
 
+  // An active report is a complete snapshot. Remove the previous snapshot
+  // before inserting this upload so the displayed count is the latest count,
+  // rather than the cumulative total of all uploads.
+  const { error: clearError } = await db
+    .from('inventory_active_listings')
+    .delete()
+    .eq('user_id', user.id)
+  if (clearError) return NextResponse.json({ error: `既存の在庫スナップショットを更新できません: ${clearError.message}` }, { status: 500 })
+
   // Create audit run
   const { data: run, error: runError } = await db
     .from('inventory_runs')

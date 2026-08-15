@@ -100,6 +100,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: `トークン更新失敗: ${msg}` }, { status: 500 })
   }
 
+  if (!cursorValue) {
+    // eBay active results are a complete snapshot. Clear the previous
+    // snapshot once at the start of a new resumable sync, after auth/token
+    // validation succeeds.
+    const { error: clearError } = await db
+      .from('inventory_active_listings')
+      .delete()
+      .eq('user_id', user.id)
+    if (clearError) return NextResponse.json({ error: `既存の在庫スナップショットを更新できません: ${clearError.message}` }, { status: 500 })
+  }
+
   let syncResult: Awaited<ReturnType<typeof syncInventoryListingBatch>>
   const syncController = new AbortController()
   const routeTimeout = setTimeout(() => {
