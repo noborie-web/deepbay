@@ -20,6 +20,18 @@ export async function GET(request: NextRequest) {
   const user = await getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const exactEbayItemId = request.nextUrl.searchParams.get('ebayItemId')?.trim().slice(0, 100) ?? ''
+  if (exactEbayItemId) {
+    const { data, error } = await admin()
+      .from('products')
+      .select('id, source_item_id, source_url, original_title, original_images, ebay_item_id')
+      .eq('user_id', user.id)
+      .eq('ebay_item_id', exactEbayItemId)
+      .limit(2)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ products: data ?? [] })
+  }
+
   const q = request.nextUrl.searchParams.get('q')?.trim().slice(0, 100) ?? ''
   if (!q) return NextResponse.json({ products: [] })
   const pattern = `%${q.replace(/[(),]/g, ' ')}%`
@@ -27,7 +39,7 @@ export async function GET(request: NextRequest) {
     .from('products')
     .select('id, source_item_id, source_url, original_title, original_images, ebay_item_id')
     .eq('user_id', user.id)
-    .or(`source_item_id.ilike.${pattern},original_title.ilike.${pattern},source_url.ilike.${pattern}`)
+    .or(`source_item_id.ilike.${pattern},original_title.ilike.${pattern},source_url.ilike.${pattern},ebay_item_id.ilike.${pattern}`)
     .order('updated_at', { ascending: false })
     .limit(20)
 
