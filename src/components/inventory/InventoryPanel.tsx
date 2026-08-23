@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import type { InventoryActiveListing } from '@/types/database'
 import { createClient } from '@/lib/supabase/client'
+import { extractSourceLookupKeys } from '@/lib/inventory'
 
 interface InventoryRun {
   id: string; run_type: string; status: string
@@ -354,10 +355,13 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             candidates = data.products
           }
         }
-        if (candidates.length === 0 && listing.custom_label) {
-          const res = await fetch(`/api/inventory/matching?q=${encodeURIComponent(listing.custom_label)}`)
-          const data = await res.json()
-          if (res.ok && Array.isArray(data.products)) candidates = data.products
+        if (candidates.length === 0) {
+          for (const sourceItemId of extractSourceLookupKeys(listing.custom_label)) {
+            const res = await fetch(`/api/inventory/matching?sourceItemId=${encodeURIComponent(sourceItemId)}`)
+            const data = await res.json()
+            if (res.ok && Array.isArray(data.products)) candidates = data.products
+            if (candidates.length > 0) break
+          }
         }
         if (candidates.length !== 1) { unresolved.push(listing); continue }
         const res = await fetch('/api/inventory/matching', {

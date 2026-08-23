@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { extractProductIdFromCustomLabel, extractSourceLookupCode, parseEbayActiveListingsCsv } from '@/lib/inventory'
+import {
+  extractProductIdFromCustomLabel,
+  extractSourceLookupCode,
+  parseEbayActiveListingsCsv,
+  resolveInventoryProductId,
+} from '@/lib/inventory'
 import { parseGetMyeBaySellingResponse } from '@/lib/ebay-inventory'
 
 // ---------------------------------------------------------------------------
@@ -39,6 +44,18 @@ describe('extractProductIdFromCustomLabel', () => {
   it('returns null for legacy or arbitrary labels', () => {
     expect(extractProductIdFromCustomLabel('ele_20260802_abc123de_f456_7890_abcd_ef1234567890')).toBeNull()
     expect(extractProductIdFromCustomLabel('SKU-001')).toBeNull()
+  })
+})
+
+describe('resolveInventoryProductId', () => {
+  it('falls back from a missing direct product to one source_item_id match', () => {
+    expect(resolveInventoryProductId(null, null, ['source-product']))
+      .toBe('source-product')
+  })
+
+  it('rejects ambiguous source_item_id matches', () => {
+    expect(resolveInventoryProductId(undefined, undefined, ['product-1', 'product-2']))
+      .toBeNull()
   })
 })
 
