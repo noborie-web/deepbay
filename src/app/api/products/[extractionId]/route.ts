@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { PRODUCT_WRITE_WHITELIST, validateProductFields } from '@/lib/pricing'
+import { findBlockedProductDeletions, LISTED_PRODUCT_DELETE_ERROR } from '@/lib/product-deletion'
 
 function pickAllowed(updates: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -84,12 +85,40 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ e
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { productId } = await req.json()
+  const body = await req.json().catch(() => null) as { productId?: unknown; force?: unknown } | null
+  const productId = body?.productId
+  if (typeof productId !== 'string' || productId.trim() === '') {
+    return NextResponse.json({ error: 'productId が無効です' }, { status: 400 })
+  }
+  const force = req.nextUrl.searchParams.get('force') === 'true' || body?.force === true
 
   const admin = createServiceClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   )
+
+  if (!force) {
+    const { data: products, error: productsError } = await admin
+      .from('products')
+      .select('id, ebay_item_id, ebay_title, original_title')
+      .eq('id', productId)
+      .eq('extraction_id', extractionId)
+      .eq('user_id', user.id)
+
+    if (productsError) return NextResponse.json({ error: productsError.message }, { status: 500 })
+
+    try {
+      const blockedProducts = await findBlockedProductDeletions(admin, user.id, products ?? [])
+      if (blockedProducts.length > 0) {
+        return NextResponse.json({
+          error: LISTED_PRODUCT_DELETE_ERROR,
+          blockedProducts,
+        }, { status: 409 })
+      }
+    } catch (error) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 })
+    }
+  }
 
   const { error } = await admin
     .from('products')
