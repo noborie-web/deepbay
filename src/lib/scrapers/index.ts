@@ -4,12 +4,14 @@ import { MercariScraper } from './mercari'
 import { YahooAuctionScraper } from './yahoo_auction'
 import { RakumaScraper } from './rakuma'
 import { SnkrDunkScraper } from './snkrdunk'
+import { DigimartScraper } from './digimart'
 
 const SCRAPERS: IScraper[] = [
   new MercariScraper() as unknown as IScraper,
   new YahooAuctionScraper(),
   new RakumaScraper(),
   new SnkrDunkScraper() as unknown as IScraper,
+  new DigimartScraper(),
 ]
 
 export function findScraper(url: string): IScraper | null {
