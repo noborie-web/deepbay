@@ -41,7 +41,22 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
   async function handleDelete() {
     if (!confirm('この抽出を削除しますか？商品データも全て削除されます。')) return
     setMenuOpen(false)
-    const res = await fetch(`/api/extractions/${extraction.id}`, { method: 'DELETE' })
+    let res = await fetch(`/api/extractions/${extraction.id}`, { method: 'DELETE' })
+    if (res.status === 409) {
+      const json = await res.json().catch(() => ({})) as {
+        error?: string
+        blockedProducts?: { id: string; title: string }[]
+      }
+      const titles = (json.blockedProducts ?? []).map(product => `・${product.title}`).join('\n')
+      const warning = [
+        json.error ?? '出品済みの商品が含まれています。',
+        titles,
+        'eBay側のリスティングは削除されず、今後この商品の自動照合ができなくなります。',
+        'それでも削除しますか？',
+      ].filter(Boolean).join('\n\n')
+      if (!confirm(warning)) return
+      res = await fetch(`/api/extractions/${extraction.id}?force=true`, { method: 'DELETE' })
+    }
     if (res.ok) {
       onDelete?.(extraction.id)
     } else {

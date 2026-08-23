@@ -515,13 +515,35 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
   async function deleteProduct(productId: string) {
     if (!confirm('この商品を削除しますか？')) return
-    const res = await fetch(`/api/products/${extractionId}`, {
+    let res = await fetch(`/api/products/${extractionId}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ productId }),
     })
+    if (res.status === 409) {
+      const json = await res.json().catch(() => ({})) as {
+        error?: string
+        blockedProducts?: { id: string; title: string }[]
+      }
+      const titles = (json.blockedProducts ?? []).map(product => `・${product.title}`).join('\n')
+      const warning = [
+        json.error ?? '出品済みの商品です。',
+        titles,
+        'eBay側のリスティングは削除されず、今後この商品の自動照合ができなくなります。',
+        'それでも削除しますか？',
+      ].filter(Boolean).join('\n\n')
+      if (!confirm(warning)) return
+      res = await fetch(`/api/products/${extractionId}?force=true`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId, force: true }),
+      })
+    }
     if (res.ok) {
       setProducts((prev) => prev.filter((p) => p.id !== productId))
+    } else {
+      const json = await res.json().catch(() => ({})) as { error?: string }
+      alert(`削除に失敗しました: ${json.error ?? res.status}`)
     }
   }
 
