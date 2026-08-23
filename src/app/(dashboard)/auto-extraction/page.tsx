@@ -1,16 +1,32 @@
-import { RefreshCw } from 'lucide-react'
+import { redirect } from 'next/navigation'
+import { createClient } from '@/lib/supabase/server'
+import AutoExtractionPageClient from './AutoExtractionPageClient'
 
-export default function AutoExtractionPage() {
+export default async function AutoExtractionPage() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
+
+  const [{ data: sellers }, { data: categories }, { data: bulkSettings }] = await Promise.all([
+    supabase.from('seller_accounts')
+      .select('id, seller_id, display_name, is_default')
+      .eq('user_id', user.id)
+      .order('created_at'),
+    supabase.from('listing_categories')
+      .select('id, name, ebay_category_id')
+      .eq('user_id', user.id)
+      .order('sort_order'),
+    supabase.from('bulk_edit_settings')
+      .select('id, name')
+      .eq('user_id', user.id)
+      .order('created_at'),
+  ])
+
   return (
-    <div className="p-6">
-      <h1 className="text-xl font-bold text-gray-900">自動抽出</h1>
-      <div className="mt-6 max-w-3xl rounded-lg border border-gray-200 bg-white px-6 py-12 text-center shadow-sm">
-        <RefreshCw className="mx-auto text-gray-400" size={36} />
-        <h2 className="mt-4 text-lg font-semibold text-gray-800">準備中</h2>
-        <p className="mt-2 text-sm text-gray-500">
-          自動抽出機能は現在開発中です。公開までしばらくお待ちください。
-        </p>
-      </div>
-    </div>
+    <AutoExtractionPageClient
+      sellers={sellers ?? []}
+      categories={categories ?? []}
+      bulkSettings={bulkSettings ?? []}
+    />
   )
 }
