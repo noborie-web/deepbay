@@ -158,6 +158,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // eBay商品一覧
   const [inventoryListingCount, setInventoryListingCount] = useState(initialListingCount)
   const [ebayListingTotal, setEbayListingTotal] = useState(initialListingCount)
+  const [unmatchedTotal, setUnmatchedTotal] = useState(0)
   const [ebayListingPage, setEbayListingPage] = useState(1)
   const [ebayListingTotalPages, setEbayListingTotalPages] = useState(Math.max(1, Math.ceil(initialListingCount / 50)))
   const [ebayListingSearch, setEbayListingSearch] = useState('')
@@ -299,6 +300,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       if (!res.ok) throw new Error(data.error ?? 'eBay商品一覧の取得に失敗しました')
       setListings(data.listings ?? [])
       setEbayListingTotal(data.total ?? 0)
+      setUnmatchedTotal(data.unmatchedTotal ?? 0)
       if (!searchValue) setInventoryListingCount(data.total ?? 0)
       setEbayListingPage(data.page ?? pageNumber)
       setEbayListingTotalPages(data.totalPages ?? 1)
@@ -741,6 +743,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             </div>
             <p className="text-sm text-gray-600">
               全 <strong className="text-gray-900">{ebayListingTotal.toLocaleString()}</strong> 件
+              （うち未一致 <strong className={unmatchedTotal > 0 ? 'text-amber-700' : 'text-gray-900'}>{unmatchedTotal.toLocaleString()}</strong> 件・全ページ合計）
             </p>
           </div>
 
