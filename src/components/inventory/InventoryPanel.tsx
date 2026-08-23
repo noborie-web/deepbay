@@ -383,6 +383,16 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     } finally { setBulkMatchingLoading(false) }
   }
 
+  const advanceMatchingQueue = () => {
+    if (!matchingListing) return false
+    const [next, ...rest] = matchingQueue
+    setMatchingQueue(rest)
+    setSelectedUnmatchedIds(current => current.filter(id => id !== matchingListing.id))
+    setMatchingListing(null)
+    if (next) window.setTimeout(() => openMatching(next), 0)
+    return Boolean(next)
+  }
+
   const saveMatching = async (productId: string) => {
     if (!matchingListing) return
     setMatchingSaving(true); setMatchingError(null)
@@ -394,14 +404,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? '紐付けに失敗しました')
       setListings(current => current.map(item => item.id === matchingListing.id ? { ...item, product_id: productId } : item))
-      const [next, ...rest] = matchingQueue
-      setMatchingQueue(rest)
-      setSelectedUnmatchedIds(current => current.filter(id => id !== matchingListing.id))
-      if (next) {
-        setMatchingListing(null)
-        window.setTimeout(() => openMatching(next), 0)
-      } else {
-        setMatchingListing(null)
+      if (!advanceMatchingQueue()) {
         setMessage({ type: 'success', text: '選択した商品をすべて紐付けました。次回同期から自動一致します。' })
       }
     } catch (error) {
@@ -1544,6 +1547,12 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                   </button>
                 </div>
               ))}
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button type="button" onClick={advanceMatchingQueue} disabled={matchingSaving}
+                className="rounded border border-gray-400 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                候補なし・スキップ
+              </button>
             </div>
           </div>
         </div>
