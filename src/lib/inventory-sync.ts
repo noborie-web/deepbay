@@ -1,6 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchActiveListingsBatch, fetchAllActiveListings } from './ebay-inventory'
-import { extractProductIdFromCustomLabel, extractSourceLookupCode, type InventoryListingInput } from './inventory'
+import {
+  extractProductIdFromCustomLabel,
+  extractSourceLookupKeys,
+  resolveInventoryProductId,
+  type InventoryListingInput,
+} from './inventory'
 
 export interface InventorySyncResult {
   total: number
@@ -36,10 +41,8 @@ async function storeInventoryListings(
   ).values())
   const now = new Date().toISOString()
 
-  const managementCodes = Array.from(new Set(
-    uniqueListings
-      .map(listing => extractSourceLookupCode(listing.customLabel))
-      .filter((code): code is string => code !== null),
+  const sourceLookupKeys = Array.from(new Set(
+    uniqueListings.flatMap(listing => extractSourceLookupKeys(listing.customLabel)),
   ))
   const productIds = Array.from(new Set(
     uniqueListings.map(listing => extractProductIdFromCustomLabel(listing.customLabel)).filter((id): id is string => id !== null),
@@ -47,6 +50,7 @@ async function storeInventoryListings(
   const ebayItemIds = Array.from(new Set(uniqueListings.map(listing => listing.ebayItemId).filter(Boolean)))
 
   const productLookup = new Map<string, string>()
+  const sourceProductLookup = new Map<string, Set<string>>()
   if (productIds.length > 0) {
     const { data: directProducts, error: directProductError } = await db
       .from('products')
@@ -67,31 +71,36 @@ async function storeInventoryListings(
       if (product.ebay_item_id) productLookup.set(`ebay:${product.ebay_item_id}`, product.id)
     }
   }
-  const managementCodeChunks = Array.from(
-    { length: Math.ceil(managementCodes.length / DB_CHUNK_SIZE) },
-    (_, index) => managementCodes.slice(index * DB_CHUNK_SIZE, (index + 1) * DB_CHUNK_SIZE),
+  const sourceLookupKeyChunks = Array.from(
+    { length: Math.ceil(sourceLookupKeys.length / DB_CHUNK_SIZE) },
+    (_, index) => sourceLookupKeys.slice(index * DB_CHUNK_SIZE, (index + 1) * DB_CHUNK_SIZE),
   )
-  for (const managementCodeChunk of managementCodeChunks) {
+  for (const sourceLookupKeyChunk of sourceLookupKeyChunks) {
     const { data: matchedProducts, error: productError } = await db
       .from('products')
       .select('id, source_item_id, ebay_item_id')
       .eq('user_id', userId)
-      .in('source_item_id', managementCodeChunk)
+      .in('source_item_id', sourceLookupKeyChunk)
 
     if (productError) throw new Error(`Product lookup failed: ${productError.message}`)
     for (const product of matchedProducts ?? []) {
-      if (product.source_item_id) productLookup.set(product.source_item_id, product.id)
+      if (!product.source_item_id) continue
+      const productIdsForSource = sourceProductLookup.get(product.source_item_id) ?? new Set<string>()
+      productIdsForSource.add(product.id)
+      sourceProductLookup.set(product.source_item_id, productIdsForSource)
     }
   }
 
   let matched = 0
   const rows = uniqueListings.map(listing => {
-    const code = extractSourceLookupCode(listing.customLabel)
     const directProductId = extractProductIdFromCustomLabel(listing.customLabel)
-    const productId = directProductId
-      ? (productLookup.get(directProductId) ?? null)
-      : code ? (productLookup.get(code) ?? productLookup.get(`ebay:${listing.ebayItemId}`) ?? null)
-        : productLookup.get(`ebay:${listing.ebayItemId}`) ?? null
+    const sourceProductIds = extractSourceLookupKeys(listing.customLabel)
+      .flatMap(key => Array.from(sourceProductLookup.get(key) ?? []))
+    const productId = resolveInventoryProductId(
+      directProductId ? productLookup.get(directProductId) : null,
+      productLookup.get(`ebay:${listing.ebayItemId}`),
+      sourceProductIds,
+    )
     if (productId) matched++
 
     return {

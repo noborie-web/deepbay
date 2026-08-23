@@ -2,7 +2,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { parseEbayActiveListingsCsv, extractProductIdFromCustomLabel, extractSourceLookupCode } from '@/lib/inventory'
+import {
+  extractProductIdFromCustomLabel,
+  extractSourceLookupKeys,
+  parseEbayActiveListingsCsv,
+  resolveInventoryProductId,
+} from '@/lib/inventory'
 
 function admin() {
   return createServiceClient(
@@ -81,13 +86,15 @@ export async function POST(req: NextRequest) {
   if (runError || !run) return NextResponse.json({ error: 'Failed to create run record' }, { status: 500 })
   const runId = run.id
 
-  // Resolve management codes to product IDs
-  const managementCodes = listings
-    .map((l) => extractSourceLookupCode(l.customLabel))
-    .filter((c): c is string => c !== null)
-  const productIds = listings
-    .map((l) => extractProductIdFromCustomLabel(l.customLabel))
-    .filter((id): id is string => id !== null)
+  // Resolve exact custom-label keys to product IDs.
+  const sourceLookupKeys = Array.from(new Set(
+    listings.flatMap((listing) => extractSourceLookupKeys(listing.customLabel)),
+  ))
+  const productIds = Array.from(new Set(
+    listings
+      .map((listing) => extractProductIdFromCustomLabel(listing.customLabel))
+      .filter((id): id is string => id !== null),
+  ))
   const ebayItemIds = Array.from(new Set(listings.map((l) => l.ebayItemId).filter(Boolean)))
 
   const productLookup = new Map<string, string>()
@@ -96,7 +103,7 @@ export async function POST(req: NextRequest) {
       .from('products')
       .select('id, ebay_item_id')
       .eq('user_id', user.id)
-      .in('id', Array.from(new Set(productIds)))
+      .in('id', productIds)
     for (const p of directProducts ?? []) productLookup.set(p.id, p.id)
   }
   if (ebayItemIds.length > 0) {
@@ -109,27 +116,32 @@ export async function POST(req: NextRequest) {
       if (p.ebay_item_id) productLookup.set(`ebay:${p.ebay_item_id}`, p.id)
     }
   }
-  if (managementCodes.length > 0) {
+  const sourceProductLookup = new Map<string, Set<string>>()
+  if (sourceLookupKeys.length > 0) {
     const { data: matchedProducts } = await db
       .from('products')
       .select('id, source_item_id')
       .eq('user_id', user.id)
-      .in('source_item_id', managementCodes)
+      .in('source_item_id', sourceLookupKeys)
 
     for (const p of matchedProducts ?? []) {
-      if (p.source_item_id) productLookup.set(p.source_item_id, p.id)
+      if (!p.source_item_id) continue
+      const productIdsForSource = sourceProductLookup.get(p.source_item_id) ?? new Set<string>()
+      productIdsForSource.add(p.id)
+      sourceProductLookup.set(p.source_item_id, productIdsForSource)
     }
   }
 
   let matched = 0
   const rows = listings.map((l) => {
-    const code = extractSourceLookupCode(l.customLabel)
     const directProductId = extractProductIdFromCustomLabel(l.customLabel)
-    const productId = directProductId
-      ? (productLookup.get(directProductId) ?? null)
-      : code
-        ? (productLookup.get(code) ?? productLookup.get(`ebay:${l.ebayItemId}`) ?? null)
-        : productLookup.get(`ebay:${l.ebayItemId}`) ?? null
+    const sourceProductIds = extractSourceLookupKeys(l.customLabel)
+      .flatMap(key => Array.from(sourceProductLookup.get(key) ?? []))
+    const productId = resolveInventoryProductId(
+      directProductId ? productLookup.get(directProductId) : null,
+      productLookup.get(`ebay:${l.ebayItemId}`),
+      sourceProductIds,
+    )
     if (productId) matched++
 
     return {

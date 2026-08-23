@@ -27,6 +27,32 @@ export function extractSourceLookupCode(customLabel: string | null): string | nu
   return m ? m[0] : null
 }
 
+/** Return exact source_item_id candidates encoded in a custom label. */
+export function extractSourceLookupKeys(customLabel: string | null): string[] {
+  if (!customLabel) return []
+  const value = customLabel.trim()
+  if (!value) return []
+  const keys = new Set<string>([value])
+  const managementCode = extractSourceLookupCode(value)
+  if (managementCode) keys.add(managementCode)
+  return Array.from(keys)
+}
+
+/**
+ * Pick an automatic inventory match in priority order. A source_item_id match
+ * is safe only when every matching lookup key resolves to the same product.
+ */
+export function resolveInventoryProductId(
+  directProductId: string | null | undefined,
+  ebayProductId: string | null | undefined,
+  sourceProductIds: Iterable<string>,
+): string | null {
+  if (directProductId) return directProductId
+  if (ebayProductId) return ebayProductId
+  const uniqueSourceProductIds = Array.from(new Set(sourceProductIds))
+  return uniqueSourceProductIds.length === 1 ? uniqueSourceProductIds[0] : null
+}
+
 /** Extract the product UUID encoded by the current DeepBay listing exporter. */
 export function extractProductIdFromCustomLabel(customLabel: string | null): string | null {
   if (!customLabel) return null

@@ -7,6 +7,8 @@ const {
   mockRunSelect,
   mockRunUpdate,
   mockListingCountSelect,
+  mockProductEq,
+  mockProductLimit,
   mockSyncBatch,
 } = vi.hoisted(() => ({
   mockExpireStaleRuns: vi.fn(),
@@ -15,6 +17,8 @@ const {
   mockRunSelect: vi.fn(),
   mockRunUpdate: vi.fn(),
   mockListingCountSelect: vi.fn(),
+  mockProductEq: vi.fn(),
+  mockProductLimit: vi.fn(),
   mockSyncBatch: vi.fn(),
 }))
 
@@ -57,7 +61,20 @@ vi.mock('@supabase/supabase-js', () => ({
         }
       }
       if (table === 'inventory_active_listings') {
-        return { select: mockListingCountSelect }
+        return {
+          delete: vi.fn().mockReturnValue(updateQuery()),
+          select: mockListingCountSelect,
+        }
+      }
+      if (table === 'products') {
+        const query = {
+          select: vi.fn(),
+          eq: mockProductEq,
+          limit: mockProductLimit,
+        }
+        query.select.mockReturnValue(query)
+        mockProductEq.mockReturnValue(query)
+        return query
       }
       throw new Error(`Unexpected table: ${table}`)
     }),
@@ -85,6 +102,8 @@ describe('POST /api/inventory/sync', () => {
     mockListingCountSelect.mockReset().mockImplementation(() => ({
       eq: vi.fn(async () => ({ count: 1050, error: null })),
     }))
+    mockProductEq.mockReset()
+    mockProductLimit.mockReset()
   })
 
   it('starts a run and returns a signed continuation cursor', async () => {
@@ -216,5 +235,33 @@ describe('POST /api/inventory/sync', () => {
       error: '同期の継続情報が無効です。最初からやり直してください。',
     })
     expect(mockSyncBatch).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /api/inventory/matching', () => {
+  beforeEach(() => {
+    process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://example.supabase.co'
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-secret'
+    mockProductEq.mockReset()
+    mockProductLimit.mockReset().mockResolvedValue({
+      data: [{ id: 'product-1', source_item_id: 'deepbay_source-uuid' }],
+      error: null,
+    })
+  })
+
+  it('finds an exact source_item_id match', async () => {
+    const { NextRequest } = await import('next/server')
+    const { GET } = await import('@/app/api/inventory/matching/route')
+    const response = await GET(new NextRequest(
+      'http://localhost/api/inventory/matching?sourceItemId=deepbay_source-uuid',
+    ))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      products: [{ id: 'product-1', source_item_id: 'deepbay_source-uuid' }],
+    })
+    expect(mockProductEq).toHaveBeenCalledWith('user_id', 'user-1')
+    expect(mockProductEq).toHaveBeenCalledWith('source_item_id', 'deepbay_source-uuid')
+    expect(mockProductLimit).toHaveBeenCalledWith(2)
   })
 })
