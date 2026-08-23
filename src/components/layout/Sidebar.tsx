@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import {
   Gift,
   RefreshCw,
@@ -16,6 +16,7 @@ import {
   Menu,
 } from 'lucide-react'
 import clsx from 'clsx'
+import { createClient } from '@/lib/supabase/client'
 
 const NAV = [
   {
@@ -37,13 +38,19 @@ const NAV = [
 const BOTTOM_NAV = [
   { label: '会員情報', href: '/account', icon: User },
   { label: '料金プラン', href: '/plan', icon: CreditCard },
-  { label: 'マニュアル', href: '/manual', icon: BookOpen },
+  { label: 'マニュアル', href: 'https://deepbay.info', icon: BookOpen, external: true },
   { label: '規約情報', href: '/terms', icon: FileText },
-  { label: 'ログアウト', href: '/logout', icon: LogOut },
 ]
 
 export default function Sidebar() {
   const pathname = usePathname()
+  const router = useRouter()
+
+  async function handleLogout() {
+    const supabase = createClient()
+    await supabase.auth.signOut()
+    router.push('/login')
+  }
 
   return (
     <aside className="flex flex-col w-52 min-h-screen bg-[#1c1c1c] text-[#c9b97a] shrink-0">
@@ -82,16 +89,39 @@ export default function Sidebar() {
 
       {/* Bottom nav */}
       <div className="border-t border-[#2e2e2e] py-2">
-        {BOTTOM_NAV.map(({ label, href, icon: Icon }) => (
-          <Link
-            key={href}
-            href={href}
-            className="flex items-center gap-3 px-4 py-2 text-sm text-[#888] hover:text-[#c9b97a] hover:bg-[#242424] transition-colors"
-          >
-            <Icon size={15} />
-            {label}
-          </Link>
-        ))}
+        {BOTTOM_NAV.map(({ label, href, icon: Icon, external }) => {
+          const className = 'flex items-center gap-3 px-4 py-2 text-sm text-[#888] hover:text-[#c9b97a] hover:bg-[#242424] transition-colors'
+
+          if (external) {
+            return (
+              <a
+                key={href}
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={className}
+              >
+                <Icon size={15} />
+                {label}
+              </a>
+            )
+          }
+
+          return (
+            <Link key={href} href={href} className={className}>
+              <Icon size={15} />
+              {label}
+            </Link>
+          )
+        })}
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="flex w-full items-center gap-3 px-4 py-2 text-sm text-[#888] hover:text-[#c9b97a] hover:bg-[#242424] transition-colors"
+        >
+          <LogOut size={15} />
+          ログアウト
+        </button>
       </div>
     </aside>
   )
