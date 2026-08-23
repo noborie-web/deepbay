@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 
 async function getEbayToken(): Promise<string> {
@@ -43,7 +43,13 @@ function flattenCategories(node: any, results: { id: string; name: string; paren
   return results
 }
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  const adminSecret = process.env.ADMIN_API_SECRET
+  const authHeader = req.headers.get('authorization')
+  if (!adminSecret || authHeader !== `Bearer ${adminSecret}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
   try {
     const token = await getEbayToken()
 

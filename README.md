@@ -68,6 +68,16 @@ Required for the scheduled inventory job in `vercel.json`:
 CRON_SECRET=
 ```
 
+Required for the destructive eBay category import admin API:
+
+```text
+ADMIN_API_SECRET=
+```
+
+Send this value as a Bearer token when calling
+`/api/admin/import-ebay-categories`. Local manual use requires the same value
+in `.env.local`.
+
 Optional title translation:
 
 ```text

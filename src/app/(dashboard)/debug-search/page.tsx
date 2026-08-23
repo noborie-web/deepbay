@@ -1,5 +1,6 @@
 'use client'
 import { useState } from 'react'
+import { notFound } from 'next/navigation'
 
 export default function DebugSearchPage() {
   const [cookie, setCookie] = useState('')
@@ -10,6 +11,8 @@ export default function DebugSearchPage() {
   const [htmlResult, setHtmlResult] = useState<null | Record<string, unknown>>(null)
   const [loading, setLoading] = useState(false)
   const [htmlLoading, setHtmlLoading] = useState(false)
+
+  if (process.env.NODE_ENV === 'production') notFound()
 
   async function runApiTest() {
     setLoading(true)
