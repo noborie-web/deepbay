@@ -45,10 +45,22 @@ export async function GET(request: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
+  // Page-scoped filtering of `listings` only reveals unmatched items on the
+  // current page. Count the true total across all pages separately so the UI
+  // can show an accurate "全体で未一致 N 件" figure instead of a per-page one.
+  const { count: unmatchedTotal, error: unmatchedError } = await admin()
+    .from('inventory_active_listings')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', user.id)
+    .is('product_id', null)
+
+  if (unmatchedError) return NextResponse.json({ error: unmatchedError.message }, { status: 500 })
+
   const total = count ?? 0
   return NextResponse.json({
     listings: data ?? [],
     total,
+    unmatchedTotal: unmatchedTotal ?? 0,
     page,
     pageSize: PAGE_SIZE,
     totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)),
