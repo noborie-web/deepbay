@@ -9,6 +9,10 @@ const BASE_HEADERS = {
 }
 
 export async function GET(req: NextRequest) {
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
+
   const url = req.nextUrl.searchParams.get('url')
   const cookie = req.nextUrl.searchParams.get('cookie')
   if (!url) {

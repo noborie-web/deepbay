@@ -9,6 +9,10 @@ const BASE_HEADERS = {
 }
 
 export async function POST(req: NextRequest) {
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
+
   const body = await req.json()
   const { token, cookie, keyword, categoryIds, minPrice, maxPrice, page = 1 } = body
 

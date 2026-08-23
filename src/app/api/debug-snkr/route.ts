@@ -12,6 +12,10 @@ const HEADERS = {
 const KNOWN_IDS = ['8600542', '7691177', '8009016']
 
 export async function GET(req: NextRequest) {
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
+
   const single = req.nextUrl.searchParams.get('endpoint')
 
   if (single) {

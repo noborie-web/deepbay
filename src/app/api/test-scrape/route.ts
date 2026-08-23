@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { scrapeUrl } from '@/lib/scrapers'
 
 export async function GET(req: NextRequest) {
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
+
   const url = req.nextUrl.searchParams.get('url')
   if (!url) {
     return NextResponse.json({ error: 'url parameter required' }, { status: 400 })
