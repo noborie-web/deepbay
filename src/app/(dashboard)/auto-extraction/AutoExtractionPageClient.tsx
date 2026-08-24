@@ -146,7 +146,7 @@ export default function AutoExtractionPageClient({ sellers, categories, bulkSett
       </div>
 
       <div className="mb-6 rounded border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
-        現在はスケジュール設定の保存機能のみ利用できます。指定日時の自動実行は次のフェーズで対応予定です。
+        自動抽出は毎日9時台（日本時間）の定期処理で、当日分をまとめて実行します。設定した実行時刻は管理上の目安であり、その時刻ちょうどの実行を保証するものではありません。「抽出＋出品」を選んだ場合も、現在は抽出のみ実行されます。
       </div>
 
       {error && <div className="mb-4 rounded border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
@@ -196,7 +196,7 @@ export default function AutoExtractionPageClient({ sellers, categories, bulkSett
             <input type="number" min={1} max={28} required value={scheduleDay} onChange={e => setScheduleDay(Number(e.target.value))} className={`mt-1 ${inputClassName}`} />
           </label>
           <label className="text-sm text-gray-700">
-            実行時刻
+            実行時刻（目安）
             <input type="time" required value={scheduleTime} onChange={e => setScheduleTime(e.target.value)} className={`mt-1 ${inputClassName}`} />
           </label>
         </div>
@@ -225,7 +225,7 @@ export default function AutoExtractionPageClient({ sellers, categories, bulkSett
                   <a href={schedule.source_url} target="_blank" rel="noopener noreferrer" className="block truncate text-sm text-blue-600 hover:underline">{schedule.source_url}</a>
                 </div>
                 <div className="text-sm text-gray-600 lg:w-32">{schedule.process_type === 'extract' ? '抽出のみ' : '抽出＋出品'}</div>
-                <div className="text-sm text-gray-600 lg:w-40">毎月{schedule.schedule_day_of_month}日 {schedule.schedule_time}</div>
+                <div className="text-sm text-gray-600 lg:w-40">毎月{schedule.schedule_day_of_month}日 9時台実行（{schedule.schedule_time}は目安）</div>
                 <button type="button" role="switch" aria-checked={schedule.enabled} aria-label={`${schedule.name || schedule.source_url}を${schedule.enabled ? '無効' : '有効'}にする`}
                   disabled={updatingId === schedule.id} onClick={() => toggleEnabled(schedule)}
                   className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${schedule.enabled ? 'bg-green-500' : 'bg-gray-300'}`}>
