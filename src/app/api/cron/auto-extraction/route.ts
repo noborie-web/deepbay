@@ -1,0 +1,179 @@
+// Vercel Cron Job — 毎日0時UTC（9時台JST）に当日分をまとめて実行
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient as createServiceClient } from '@supabase/supabase-js'
+import { findScraper } from '@/lib/scrapers'
+import { runScrape } from '@/lib/extraction-run'
+
+export const maxDuration = 300
+
+interface AutoExtractionSchedule {
+  id: string
+  user_id: string
+  name: string | null
+  source_url: string
+  seller_account_id: string | null
+  category_id: string | null
+  bulk_edit_setting_id: string | null
+  process_type: 'extract' | 'extract_and_list'
+  schedule_day_of_month: number
+}
+
+interface CronResult {
+  schedule_id: string
+  extraction_id?: string
+  status: 'completed' | 'skipped' | 'failed'
+  reason?: string
+}
+
+function admin() {
+  return createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+}
+
+export function getJstDayOfMonth(date = new Date()): number {
+  return Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Tokyo',
+    day: 'numeric',
+  }).format(date))
+}
+
+async function recordFinishedRun(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  schedule: AutoExtractionSchedule,
+  status: CronResult['status'],
+  options: { extractionId?: string; errorMessage?: string } = {},
+) {
+  await db.from('auto_extraction_runs').insert({
+    user_id: schedule.user_id,
+    schedule_id: schedule.id,
+    extraction_id: options.extractionId ?? null,
+    status,
+    error_message: options.errorMessage ?? null,
+    started_at: new Date().toISOString(),
+    finished_at: new Date().toISOString(),
+  })
+}
+
+async function executeSchedule(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  schedule: AutoExtractionSchedule,
+): Promise<CronResult> {
+  const { data: profile, error: profileError } = await db
+    .from('profiles')
+    .select('extraction_limit, extraction_used')
+    .eq('id', schedule.user_id)
+    .single()
+
+  if (profileError || !profile) {
+    const reason = profileError?.message ?? 'Profile not found'
+    await recordFinishedRun(db, schedule, 'failed', { errorMessage: reason })
+    return { schedule_id: schedule.id, status: 'failed', reason }
+  }
+
+  if (profile.extraction_used >= profile.extraction_limit) {
+    const reason = '抽出回数の上限に達しているためスキップしました。'
+    await recordFinishedRun(db, schedule, 'skipped', { errorMessage: reason })
+    return { schedule_id: schedule.id, status: 'skipped', reason }
+  }
+
+  const scraper = findScraper(schedule.source_url)
+  if (!scraper) {
+    const reason = 'このURLに対応するスクレイパーが見つかりません。'
+    await recordFinishedRun(db, schedule, 'failed', { errorMessage: reason })
+    return { schedule_id: schedule.id, status: 'failed', reason }
+  }
+
+  const { data: extraction, error: insertError } = await db
+    .from('extractions')
+    .insert({
+      user_id: schedule.user_id,
+      source_url: schedule.source_url,
+      source_site: scraper.siteKey,
+      seller_account_id: schedule.seller_account_id,
+      category_id: schedule.category_id,
+      bulk_edit_setting_id: schedule.bulk_edit_setting_id,
+      memo: schedule.name ?? '',
+      is_bulk: true,
+      status: 'processing',
+      progress: 0,
+    })
+    .select('id')
+    .single()
+
+  if (insertError || !extraction) {
+    const reason = insertError?.message ?? '抽出ジョブを作成できませんでした。'
+    await recordFinishedRun(db, schedule, 'failed', { errorMessage: reason })
+    return { schedule_id: schedule.id, status: 'failed', reason }
+  }
+
+  // フェーズ2では process_type にかかわらず抽出のみ実行する。
+  const runResult = await runScrape(
+    schedule.user_id,
+    extraction.id,
+    schedule.source_url,
+    schedule.bulk_edit_setting_id,
+    db,
+  )
+
+  if (runResult.status === 'failed') {
+    await recordFinishedRun(db, schedule, 'failed', {
+      extractionId: extraction.id,
+      errorMessage: runResult.errorMessage,
+    })
+    return {
+      schedule_id: schedule.id,
+      extraction_id: extraction.id,
+      status: 'failed',
+      reason: runResult.errorMessage,
+    }
+  }
+
+  if (runResult.status === 'excluded') {
+    const reason = '危険セラー設定に一致したためスキップしました。'
+    await recordFinishedRun(db, schedule, 'skipped', {
+      extractionId: extraction.id,
+      errorMessage: reason,
+    })
+    return { schedule_id: schedule.id, extraction_id: extraction.id, status: 'skipped', reason }
+  }
+
+  await recordFinishedRun(db, schedule, 'completed', { extractionId: extraction.id })
+  return { schedule_id: schedule.id, extraction_id: extraction.id, status: 'completed' }
+}
+
+export async function GET(req: NextRequest) {
+  const cronSecret = process.env.CRON_SECRET
+  const authHeader = req.headers.get('authorization')
+  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const db = admin()
+  const today = getJstDayOfMonth()
+  const { data: schedules, error } = await db
+    .from('auto_extraction_schedules')
+    .select('id, user_id, name, source_url, seller_account_id, category_id, bulk_edit_setting_id, process_type, schedule_day_of_month')
+    .eq('enabled', true)
+    .eq('schedule_day_of_month', today)
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  const results: CronResult[] = []
+  for (const schedule of (schedules ?? []) as AutoExtractionSchedule[]) {
+    try {
+      results.push(await executeSchedule(db, schedule))
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      await recordFinishedRun(db, schedule, 'failed', { errorMessage: reason }).catch(() => undefined)
+      results.push({ schedule_id: schedule.id, status: 'failed', reason })
+    }
+  }
+
+  return NextResponse.json({ ok: true, date_jst: today, processed: results.length, results })
+}

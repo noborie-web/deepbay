@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/inventory-auto",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/auto-extraction",
+      "schedule": "0 0 * * *"
     }
   ]
 }

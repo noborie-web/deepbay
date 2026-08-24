@@ -55,12 +55,12 @@ describe('AutoExtractionPageClient', () => {
     await userEvent.selectOptions(screen.getByLabelText('処理タイプ'), 'extract')
     await userEvent.clear(screen.getByLabelText('実行日（毎月1〜28日）'))
     await userEvent.type(screen.getByLabelText('実行日（毎月1〜28日）'), '8')
-    await userEvent.clear(screen.getByLabelText('実行時刻'))
-    await userEvent.type(screen.getByLabelText('実行時刻'), '10:30')
+    await userEvent.clear(screen.getByLabelText('実行時刻（目安）'))
+    await userEvent.type(screen.getByLabelText('実行時刻（目安）'), '10:30')
     await userEvent.click(screen.getByRole('button', { name: 'スケジュールを登録' }))
 
     expect(await screen.findByText('月次テスト')).toBeInTheDocument()
-    expect(screen.getByText('毎月8日 10:30')).toBeInTheDocument()
+    expect(screen.getByText('毎月8日 9時台実行（10:30は目安）')).toBeInTheDocument()
     const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
     expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({
       seller_account_id: 'seller-1',
