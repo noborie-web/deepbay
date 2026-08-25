@@ -342,13 +342,10 @@ describe('Bulk API: ホワイトリスト', () => {
 })
 
 describe('新規抽出時のebay_price', () => {
-  it('共通抽出処理は ebay_price を null にセットする', async () => {
-    // 抽出ルートの実装を検証：ebay_price は scraped.price ではなく null
+  it('共通抽出処理は円価格をそのまま使わず自動価格計算を呼ぶ', async () => {
     const { readFileSync } = await import('fs')
     const src = readFileSync('src/lib/extraction-run.ts', 'utf8')
-    // 正しい実装: null を代入
-    expect(src).toMatch(/const ebayPrice\s*:\s*number \| null\s*=\s*null/)
-    // 誤った実装(scraped.price の使用)がないこと
+    expect(src).toMatch(/calculateAutomaticEbayPrice\(scraped\.price, jpyPerUsd, setting\)/)
     expect(src).not.toMatch(/ebayPrice\s*=\s*scraped\.price/)
   })
 })

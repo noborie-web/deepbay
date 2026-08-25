@@ -1,5 +1,43 @@
 import { scrapeUrl } from '@/lib/scrapers'
 import { translateTitles } from '@/lib/translate'
+import { fetchUsdJpyRate } from '@/lib/exchange-rate'
+import { calcProfit, DEFAULT_AUTO_PRICING, validateProfitParams } from '@/lib/pricing'
+
+interface AutoPricingSetting {
+  profit_rate?: number | string | null
+  ebay_fee_rate?: number | string | null
+  shipping_cost_jpy?: number | string | null
+  fixed_cost_usd?: number | string | null
+}
+
+function settingNumber(value: number | string | null | undefined, fallback: number): number {
+  if (value === null || value === undefined || value === '') return fallback
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+export function calculateAutomaticEbayPrice(
+  purchasePriceJpy: number | null,
+  jpyPerUsd: number | null,
+  setting?: AutoPricingSetting | null,
+): number | null {
+  if (purchasePriceJpy === null || purchasePriceJpy <= 0 || jpyPerUsd === null) return null
+
+  const ebayFeeRate = settingNumber(setting?.ebay_fee_rate, DEFAULT_AUTO_PRICING.ebayFeeRate)
+  const targetProfitRate = settingNumber(setting?.profit_rate, DEFAULT_AUTO_PRICING.profitRate)
+  const shippingCostJpy = settingNumber(setting?.shipping_cost_jpy, DEFAULT_AUTO_PRICING.shippingCostJpy)
+  const fixedCostUsd = settingNumber(setting?.fixed_cost_usd, DEFAULT_AUTO_PRICING.fixedCostUsd)
+  const params = {
+    purchasePriceJpy,
+    jpyPerUsd,
+    ebayFeeRate,
+    targetProfitRate,
+    shippingUsd: shippingCostJpy / jpyPerUsd,
+    fixedCostUsd,
+  }
+  if (validateProfitParams(params)) return null
+  return calcProfit(params).salePriceUsd
+}
 
 export type ExtractionRunResult =
   | { status: 'completed' }
@@ -78,6 +116,14 @@ export async function runScrape(
         .eq('id', bulkEditSettingId)
         .single()
       setting = data
+    }
+
+    // 為替レートは抽出1回につき1度だけ取得する。失敗時は価格未設定で抽出を継続する。
+    let jpyPerUsd: number | null = null
+    try {
+      jpyPerUsd = (await fetchUsdJpyRate()).rate
+    } catch (error) {
+      console.warn('Exchange rate fetch failed; ebay_price remains unset:', error)
     }
 
     const replacePairs: { before_word: string; after_word: string }[] = replaceWords ?? []
@@ -160,9 +206,7 @@ export async function runScrape(
       if (setting) {
         ebayTitle = `${setting.title_prefix}${ebayTitle}${setting.title_suffix}`.slice(0, 80)
       }
-      // ebay_price は価格編集で明示的に設定するまで null にする
-      // (original_price をそのまま使うと円がドルになる)
-      const ebayPrice: number | null = null
+      const ebayPrice = calculateAutomaticEbayPrice(scraped.price, jpyPerUsd, setting)
       return {
         user_id: userId,
         extraction_id: extractionId,

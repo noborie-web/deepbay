@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import type { SellerAccount, ListingCategory, BulkEditSetting } from '@/types/database'
+import BulkEditSettingModal from './BulkEditSettingModal'
 
 interface Props {
   sellers: SellerAccount[]
@@ -22,7 +23,9 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
   const [sellerAccountId, setSellerAccountId] = useState(
     sellers.find((s) => s.is_default)?.id ?? sellers[0]?.id ?? ''
   )
-  const [bulkEditSettingId, setBulkEditSettingId] = useState(bulkSettings[0]?.id ?? '')
+  const [availableBulkSettings, setAvailableBulkSettings] = useState(bulkSettings)
+  const [bulkEditSettingId, setBulkEditSettingId] = useState('')
+  const [editingBulkSetting, setEditingBulkSetting] = useState<BulkEditSetting | null | undefined>(undefined)
   const [loading, setLoading] = useState(false)
 
   async function handleSubmit() {
@@ -85,16 +88,30 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
           onChange={(e) => setBulkEditSettingId(e.target.value)}
           className="border rounded px-3 py-2 text-sm pr-8 focus:outline-none focus:ring-2 focus:ring-yellow-400"
         >
-          {bulkSettings.map((b) => (
+          <option value="">指定なし（既定値）</option>
+          {availableBulkSettings.map((b) => (
             <option key={b.id} value={b.id}>{b.name}</option>
           ))}
         </select>
       </div>
 
       <button
-        className="border border-gray-300 rounded px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
+        type="button"
+        disabled={!bulkEditSettingId}
+        onClick={() => setEditingBulkSetting(
+          availableBulkSettings.find(setting => setting.id === bulkEditSettingId) ?? null,
+        )}
+        className="border border-gray-300 rounded px-3 py-2 text-sm hover:bg-gray-50 transition-colors disabled:opacity-40"
       >
         一括編集設定編集
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setEditingBulkSetting(null)}
+        className="border border-gray-300 rounded px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
+      >
+        一括編集設定作成
       </button>
 
       <button
@@ -104,6 +121,22 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
       >
         {loading ? '抽出中...' : '抽出開始'}
       </button>
+
+      {editingBulkSetting !== undefined && (
+        <BulkEditSettingModal
+          setting={editingBulkSetting}
+          onClose={() => setEditingBulkSetting(undefined)}
+          onSaved={(saved) => {
+            setAvailableBulkSettings(current => {
+              const exists = current.some(setting => setting.id === saved.id)
+              return exists
+                ? current.map(setting => setting.id === saved.id ? saved : setting)
+                : [...current, saved]
+            })
+            setBulkEditSettingId(saved.id)
+          }}
+        />
+      )}
     </div>
   )
 }

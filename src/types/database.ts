@@ -45,6 +45,10 @@ export interface BulkEditSetting {
   title_suffix: string
   description_template: string
   condition_mapping: Record<string, string>
+  profit_rate: number | null
+  ebay_fee_rate: number | null
+  shipping_cost_jpy: number | null
+  fixed_cost_usd: number | null
   created_at: string
   updated_at: string
 }

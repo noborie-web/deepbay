@@ -13,6 +13,13 @@ export interface ProfitCalcResult {
   profitUsd: number
 }
 
+export const DEFAULT_AUTO_PRICING = {
+  profitRate: 0.23,
+  ebayFeeRate: 0.20,
+  shippingCostJpy: 3000,
+  fixedCostUsd: 0,
+} as const
+
 export interface ProfitTier {
   maxPurchaseJpy: number | null
   profitJpy: number
