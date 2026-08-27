@@ -8,12 +8,14 @@ interface QueryState {
   operation: 'select' | 'insert' | null
   payload?: Record<string, unknown>
   filters: Array<[string, unknown]>
+  selectOptions?: { count?: string; head?: boolean }
 }
 
 const mocks = vi.hoisted(() => ({
   createServiceClient: vi.fn(),
   findScraper: vi.fn(),
   runScrape: vi.fn(),
+  getDirectListingIssues: vi.fn(),
 }))
 
 vi.mock('@supabase/supabase-js', () => ({
@@ -26,6 +28,10 @@ vi.mock('@/lib/scrapers', () => ({
 
 vi.mock('@/lib/extraction-run', () => ({
   runScrape: mocks.runScrape,
+}))
+
+vi.mock('@/lib/listing-export', () => ({
+  getDirectListingIssues: mocks.getDirectListingIssues,
 }))
 
 import { GET } from '@/app/api/cron/auto-extraction/route'
@@ -51,6 +57,8 @@ const otherDaySchedule = {
 function makeDatabase(options: {
   schedules?: typeof todaySchedule[]
   profiles?: Record<string, { extraction_limit: number; extraction_used: number }>
+  products?: Array<Record<string, unknown>>
+  fallbackCategoryId?: string | null
 }) {
   const calls: QueryState[] = []
   let extractionCount = 0
@@ -75,6 +83,20 @@ function makeDatabase(options: {
       extractionCount += 1
       return { data: { id: `extraction-${extractionCount}` }, error: null }
     }
+    if (state.table === 'products') {
+      if (state.selectOptions?.head) {
+        return { data: null, error: null, count: (options.products ?? []).length }
+      }
+      return { data: options.products ?? [], error: null }
+    }
+    if (state.table === 'listing_categories') {
+      return {
+        data: options.fallbackCategoryId == null
+          ? null
+          : { ebay_category_id: options.fallbackCategoryId },
+        error: null,
+      }
+    }
     if (state.table === 'auto_extraction_runs') {
       return { data: null, error: null }
     }
@@ -86,7 +108,11 @@ function makeDatabase(options: {
       const state: QueryState = { table, operation: null, filters: [] }
       const finish = () => Promise.resolve(resolveQuery(state))
       const query = {
-        select() { if (!state.operation) state.operation = 'select'; return query },
+        select(_columns?: string, selectOptions?: { count?: string; head?: boolean }) {
+          if (!state.operation) state.operation = 'select'
+          state.selectOptions = selectOptions
+          return query
+        },
         insert(payload: Record<string, unknown>) {
           state.operation = 'insert'
           state.payload = payload
@@ -95,6 +121,7 @@ function makeDatabase(options: {
         },
         eq(column: string, value: unknown) { state.filters.push([column, value]); return query },
         single: finish,
+        maybeSingle: finish,
         then(onFulfilled: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) {
           return finish().then(onFulfilled, onRejected)
         },
@@ -122,6 +149,14 @@ describe('GET /api/cron/auto-extraction', () => {
     mocks.createServiceClient.mockReset()
     mocks.findScraper.mockReset().mockReturnValue({ siteKey: 'mercari' })
     mocks.runScrape.mockReset().mockResolvedValue({ status: 'completed' })
+    mocks.getDirectListingIssues.mockReset().mockImplementation((product: Record<string, unknown>, fallbackCategoryId: string | null) => {
+      const issues: string[] = []
+      if (!product.ebay_title) issues.push('タイトル')
+      if (!product.ebay_price) issues.push('価格')
+      if (!Array.isArray(product.ebay_images) || product.ebay_images.length === 0) issues.push('画像')
+      if (!product.ebay_category_id && !fallbackCategoryId) issues.push('カテゴリ')
+      return issues
+    })
   })
 
   afterEach(() => {
@@ -144,6 +179,12 @@ describe('GET /api/cron/auto-extraction', () => {
     const { db, calls } = makeDatabase({
       schedules: [todaySchedule, otherDaySchedule],
       profiles: { 'user-1': { extraction_limit: 10, extraction_used: 2 } },
+      products: [
+        { id: 'ready', ebay_title: 'Ready', ebay_price: 100, ebay_images: ['image.jpg'], ebay_category_id: null },
+        { id: 'no-price', ebay_title: 'No price', ebay_price: null, ebay_images: ['image.jpg'], ebay_category_id: null },
+        { id: 'no-image', ebay_title: 'No image', ebay_price: 100, ebay_images: [], ebay_category_id: null },
+      ],
+      fallbackCategoryId: '619',
     })
     mocks.createServiceClient.mockReturnValue(db)
 
@@ -174,6 +215,31 @@ describe('GET /api/cron/auto-extraction', () => {
       schedule_id: 'schedule-today',
       extraction_id: 'extraction-1',
       status: 'completed',
+      result_summary: { extracted: 3, ready_to_list: 1, needs_fix: 2 },
+    })
+    expect(json.results[0].result_summary).toEqual({ extracted: 3, ready_to_list: 1, needs_fix: 2 })
+    expect(mocks.getDirectListingIssues).toHaveBeenCalledTimes(3)
+    expect(mocks.getDirectListingIssues).toHaveBeenCalledWith(expect.objectContaining({ id: 'ready' }), '619')
+  })
+
+  it('records only the extracted count for extract-only schedules without listing validation', async () => {
+    const extractOnlySchedule = { ...todaySchedule, process_type: 'extract' as const }
+    const { db, calls } = makeDatabase({
+      schedules: [extractOnlySchedule],
+      profiles: { 'user-1': { extraction_limit: 10, extraction_used: 2 } },
+      products: [{ id: 'product-1' }, { id: 'product-2' }],
+    })
+    mocks.createServiceClient.mockReturnValue(db)
+
+    const response = await GET(request())
+    const json = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(json.results[0].result_summary).toEqual({ extracted: 2 })
+    expect(mocks.getDirectListingIssues).not.toHaveBeenCalled()
+    expect(calls.some(call => call.table === 'listing_categories')).toBe(false)
+    expect(calls.find(call => call.table === 'auto_extraction_runs')?.payload).toMatchObject({
+      result_summary: { extracted: 2 },
     })
   })
 
@@ -205,5 +271,13 @@ describe('GET /api/cron/auto-extraction', () => {
       path: '/api/cron/auto-extraction',
       schedule: '0 0 * * *',
     })
+  })
+
+  it('adds a JSONB result summary column to automatic extraction runs', () => {
+    const sql = readFileSync(
+      resolve(process.cwd(), 'supabase/migrations/20260825_auto_extraction_runs_result_summary.sql'),
+      'utf8',
+    )
+    expect(sql).toMatch(/ALTER TABLE auto_extraction_runs[\s\S]*ADD COLUMN IF NOT EXISTS result_summary jsonb/i)
   })
 })

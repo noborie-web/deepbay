@@ -44,6 +44,7 @@ function makeDatabase(
         delete() { state.operation = 'delete'; return query },
         eq(column: string, value: unknown) { state.filters.push([column, value]); return query },
         order() { return query },
+        limit() { return query },
         single: finish,
         maybeSingle: finish,
         then(onFulfilled: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) {
@@ -87,13 +88,30 @@ describe('auto extraction schedules API', () => {
 
   it('returns only schedules scoped to the authenticated user', async () => {
     const calls: QueryState[] = []
-    mocks.createServiceClient.mockReturnValue(makeDatabase(() => ({ data: [schedule], error: null }), calls))
+    const latestRun = {
+      id: 'run-1',
+      extraction_id: 'extraction-1',
+      status: 'completed',
+      result_summary: { extracted: 3 },
+      error_message: null,
+      created_at: '2026-08-24T00:00:00.000Z',
+      finished_at: '2026-08-24T00:01:00.000Z',
+    }
+    mocks.createServiceClient.mockReturnValue(makeDatabase(state => {
+      if (state.table === 'auto_extraction_schedules') return { data: [schedule], error: null }
+      if (state.table === 'auto_extraction_runs') return { data: latestRun, error: null }
+      throw new Error(`Unexpected table: ${state.table}`)
+    }, calls))
 
     const response = await GET()
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ schedules: [schedule] })
+    expect(await response.json()).toEqual({ schedules: [{ ...schedule, latest_run: latestRun }] })
     expect(calls[0].filters).toContainEqual(['user_id', 'user-1'])
+    expect(calls[1].filters).toEqual(expect.arrayContaining([
+      ['schedule_id', 'schedule-1'],
+      ['user_id', 'user-1'],
+    ]))
   })
 
   it('creates a schedule with the authenticated user id', async () => {

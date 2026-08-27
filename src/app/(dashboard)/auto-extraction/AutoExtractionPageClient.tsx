@@ -29,6 +29,19 @@ interface AutoExtractionSchedule {
   enabled: boolean
   created_at: string
   updated_at: string
+  latest_run?: {
+    id: string
+    extraction_id: string | null
+    status: 'completed' | 'skipped' | 'failed' | 'running'
+    result_summary: {
+      extracted: number
+      ready_to_list?: number
+      needs_fix?: number
+    } | null
+    error_message: string | null
+    created_at: string
+    finished_at: string | null
+  } | null
 }
 
 interface Props {
@@ -146,7 +159,7 @@ export default function AutoExtractionPageClient({ sellers, categories, bulkSett
       </div>
 
       <div className="mb-6 rounded border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
-        自動抽出は毎日9時台（日本時間）の定期処理で、当日分をまとめて実行します。設定した実行時刻は管理上の目安であり、その時刻ちょうどの実行を保証するものではありません。「抽出＋出品」を選んだ場合も、現在は抽出のみ実行されます。
+        自動抽出は毎日9時台（日本時間）の定期処理で、当日分をまとめて実行します。設定した実行時刻は管理上の目安であり、その時刻ちょうどの実行を保証するものではありません。「抽出＋出品準備」を選ぶと出品可否を検証しますが、eBayへの出品は行いません。抽出結果を確認して手動で出品してください。
       </div>
 
       {error && <div className="mb-4 rounded border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
@@ -188,7 +201,7 @@ export default function AutoExtractionPageClient({ sellers, categories, bulkSett
             処理タイプ
             <select value={processType} onChange={e => setProcessType(e.target.value as AutoExtractionProcessType)} className={`mt-1 ${inputClassName}`}>
               <option value="extract">抽出のみ</option>
-              <option value="extract_and_list">抽出＋出品</option>
+              <option value="extract_and_list">抽出＋出品準備（手動確認）</option>
             </select>
           </label>
           <label className="text-sm text-gray-700">
@@ -219,23 +232,48 @@ export default function AutoExtractionPageClient({ sellers, categories, bulkSett
         ) : (
           <div className="divide-y">
             {schedules.map(schedule => (
-              <div key={schedule.id} className="flex flex-col gap-3 px-5 py-4 lg:flex-row lg:items-center">
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium text-gray-800">{schedule.name || '名称未設定'}</p>
-                  <a href={schedule.source_url} target="_blank" rel="noopener noreferrer" className="block truncate text-sm text-blue-600 hover:underline">{schedule.source_url}</a>
+              <div key={schedule.id} className="flex flex-col gap-3 px-5 py-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-gray-800">{schedule.name || '名称未設定'}</p>
+                    <a href={schedule.source_url} target="_blank" rel="noopener noreferrer" className="block truncate text-sm text-blue-600 hover:underline">{schedule.source_url}</a>
+                  </div>
+                  <div className="text-sm text-gray-600 lg:w-48">{schedule.process_type === 'extract' ? '抽出のみ' : '抽出＋出品準備（手動確認）'}</div>
+                  <div className="text-sm text-gray-600 lg:w-40">毎月{schedule.schedule_day_of_month}日 9時台実行（{schedule.schedule_time}は目安）</div>
+                  <button type="button" role="switch" aria-checked={schedule.enabled} aria-label={`${schedule.name || schedule.source_url}を${schedule.enabled ? '無効' : '有効'}にする`}
+                    disabled={updatingId === schedule.id} onClick={() => toggleEnabled(schedule)}
+                    className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${schedule.enabled ? 'bg-green-500' : 'bg-gray-300'}`}>
+                    <span className={`mt-1 h-4 w-4 rounded-full bg-white shadow transition-transform ${schedule.enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                  </button>
+                  <span className={`text-xs font-medium lg:w-10 ${schedule.enabled ? 'text-green-600' : 'text-gray-400'}`}>{schedule.enabled ? '有効' : '無効'}</span>
+                  <button type="button" aria-label={`${schedule.name || schedule.source_url}を削除`} disabled={updatingId === schedule.id}
+                    onClick={() => deleteSchedule(schedule)} className="self-start rounded border border-red-300 p-2 text-red-500 hover:bg-red-50 disabled:opacity-50 lg:self-auto">
+                    <Trash2 size={15} />
+                  </button>
                 </div>
-                <div className="text-sm text-gray-600 lg:w-32">{schedule.process_type === 'extract' ? '抽出のみ' : '抽出＋出品'}</div>
-                <div className="text-sm text-gray-600 lg:w-40">毎月{schedule.schedule_day_of_month}日 9時台実行（{schedule.schedule_time}は目安）</div>
-                <button type="button" role="switch" aria-checked={schedule.enabled} aria-label={`${schedule.name || schedule.source_url}を${schedule.enabled ? '無効' : '有効'}にする`}
-                  disabled={updatingId === schedule.id} onClick={() => toggleEnabled(schedule)}
-                  className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${schedule.enabled ? 'bg-green-500' : 'bg-gray-300'}`}>
-                  <span className={`mt-1 h-4 w-4 rounded-full bg-white shadow transition-transform ${schedule.enabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                </button>
-                <span className={`text-xs font-medium lg:w-10 ${schedule.enabled ? 'text-green-600' : 'text-gray-400'}`}>{schedule.enabled ? '有効' : '無効'}</span>
-                <button type="button" aria-label={`${schedule.name || schedule.source_url}を削除`} disabled={updatingId === schedule.id}
-                  onClick={() => deleteSchedule(schedule)} className="self-start rounded border border-red-300 p-2 text-red-500 hover:bg-red-50 disabled:opacity-50 lg:self-auto">
-                  <Trash2 size={15} />
-                </button>
+                {schedule.latest_run && (
+                  <div className="rounded bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                      <span>直近実行: {new Date(schedule.latest_run.finished_at ?? schedule.latest_run.created_at).toLocaleString('ja-JP')}</span>
+                      <span>{schedule.latest_run.status === 'completed' ? '成功' : schedule.latest_run.status === 'skipped' ? 'スキップ' : schedule.latest_run.status === 'failed' ? '失敗' : '実行中'}</span>
+                      {schedule.latest_run.result_summary && <span>抽出 {schedule.latest_run.result_summary.extracted}件</span>}
+                      {schedule.process_type === 'extract_and_list' && schedule.latest_run.result_summary && (
+                        <>
+                          <span className="text-green-700">出品準備完了 {schedule.latest_run.result_summary.ready_to_list ?? 0}件</span>
+                          <span className="text-amber-700">要確認 {schedule.latest_run.result_summary.needs_fix ?? 0}件</span>
+                        </>
+                      )}
+                      {schedule.process_type === 'extract_and_list'
+                        && (schedule.latest_run.result_summary?.ready_to_list ?? 0) > 0
+                        && schedule.latest_run.extraction_id && (
+                        <a href={`/extraction/${schedule.latest_run.extraction_id}`} className="font-medium text-blue-600 hover:underline">
+                          抽出結果を確認して出品へ
+                        </a>
+                      )}
+                    </div>
+                    {schedule.latest_run.error_message && <p className="mt-1 text-red-600">{schedule.latest_run.error_message}</p>}
+                  </div>
+                )}
               </div>
             ))}
           </div>
