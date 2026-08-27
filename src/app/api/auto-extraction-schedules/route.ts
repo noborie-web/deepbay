@@ -18,7 +18,8 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { data, error } = await admin()
+  const db = admin()
+  const { data, error } = await db
     .from('auto_extraction_schedules')
     .select('*')
     .eq('user_id', user.id)
@@ -26,7 +27,25 @@ export async function GET() {
     .order('schedule_time')
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ schedules: data ?? [] })
+
+  try {
+    const schedulesWithLatestRun = await Promise.all((data ?? []).map(async (schedule) => {
+      const { data: latestRun, error: runError } = await db
+        .from('auto_extraction_runs')
+        .select('id, extraction_id, status, result_summary, error_message, created_at, finished_at')
+        .eq('schedule_id', schedule.id)
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (runError) throw new Error(runError.message)
+      return { ...schedule, latest_run: latestRun ?? null }
+    }))
+    return NextResponse.json({ schedules: schedulesWithLatestRun })
+  } catch (runError) {
+    const message = runError instanceof Error ? runError.message : String(runError)
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
 }
 
 export async function POST(req: NextRequest) {

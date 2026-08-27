@@ -18,6 +18,7 @@ const baseSchedule = {
   enabled: true,
   created_at: '2026-08-23T00:00:00.000Z',
   updated_at: '2026-08-23T00:00:00.000Z',
+  latest_run: null,
 }
 
 describe('AutoExtractionPageClient', () => {
@@ -86,5 +87,54 @@ describe('AutoExtractionPageClient', () => {
     await userEvent.click(screen.getByRole('button', { name: '月次テストを削除' }))
     await waitFor(() => expect(screen.queryByText('月次テスト')).not.toBeInTheDocument())
     expect(fetchMock).toHaveBeenCalledWith('/api/auto-extraction-schedules/schedule-1', { method: 'DELETE' })
+  })
+
+  it('shows the latest listing-readiness summary and links to the extraction result', async () => {
+    const scheduleWithResult = {
+      ...baseSchedule,
+      process_type: 'extract_and_list' as const,
+      latest_run: {
+        id: 'run-1',
+        extraction_id: 'extraction-1',
+        status: 'completed' as const,
+        result_summary: { extracted: 3, ready_to_list: 1, needs_fix: 2 },
+        error_message: null,
+        created_at: '2026-08-24T00:00:00.000Z',
+        finished_at: '2026-08-24T00:01:00.000Z',
+      },
+    }
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ schedules: [scheduleWithResult] }) })
+
+    render(<AutoExtractionPageClient sellers={[]} categories={[]} bulkSettings={[]} />)
+
+    expect(await screen.findByText('抽出 3件')).toBeInTheDocument()
+    expect(screen.getByText('出品準備完了 1件')).toBeInTheDocument()
+    expect(screen.getByText('要確認 2件')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '抽出結果を確認して出品へ' })).toHaveAttribute(
+      'href',
+      '/extraction/extraction-1',
+    )
+  })
+
+  it('does not show listing-readiness counts for extract-only schedules', async () => {
+    const extractOnlyResult = {
+      ...baseSchedule,
+      latest_run: {
+        id: 'run-1',
+        extraction_id: 'extraction-1',
+        status: 'completed' as const,
+        result_summary: { extracted: 2 },
+        error_message: null,
+        created_at: '2026-08-24T00:00:00.000Z',
+        finished_at: '2026-08-24T00:01:00.000Z',
+      },
+    }
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ schedules: [extractOnlyResult] }) })
+
+    render(<AutoExtractionPageClient sellers={[]} categories={[]} bulkSettings={[]} />)
+
+    expect(await screen.findByText('抽出 2件')).toBeInTheDocument()
+    expect(screen.queryByText(/出品準備完了/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/要確認/)).not.toBeInTheDocument()
   })
 })

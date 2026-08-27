@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { findScraper } from '@/lib/scrapers'
 import { runScrape } from '@/lib/extraction-run'
+import { getDirectListingIssues } from '@/lib/listing-export'
+import type { Product } from '@/types/database'
 
 export const maxDuration = 300
 
@@ -23,6 +25,13 @@ interface CronResult {
   extraction_id?: string
   status: 'completed' | 'skipped' | 'failed'
   reason?: string
+  result_summary?: AutoExtractionResultSummary
+}
+
+interface AutoExtractionResultSummary {
+  extracted: number
+  ready_to_list?: number
+  needs_fix?: number
 }
 
 function admin() {
@@ -44,7 +53,11 @@ async function recordFinishedRun(
   db: any,
   schedule: AutoExtractionSchedule,
   status: CronResult['status'],
-  options: { extractionId?: string; errorMessage?: string } = {},
+  options: {
+    extractionId?: string
+    errorMessage?: string
+    resultSummary?: AutoExtractionResultSummary
+  } = {},
 ) {
   await db.from('auto_extraction_runs').insert({
     user_id: schedule.user_id,
@@ -52,9 +65,58 @@ async function recordFinishedRun(
     extraction_id: options.extractionId ?? null,
     status,
     error_message: options.errorMessage ?? null,
+    result_summary: options.resultSummary ?? null,
     started_at: new Date().toISOString(),
     finished_at: new Date().toISOString(),
   })
+}
+
+async function summarizeExtraction(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  schedule: AutoExtractionSchedule,
+  extractionId: string,
+): Promise<AutoExtractionResultSummary> {
+  if (schedule.process_type === 'extract') {
+    const { count, error } = await db
+      .from('products')
+      .select('id', { count: 'exact', head: true })
+      .eq('extraction_id', extractionId)
+      .eq('user_id', schedule.user_id)
+    if (error) throw new Error(error.message)
+    return { extracted: count ?? 0 }
+  }
+
+  const { data: products, error: productsError } = await db
+    .from('products')
+    .select('*')
+    .eq('extraction_id', extractionId)
+    .eq('user_id', schedule.user_id)
+  if (productsError) throw new Error(productsError.message)
+
+  let fallbackCategoryId: string | null = null
+  if (schedule.category_id) {
+    const { data: category, error: categoryError } = await db
+      .from('listing_categories')
+      .select('ebay_category_id')
+      .eq('id', schedule.category_id)
+      .eq('user_id', schedule.user_id)
+      .maybeSingle()
+    if (categoryError) throw new Error(categoryError.message)
+    fallbackCategoryId = category?.ebay_category_id ?? null
+  }
+
+  let readyToList = 0
+  let needsFix = 0
+  for (const product of (products ?? []) as Product[]) {
+    if (getDirectListingIssues(product, fallbackCategoryId).length === 0) readyToList += 1
+    else needsFix += 1
+  }
+  return {
+    extracted: (products ?? []).length,
+    ready_to_list: readyToList,
+    needs_fix: needsFix,
+  }
 }
 
 async function executeSchedule(
@@ -110,7 +172,7 @@ async function executeSchedule(
     return { schedule_id: schedule.id, status: 'failed', reason }
   }
 
-  // フェーズ2では process_type にかかわらず抽出のみ実行する。
+  // 出品操作は行わず、フェーズ3では抽出完了後の出品準備状態だけを検証する。
   const runResult = await runScrape(
     schedule.user_id,
     extraction.id,
@@ -141,8 +203,17 @@ async function executeSchedule(
     return { schedule_id: schedule.id, extraction_id: extraction.id, status: 'skipped', reason }
   }
 
-  await recordFinishedRun(db, schedule, 'completed', { extractionId: extraction.id })
-  return { schedule_id: schedule.id, extraction_id: extraction.id, status: 'completed' }
+  const resultSummary = await summarizeExtraction(db, schedule, extraction.id)
+  await recordFinishedRun(db, schedule, 'completed', {
+    extractionId: extraction.id,
+    resultSummary,
+  })
+  return {
+    schedule_id: schedule.id,
+    extraction_id: extraction.id,
+    status: 'completed',
+    result_summary: resultSummary,
+  }
 }
 
 export async function GET(req: NextRequest) {
