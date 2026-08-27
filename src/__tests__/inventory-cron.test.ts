@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 
 const mockResolveAccessToken = vi.fn()
 const mockSyncInventoryListings = vi.fn()
+const mockCheckSupplierListings = vi.fn()
 const mockRunInsert = vi.fn()
 let mockSettings: Array<Record<string, unknown>> = []
 
@@ -30,6 +31,10 @@ vi.mock('@supabase/supabase-js', () => ({
 
 vi.mock('@/lib/inventory-sync', () => ({
   syncInventoryListings: mockSyncInventoryListings,
+}))
+
+vi.mock('@/lib/inventory-supplier-check', () => ({
+  checkSupplierListings: mockCheckSupplierListings,
 }))
 
 vi.mock('@/lib/ebay-actions', () => ({
@@ -64,6 +69,13 @@ describe('GET /api/cron/inventory-auto', () => {
     }]
     mockResolveAccessToken.mockReset().mockResolvedValue('access-token')
     mockSyncInventoryListings.mockReset().mockResolvedValue({ total: 12, matched: 8 })
+    mockCheckSupplierListings.mockReset().mockResolvedValue({
+      total: 2,
+      available: 1,
+      unavailable: 1,
+      skipped: 0,
+      failed: 0,
+    })
     mockRunInsert.mockClear()
   })
 
@@ -83,6 +95,11 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 1 })
     expect(mockResolveAccessToken).toHaveBeenCalledOnce()
     expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token')
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 50)
+    expect(mockSyncInventoryListings.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCheckSupplierListings.mock.invocationCallOrder[0],
+    )
+    expect(json.results[0].supplier_check).toMatchObject({ total: 2, unavailable: 1 })
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       run_type: 'sync',
       status: 'completed',
@@ -102,6 +119,7 @@ describe('GET /api/cron/inventory-auto', () => {
 
     expect(res.status).toBe(200)
     expect(json.results[0].sync).toEqual({ error: 'sync failed' })
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 50)
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       run_type: 'sync',
       status: 'failed',
@@ -135,9 +153,10 @@ describe('GET /api/cron/inventory-auto', () => {
       status: 'failed',
       error_message: 'トークン取得失敗: refresh failed',
     }))
+    expect(mockCheckSupplierListings).toHaveBeenCalledTimes(2)
   })
 
-  it('skips token resolution when all automatic features are disabled', async () => {
+  it('checks suppliers without resolving an eBay token when all automatic actions are disabled', async () => {
     mockSettings = [{
       ...mockSettings[0],
       ebay_auto_sync: false,
@@ -153,8 +172,9 @@ describe('GET /api/cron/inventory-auto', () => {
     const res = await GET(req)
     const json = await res.json()
 
-    expect(json).toMatchObject({ ok: true, processed: 0 })
+    expect(json).toMatchObject({ ok: true, processed: 1 })
     expect(mockResolveAccessToken).not.toHaveBeenCalled()
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 50)
   })
 
   it('is configured for one daily invocation at midnight UTC', () => {

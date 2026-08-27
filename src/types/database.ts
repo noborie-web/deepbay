@@ -136,6 +136,7 @@ export interface InventoryActiveListing {
   product_id: string | null
   raw_data: Record<string, unknown> | null
   fetched_at: string
+  supplier_checked_at: string | null
   created_at: string
   updated_at: string
 }

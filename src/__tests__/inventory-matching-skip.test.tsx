@@ -27,6 +27,7 @@ function makeListing(id: string): InventoryActiveListing {
     product_id: null,
     raw_data: null,
     fetched_at: '2026-08-23T00:00:00.000Z',
+    supplier_checked_at: null,
     created_at: '2026-08-23T00:00:00.000Z',
     updated_at: '2026-08-23T00:00:00.000Z',
   }

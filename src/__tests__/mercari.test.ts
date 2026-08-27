@@ -117,6 +117,24 @@ describe('toProduct() price handling', () => {
   })
 })
 
+describe('toProduct() availability handling', () => {
+  const item = { id: 'x1', name: 'Test', price: 100, description: '', thumbnails: [] }
+
+  it.each(['STATUS_SOLD_OUT', 'sold_out', 'STATUS_TRADING'])('maps %s to sold_out', (status) => {
+    expect(_toProduct({ ...item, status }, 'https://jp.mercari.com/item/x1').availability).toBe('sold_out')
+  })
+
+  it('maps STATUS_ON_SALE to available', () => {
+    const status = 'STATUS_ON_SALE'
+    expect(_toProduct({ ...item, status }, 'https://jp.mercari.com/item/x1').availability).toBe('available')
+  })
+
+  it('maps a missing or unrecognized status to unknown', () => {
+    expect(_toProduct(item, 'https://jp.mercari.com/item/x1').availability).toBe('unknown')
+    expect(_toProduct({ ...item, status: 'STATUS_UNKNOWN' }, 'https://jp.mercari.com/item/x1').availability).toBe('unknown')
+  })
+})
+
 describe('toProduct() date handling', () => {
   function makeItemWithDate(updated: unknown) {
     return {

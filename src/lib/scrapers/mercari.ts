@@ -136,6 +136,12 @@ function extractImages(item: any): string[] {
 function toProduct(item: any, url: string): ScrapedProduct {
   const itemId: string = item.id ?? item.item_id ?? ''
   const images = extractImages(item)
+  const status = typeof item.status === 'string' ? item.status.toUpperCase() : ''
+  const availability: ScrapedProduct['availability'] = status.includes('SOLD_OUT') || status.includes('TRADING')
+    ? 'sold_out'
+    : status.includes('ON_SALE')
+      ? 'available'
+      : 'unknown'
 
   // 評価数: seller情報から複数パスを試みる
   const seller = item.seller ?? item.sellerInfo ?? null
@@ -196,6 +202,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
     sellerRatingCount,
     shippingDays,
     sourceUpdatedAt,
+    availability,
   }
 }
 
