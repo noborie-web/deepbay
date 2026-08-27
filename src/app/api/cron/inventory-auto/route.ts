@@ -6,6 +6,7 @@ import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { getDelistCutoffIso } from '@/lib/inventory-delist'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { syncInventoryListings } from '@/lib/inventory-sync'
+import { checkSupplierListings } from '@/lib/inventory-supplier-check'
 
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
@@ -30,10 +31,24 @@ export async function GET(req: NextRequest) {
 
   for (const settings of allSettings ?? []) {
     const hasEnabledAction = settings.ebay_auto_sync || settings.auto_delist || settings.auto_revise_price || settings.auto_stack
-    if (!hasEnabledAction) continue
-
     const userId = settings.user_id
     const userResult: Record<string, unknown> = { user_id: userId }
+    const runSupplierCheck = async () => {
+      try {
+        userResult.supplier_check = await checkSupplierListings(db, userId, 50)
+      } catch (error) {
+        userResult.supplier_check = {
+          error: error instanceof Error ? error.message : String(error),
+        }
+      }
+    }
+
+    if (!hasEnabledAction) {
+      await runSupplierCheck()
+      results.push(userResult)
+      continue
+    }
+
     let accessToken: string
     try {
       accessToken = await resolveInventoryAccessToken(db, userId, settings)
@@ -49,6 +64,7 @@ export async function GET(req: NextRequest) {
         started_at: now,
         finished_at: now,
       })
+      await runSupplierCheck()
       results.push(userResult)
       continue
     }
@@ -79,10 +95,15 @@ export async function GET(req: NextRequest) {
           started_at: startedAt,
           finished_at: new Date().toISOString(),
         })
+        await runSupplierCheck()
         results.push(userResult)
         continue
       }
     }
+
+    // eBay同期後に仕入れ元を確認し、売り切れ・削除をquantity=0へ反映する。
+    // この直後の既存取り下げ処理が同じcron実行内で対象を検出する。
+    await runSupplierCheck()
 
     // 取り下げ
     if (settings.auto_delist) {
