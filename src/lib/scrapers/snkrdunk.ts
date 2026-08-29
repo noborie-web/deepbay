@@ -207,13 +207,16 @@ export class SnkrDunkScraper {
       const pageUrl = baseUrl.toString()
       try {
         const products = await this.scrapePage(pageUrl, timeoutMs)
+        // 注意: メルカリ検索で見つかった不具合と同様、「1ページの取得件数が
+        // 想定より少ない」ことは必ずしも「最終ページ」を意味しない。信頼できる
+        // 終了条件は「そのページの結果が0件」のみとし、件数の少なさでは
+        // 打ち切らない(暴走防止はmaxPages/limitで別途担保している)。
         if (products.length === 0) break
         for (const p of products) {
           const id = p.sourceItemId ?? p.sourceUrl
           if (!seenIds.has(id)) { seenIds.add(id); allProducts.push(p) }
         }
         onPage?.(allProducts.length, limit)
-        if (products.length < 20) break // last page
         if (page < maxPages) await new Promise(r => setTimeout(r, 200))
       } catch {
         if (page === 1) throw new ScraperError('No items found on page 1', this.siteKey, url)
