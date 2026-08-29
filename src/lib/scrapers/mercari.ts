@@ -307,8 +307,14 @@ export class MercariScraper {
     const pageSize = Math.min(limit, 120)
     // searchSessionId は検索1セッション単位で固定（mercapiに準拠）
     const searchSessionId = crypto.randomUUID().replace(/-/g, '')
+    // ページネーションの暴走防止用の安全上限（1ページ最低1件と仮定してlimit分のページ数+バッファ）
+    const maxPages = limit + 10
+    let pageCount = 0
 
     while (allProducts.length < limit) {
+      pageCount += 1
+      if (pageCount > maxPages) break
+
       const dpop = await generateDPoP(SEARCH_URL, 'POST', dpopCtx)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const reqBody: Record<string, any> = {
@@ -342,8 +348,13 @@ export class MercariScraper {
 
       allProducts.push(...items.map((item) => toProduct(item, url)))
 
-      pageToken = json?.meta?.nextPageToken ?? json?.nextPageToken
-      if (!pageToken || items.length < pageSize) break
+      // 注意: Mercariの検索APIはpageSizeより少ない件数を返すことがあっても、
+      // nextPageTokenが有効であれば後続ページにさらに結果が存在する(numFoundで確認済み)。
+      // そのため「返却件数がpageSize未満」を終了条件にしてはいけない。
+      // 終了条件は「nextPageTokenが無い」または「前回と同じtoken(APIが進まない)」のみとする。
+      const nextPageToken: string | undefined = json?.meta?.nextPageToken ?? json?.nextPageToken
+      if (!nextPageToken || nextPageToken === pageToken) break
+      pageToken = nextPageToken
     }
 
     if (allProducts.length === 0) {
