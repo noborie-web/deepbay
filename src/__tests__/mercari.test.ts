@@ -387,3 +387,66 @@ describe('scrapeSearch excludeKeyword', () => {
     expect(body.searchCondition.excludeKeyword).toBe('まとめ売り')
   })
 })
+
+describe('scrapeSearch pagination', () => {
+  it('メルカリAPIがpageSizeより少ない件数を返してもnextPageTokenがあれば次ページを取得し続ける', async () => {
+    // 実際のMercari検索APIの挙動を再現: pageSize=120でも1ページ目は90件しか
+    // 返さないが、meta.nextPageTokenは有効で、まだ後続ページに結果が存在する。
+    // 「返却件数 < pageSize」を終了条件にしてはいけない(このバグで実際に
+    // 抽出数が90件程度で頭打ちになっていた)。
+    const pages = [
+      { items: Array.from({ length: 90 }, (_, i) => ({ id: `m1${i}`, name: `item1-${i}`, price: 1000 })), meta: { nextPageToken: 'token-2' } },
+      { items: Array.from({ length: 90 }, (_, i) => ({ id: `m2${i}`, name: `item2-${i}`, price: 2000 })), meta: { nextPageToken: 'token-3' } },
+      { items: Array.from({ length: 40 }, (_, i) => ({ id: `m3${i}`, name: `item3-${i}`, price: 3000 })), meta: { nextPageToken: '' } },
+    ]
+    let callIndex = 0
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      if (urlStr.includes('entities:search')) {
+        const page = pages[Math.min(callIndex, pages.length - 1)]
+        callIndex += 1
+        return new Response(JSON.stringify(page), { status: 200 })
+      }
+      // 画像補完(enrichImages)が実ネットワークへ出ないよう、それ以外は即404を返す
+      return new Response('', { status: 404 })
+    }
+
+    try {
+      const { MercariScraper } = await import('../lib/scrapers/mercari')
+      const scraper = new MercariScraper()
+      const results = await scraper.scrape('https://jp.mercari.com/search?keyword=test', { limit: 220 })
+      expect(results.length).toBe(220)
+      expect(callIndex).toBe(3)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  }, 15000)
+
+  it('nextPageTokenが無い場合は1ページで終了する', async () => {
+    const origFetch = globalThis.fetch
+    let callIndex = 0
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      if (urlStr.includes('entities:search')) {
+        callIndex += 1
+        return new Response(JSON.stringify({
+          items: Array.from({ length: 50 }, (_, i) => ({ id: `x${i}`, name: `item-${i}`, price: 500 })),
+          meta: {},
+        }), { status: 200 })
+      }
+      // 画像補完(enrichImages)が実ネットワークへ出ないよう、それ以外は即404を返す
+      return new Response('', { status: 404 })
+    }
+
+    try {
+      const { MercariScraper } = await import('../lib/scrapers/mercari')
+      const scraper = new MercariScraper()
+      const results = await scraper.scrape('https://jp.mercari.com/search?keyword=test', { limit: 600 })
+      expect(results.length).toBe(50)
+      expect(callIndex).toBe(1)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
