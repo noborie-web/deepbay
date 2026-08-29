@@ -6,6 +6,7 @@ import { RakumaScraper } from './rakuma'
 import { SnkrDunkScraper } from './snkrdunk'
 import { DigimartScraper } from './digimart'
 import { YahooShoppingScraper } from './yahoo_shopping'
+import { VectorParkScraper } from './vector_park'
 
 const SCRAPERS: IScraper[] = [
   new MercariScraper() as unknown as IScraper,
@@ -14,6 +15,7 @@ const SCRAPERS: IScraper[] = [
   new SnkrDunkScraper() as unknown as IScraper,
   new DigimartScraper(),
   new YahooShoppingScraper(),
+  new VectorParkScraper(),
 ]
 
 export function findScraper(url: string): IScraper | null {
