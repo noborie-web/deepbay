@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import '@testing-library/jest-dom'
 
@@ -186,10 +186,12 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
   })
 
   it('「危険単語」ボタンも同様にパネルとして開閉する', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => [makeProduct('p1')],
-    })
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1')],
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ words: [] }) })
 
     const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
     render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
@@ -202,6 +204,66 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     // 再度押すとパネルが閉じる(他の除外ボタンと同じトグル挙動)。
     await userEvent.click(screen.getByRole('button', { name: '危険単語を除外' }))
     expect(screen.queryByText(/抽出危険設定に登録した危険単語/)).not.toBeInTheDocument()
+  })
+})
+
+describe('ProductEditPanel: 除外実行前の対象件数プレビュー', () => {
+  it('Veroパネルを開くと、設定取得後に「全N件中M件が対象」と表示される', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          makeProduct('p1', { ebay_brand: 'Nintendo' }),
+          makeProduct('p2', { ebay_brand: 'Generic' }),
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ vero: [{ brand: 'Nintendo' }] }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    // 設定取得が終わるまでは「確認中」を表示する。
+    await userEvent.click(screen.getByRole('button', { name: 'Veroを除外' }))
+    await waitFor(() => {
+      const previewText = screen.getByText((_content, element) =>
+        element?.tagName === 'P' && /全2件中\s*1件が対象です/.test(element.textContent ?? ''),
+      )
+      expect(previewText).toBeInTheDocument()
+    })
+  })
+
+  it('評価数パネルは入力値を変更すると対象件数プレビューがリアルタイムで更新される', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [
+        makeProduct('p1', { seller_rating_count: 3 }),
+        makeProduct('p2', { seller_rating_count: 50 }),
+        makeProduct('p3', { seller_rating_count: null }),
+      ],
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    const ratingLabel = screen.getByText('評価数')
+    const ratingRow = ratingLabel.closest('div') as HTMLElement
+    await userEvent.click(within(ratingRow).getByRole('button'))
+
+    function getPreviewText(): HTMLElement {
+      return screen.getByText((_content, element) =>
+        element?.tagName === 'P' && /全3件中\s*\d+件が対象です/.test(element.textContent ?? ''),
+      )
+    }
+
+    // 未入力の初期状態では対象0件
+    expect(getPreviewText().textContent).toMatch(/全3件中\s*0件が対象です/)
+
+    await userEvent.type(screen.getByPlaceholderText('例: 10'), '5')
+    await waitFor(() => expect(getPreviewText().textContent).toMatch(/全3件中\s*1件が対象です/))
   })
 })
 

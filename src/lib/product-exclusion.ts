@@ -60,3 +60,69 @@ export function findPriceTypeProductIds(
     .filter((product) => selected.has(getProductPriceType(product)))
     .map((product) => product.id)
 }
+
+// スポット文字・簡易除外・危険単語はいずれも「商品タイトルにキーワードが
+// 含まれるか」という同一のロジックのため、1つの関数にまとめて共有する。
+export function findKeywordProductIds(products: Product[], keywords: string[]): string[] {
+  if (keywords.length === 0) return []
+  const lowerKeywords = keywords.map((w) => w.toLowerCase())
+  return products
+    .filter((product) => {
+      const lower = product.original_title.toLowerCase()
+      return lowerKeywords.some((w) => lower.includes(w))
+    })
+    .map((product) => product.id)
+}
+
+export function findDangerSellerProductIds(products: Product[], sellerUrls: string[]): string[] {
+  if (sellerUrls.length === 0) return []
+  const normalizedSellerUrls = sellerUrls.map((s) => s.split('?')[0].trim().replace(/\/+$/, ''))
+  return products
+    .filter((product) => {
+      const norm = product.source_url.split('?')[0].trim().replace(/\/+$/, '')
+      return normalizedSellerUrls.some((s) => norm.startsWith(s))
+    })
+    .map((product) => product.id)
+}
+
+export function findPriceRangeProductIds(
+  products: Product[],
+  min: number | null,
+  max: number | null,
+  target: 'original' | 'ebay',
+): string[] {
+  if (min === null && max === null) return []
+  return products
+    .filter((product) => {
+      const price = target === 'original' ? (product.original_price ?? 0) : (product.ebay_price ?? 0)
+      if (min !== null && price < min) return true
+      if (max !== null && price > max) return true
+      return false
+    })
+    .map((product) => product.id)
+}
+
+export function findLowRatingProductIds(products: Product[], max: number | null): string[] {
+  if (max === null) return []
+  return products
+    .filter((product) => product.seller_rating_count !== null && product.seller_rating_count <= max)
+    .map((product) => product.id)
+}
+
+export function findSlowShippingProductIds(products: Product[], max: number | null): string[] {
+  if (max === null) return []
+  return products
+    .filter((product) => product.shipping_days !== null && product.shipping_days > max)
+    .map((product) => product.id)
+}
+
+export function findStaleProductIds(products: Product[], monthsAgo: number): string[] {
+  const cutoff = new Date()
+  cutoff.setMonth(cutoff.getMonth() - monthsAgo)
+  return products
+    .filter((product) => {
+      if (!product.source_updated_at) return false
+      return new Date(product.source_updated_at) < cutoff
+    })
+    .map((product) => product.id)
+}

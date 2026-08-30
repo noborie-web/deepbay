@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { Product } from '@/types/database'
 import {
+  findDangerSellerProductIds,
+  findKeywordProductIds,
+  findLowRatingProductIds,
+  findPriceRangeProductIds,
   findPriceTypeProductIds,
+  findSlowShippingProductIds,
+  findStaleProductIds,
   findVeroProductIds,
   getProductPriceType,
   matchesVeroBrand,
@@ -102,5 +108,86 @@ describe('価格タイプ除外判定', () => {
 
   it('未選択なら何も除外しない', () => {
     expect(findPriceTypeProductIds([makeProduct('p1')], [])).toEqual([])
+  })
+})
+
+// これらのヘルパーは除外「実行」時と、実行前の対象件数プレビュー表示
+// (ProductEditPanel)の両方から呼ばれる共通ロジック。
+describe('キーワード除外判定(スポット文字・簡易除外・危険単語で共有)', () => {
+  it('タイトルにキーワードを含む商品を大文字小文字を区別せず抽出する', () => {
+    const products = [
+      makeProduct('p1', { original_title: 'ジャンク品 ラジコン' }),
+      makeProduct('p2', { original_title: '美品 ラジコン' }),
+    ]
+    expect(findKeywordProductIds(products, ['ジャンク'])).toEqual(['p1'])
+  })
+
+  it('キーワードが空なら何も除外しない', () => {
+    expect(findKeywordProductIds([makeProduct('p1')], [])).toEqual([])
+  })
+})
+
+describe('危険セラー除外判定', () => {
+  it('セラーURLの前方一致で商品を抽出する(クエリパラメータ・末尾スラッシュは無視)', () => {
+    const products = [
+      makeProduct('p1', { source_url: 'https://jp.mercari.com/user/profile/123?ref=x' }),
+      makeProduct('p2', { source_url: 'https://jp.mercari.com/user/profile/999' }),
+    ]
+    expect(findDangerSellerProductIds(products, ['https://jp.mercari.com/user/profile/123/'])).toEqual(['p1'])
+  })
+
+  it('セラーURL未設定なら何も除外しない', () => {
+    expect(findDangerSellerProductIds([makeProduct('p1')], [])).toEqual([])
+  })
+})
+
+describe('価格範囲除外判定', () => {
+  it('最小値未満・最大値超過の商品を除外対象にする', () => {
+    const products = [
+      makeProduct('p1', { original_price: 500 }),
+      makeProduct('p2', { original_price: 5000 }),
+      makeProduct('p3', { original_price: 50000 }),
+    ]
+    expect(findPriceRangeProductIds(products, 1000, 10000, 'original')).toEqual(['p1', 'p3'])
+  })
+
+  it('最小・最大どちらも未指定なら何も除外しない', () => {
+    expect(findPriceRangeProductIds([makeProduct('p1')], null, null, 'original')).toEqual([])
+  })
+
+  it('eBay価格を対象にできる', () => {
+    const products = [makeProduct('p1', { ebay_price: 5 }), makeProduct('p2', { ebay_price: 50 })]
+    expect(findPriceRangeProductIds(products, 10, null, 'ebay')).toEqual(['p1'])
+  })
+})
+
+describe('評価数・発送日数・最終更新月の除外判定', () => {
+  it('評価数がN件以下の商品を抽出する(nullは対象外)', () => {
+    const products = [
+      makeProduct('p1', { seller_rating_count: 3 }),
+      makeProduct('p2', { seller_rating_count: 50 }),
+      makeProduct('p3', { seller_rating_count: null }),
+    ]
+    expect(findLowRatingProductIds(products, 5)).toEqual(['p1'])
+  })
+
+  it('発送日数がN日を超える商品を抽出する', () => {
+    const products = [
+      makeProduct('p1', { shipping_days: 1 }),
+      makeProduct('p2', { shipping_days: 10 }),
+    ]
+    expect(findSlowShippingProductIds(products, 3)).toEqual(['p2'])
+  })
+
+  it('指定月数より前に更新された商品を抽出する', () => {
+    const old = new Date()
+    old.setMonth(old.getMonth() - 6)
+    const recent = new Date()
+    const products = [
+      makeProduct('p1', { source_updated_at: old.toISOString() }),
+      makeProduct('p2', { source_updated_at: recent.toISOString() }),
+      makeProduct('p3', { source_updated_at: null }),
+    ]
+    expect(findStaleProductIds(products, 3)).toEqual(['p1'])
   })
 })
