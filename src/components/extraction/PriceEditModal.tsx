@@ -66,7 +66,8 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
   const [jpyPerUsd, setJpyPerUsd] = useState('150')
   const [ebayFeeRate, setEbayFeeRate] = useState('0.133')
   const [targetProfitRate, setTargetProfitRate] = useState('0.2')
-  const [shippingUsd, setShippingUsd] = useState('15')
+  // 海外送料の入力は円で行い、計算時にその時点の為替レートでUSDへ変換する。
+  const [shippingJpy, setShippingJpy] = useState('2000')
   const [fixedCostUsd, setFixedCostUsd] = useState('0')
   // 広告プロモーション率・関税率・ディスカウント率: いずれもeBay手数料率と
   // 同様に販売価格に対する割合として計算に反映する(pricing.ts参照)。
@@ -183,13 +184,15 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
   const parsedAdRate = parseFloat(adRate) / 100
   const parsedCustomsRate = parseFloat(customsRate) / 100
   const parsedDiscountRate = parseFloat(discountRate) / 100
+  // 海外送料の入力は円のため、計算式が使うUSDへ為替レートで変換する。
+  const parsedShippingUsd = parseFloat(shippingJpy) / parseFloat(jpyPerUsd)
 
   const profitValidationError = mode === 'profit' ? validateProfitParams({
     purchasePriceJpy: 1000,
     jpyPerUsd: parseFloat(jpyPerUsd),
     ebayFeeRate: parseFloat(ebayFeeRate),
     targetProfitRate: parseFloat(targetProfitRate),
-    shippingUsd: parseFloat(shippingUsd),
+    shippingUsd: parsedShippingUsd,
     fixedCostUsd: parseFloat(fixedCostUsd),
     adRate: parsedAdRate,
     customsRate: parsedCustomsRate,
@@ -203,7 +206,7 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
         profitJpy: parsedProfitTiers[0]?.profitJpy ?? NaN,
         jpyPerUsd: parseFloat(jpyPerUsd),
         ebayFeeRate: parseFloat(ebayFeeRate),
-        shippingUsd: parseFloat(shippingUsd),
+        shippingUsd: parsedShippingUsd,
         fixedCostUsd: parseFloat(fixedCostUsd),
         adRate: parsedAdRate,
         customsRate: parsedCustomsRate,
@@ -243,7 +246,7 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
         profitJpy,
         jpyPerUsd: parseFloat(jpyPerUsd),
         ebayFeeRate: parseFloat(ebayFeeRate),
-        shippingUsd: parseFloat(shippingUsd),
+        shippingUsd: parsedShippingUsd,
         fixedCostUsd: parseFloat(fixedCostUsd),
         adRate: parsedAdRate,
         customsRate: parsedCustomsRate,
@@ -261,7 +264,7 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
       jpyPerUsd: parseFloat(jpyPerUsd),
       ebayFeeRate: parseFloat(ebayFeeRate),
       targetProfitRate: parseFloat(targetProfitRate),
-      shippingUsd: parseFloat(shippingUsd),
+      shippingUsd: parsedShippingUsd,
       fixedCostUsd: parseFloat(fixedCostUsd),
       adRate: parsedAdRate,
       customsRate: parsedCustomsRate,
@@ -384,8 +387,8 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                   </label>
                 )}
                 <label className="block space-y-1">
-                  <span className="text-xs text-gray-500">海外送料（USD）</span>
-                  <input type="number" value={shippingUsd} onChange={(e) => setShippingUsd(e.target.value)} min="0" step="0.5"
+                  <span className="text-xs text-gray-500">海外送料（円）</span>
+                  <input aria-label="海外送料" type="number" value={shippingJpy} onChange={(e) => setShippingJpy(e.target.value)} min="0" step="100"
                     className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
                 </label>
                 <label className="block space-y-1">
@@ -536,7 +539,7 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                       jpyPerUsd: parseFloat(jpyPerUsd),
                       ebayFeeRate: parseFloat(ebayFeeRate),
                       targetProfitRate: parseFloat(targetProfitRate),
-                      shippingUsd: parseFloat(shippingUsd),
+                      shippingUsd: parsedShippingUsd,
                       fixedCostUsd: parseFloat(fixedCostUsd),
                       adRate: parsedAdRate,
                       customsRate: parsedCustomsRate,
@@ -555,7 +558,7 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                         profitJpy,
                         jpyPerUsd: parseFloat(jpyPerUsd),
                         ebayFeeRate: parseFloat(ebayFeeRate),
-                        shippingUsd: parseFloat(shippingUsd),
+                        shippingUsd: parsedShippingUsd,
                         fixedCostUsd: parseFloat(fixedCostUsd),
                         adRate: parsedAdRate,
                         customsRate: parsedCustomsRate,
