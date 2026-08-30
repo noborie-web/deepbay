@@ -90,3 +90,110 @@ describe('BrandOffScraper.parse', () => {
     expect(product.images).toEqual([])
   })
 })
+
+describe('BrandOffScraper.matches', () => {
+  it('単品ページURLにマッチする', () => {
+    const scraper = new BrandOffScraper()
+    expect(scraper.matches('https://www.brandoff-store.com/Form/Product/ProductDetail.aspx?shop=0&pid=999')).toBe(true)
+  })
+
+  it('検索結果ページURLにもマッチする', () => {
+    const scraper = new BrandOffScraper()
+    expect(scraper.matches('https://www.brandoff-store.com/Form/Product/ProductList.aspx?swd=nike')).toBe(true)
+  })
+
+  it('関係ないURLにはマッチしない', () => {
+    const scraper = new BrandOffScraper()
+    expect(scraper.matches('https://example.com/foo')).toBe(false)
+  })
+})
+
+function fakeSearchItem(pid: string, title: string, price: number): string {
+  return `<div class="product__item">
+    <a href="/Form/Product/ProductDetail.aspx?shop=0&amp;pid=${pid}&amp;cat=1">
+      <img src="/Contents/ProductImages/0/${pid}_L.jpg" alt="${title}">
+    </a>
+    <div class="product__item--name">${title}</div>
+    <div class="product__price"><span class="product__price--numeric">&yen;${price}</span></div>
+  </div>`
+}
+
+function searchPageHtml(items: string[], totalCountText: string | null): string {
+  const total = totalCountText ? `<p>${totalCountText}件</p>` : ''
+  return `<html><body>${total}${items.join('')}</body></html>`
+}
+
+describe('BrandOffScraper.scrape 検索ページの一括抽出', () => {
+  it('検索結果カードから商品情報を正しく抽出し、画像を_LLサイズにアップサイズする', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async () => new Response(
+      searchPageHtml([fakeSearchItem('1001', 'Item One', 1000)], '1'),
+      { status: 200 },
+    )
+    try {
+      const scraper = new BrandOffScraper()
+      const results = await scraper.scrape('https://www.brandoff-store.com/Form/Product/ProductList.aspx?swd=test', { limit: 10 })
+      expect(results).toHaveLength(1)
+      expect(results[0]).toMatchObject({ sourceItemId: '1001', title: 'Item One', price: 1000 })
+      expect(results[0].images[0]).toContain('_LL.jpg')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('1ページの件数が少なくても、まだ総件数に達していなければ次ページを取得し続ける', async () => {
+    let requestCount = 0
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      const o = new URL(urlStr).searchParams.get('o') ?? '0'
+      requestCount += 1
+      if (o === '0') {
+        return new Response(searchPageHtml([fakeSearchItem('2001', 'A1', 100), fakeSearchItem('2002', 'A2', 200)], '5'), { status: 200 })
+      }
+      if (o === '90') {
+        return new Response(searchPageHtml([fakeSearchItem('2003', 'A3', 300), fakeSearchItem('2004', 'A4', 400), fakeSearchItem('2005', 'A5', 500)], '5'), { status: 200 })
+      }
+      return new Response(searchPageHtml([], '5'), { status: 200 })
+    }
+    try {
+      const scraper = new BrandOffScraper()
+      const results = await scraper.scrape('https://www.brandoff-store.com/Form/Product/ProductList.aspx?swd=test', { limit: 600 })
+      expect(results).toHaveLength(5)
+      expect(requestCount).toBe(2) // 総件数5に達した時点で3ページ目は取得しない
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('空の結果が返ったページで終了する(総件数が取得できない場合のフォールバック)', async () => {
+    let requestCount = 0
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      const o = new URL(urlStr).searchParams.get('o') ?? '0'
+      requestCount += 1
+      if (o === '0') return new Response(searchPageHtml([fakeSearchItem('3001', 'C1', 100)], null), { status: 200 })
+      return new Response(searchPageHtml([], null), { status: 200 })
+    }
+    try {
+      const scraper = new BrandOffScraper()
+      const results = await scraper.scrape('https://www.brandoff-store.com/Form/Product/ProductList.aspx?swd=test', { limit: 600 })
+      expect(results).toHaveLength(1)
+      expect(requestCount).toBe(2)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('検索結果が0件ならエラーを投げる', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async () => new Response(searchPageHtml([], '0'), { status: 200 })
+    try {
+      const scraper = new BrandOffScraper()
+      await expect(scraper.scrape('https://www.brandoff-store.com/Form/Product/ProductList.aspx?swd=nonexistent')).rejects.toThrow()
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
