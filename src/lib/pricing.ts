@@ -5,6 +5,13 @@ export interface ProfitCalcParams {
   targetProfitRate: number
   shippingUsd: number
   fixedCostUsd: number
+  // 広告プロモーション率・関税率・ディスカウント率: いずれもeBay手数料率と
+  // 同様に「販売価格に対する割合」として扱い、販売価格から差し引かれる
+  // コストとして計算式の分母に合算する。省略時は0(既存呼び出し元との
+  // 後方互換のためoptional)。
+  adRate?: number
+  customsRate?: number
+  discountRate?: number
 }
 
 export interface ProfitCalcResult {
@@ -32,6 +39,23 @@ export interface TieredProfitCalcParams {
   ebayFeeRate: number
   shippingUsd: number
   fixedCostUsd: number
+  // 広告プロモーション率・関税率・ディスカウント率(ProfitCalcParamsと同様)
+  adRate?: number
+  customsRate?: number
+  discountRate?: number
+}
+
+// eBay手数料率に加えて販売価格から差し引かれる追加コスト率(広告
+// プロモーション・関税・ディスカウント)の合計。未指定の項目は0。
+function extraRate(p: { adRate?: number; customsRate?: number; discountRate?: number }): number {
+  return (p.adRate ?? 0) + (p.customsRate ?? 0) + (p.discountRate ?? 0)
+}
+
+function validateExtraRates(p: { adRate?: number; customsRate?: number; discountRate?: number }): string | null {
+  if (p.adRate !== undefined && (!isFinite(p.adRate) || p.adRate < 0)) return '広告プロモーション率は0以上にしてください'
+  if (p.customsRate !== undefined && (!isFinite(p.customsRate) || p.customsRate < 0)) return '関税率は0以上にしてください'
+  if (p.discountRate !== undefined && (!isFinite(p.discountRate) || p.discountRate < 0)) return 'ディスカウント率は0以上にしてください'
+  return null
 }
 
 export function validateProfitParams(p: ProfitCalcParams): string | null {
@@ -39,7 +63,11 @@ export function validateProfitParams(p: ProfitCalcParams): string | null {
   if (!isFinite(p.jpyPerUsd) || p.jpyPerUsd <= 0) return '為替レートは0より大きい値を入力してください'
   if (!isFinite(p.ebayFeeRate) || p.ebayFeeRate < 0) return 'eBay手数料率は0以上にしてください'
   if (!isFinite(p.targetProfitRate) || p.targetProfitRate < 0) return '目標利益率は0以上にしてください'
-  if (p.ebayFeeRate + p.targetProfitRate >= 1) return 'eBay手数料率 + 目標利益率は100%未満にしてください'
+  const extraRatesError = validateExtraRates(p)
+  if (extraRatesError) return extraRatesError
+  if (p.ebayFeeRate + p.targetProfitRate + extraRate(p) >= 1) {
+    return 'eBay手数料率 + 目標利益率 + 広告プロモーション率 + 関税率 + ディスカウント率は100%未満にしてください'
+  }
   if (!isFinite(p.shippingUsd) || p.shippingUsd < 0) return '海外送料は0以上にしてください'
   if (!isFinite(p.fixedCostUsd) || p.fixedCostUsd < 0) return '固定費は0以上にしてください'
   return null
@@ -47,11 +75,12 @@ export function validateProfitParams(p: ProfitCalcParams): string | null {
 
 export function calcProfit(p: ProfitCalcParams): ProfitCalcResult {
   const costUsd = p.purchasePriceJpy / p.jpyPerUsd
+  const totalRate = p.ebayFeeRate + p.targetProfitRate + extraRate(p)
   const salePriceUsd = Math.ceil(
     (costUsd + p.shippingUsd + p.fixedCostUsd) /
-    (1 - p.ebayFeeRate - p.targetProfitRate),
+    (1 - totalRate),
   )
-  const profitUsd = salePriceUsd * (1 - p.ebayFeeRate) - costUsd - p.shippingUsd - p.fixedCostUsd
+  const profitUsd = salePriceUsd * (1 - p.ebayFeeRate - extraRate(p)) - costUsd - p.shippingUsd - p.fixedCostUsd
   return { salePriceUsd, costUsd, profitUsd }
 }
 
@@ -101,6 +130,11 @@ export function validateTieredProfitParams(p: TieredProfitCalcParams): string | 
   if (!isFinite(p.ebayFeeRate) || p.ebayFeeRate < 0 || p.ebayFeeRate >= 1) {
     return 'eBay手数料率は0以上100%未満にしてください'
   }
+  const extraRatesError = validateExtraRates(p)
+  if (extraRatesError) return extraRatesError
+  if (p.ebayFeeRate + extraRate(p) >= 1) {
+    return 'eBay手数料率 + 広告プロモーション率 + 関税率 + ディスカウント率は100%未満にしてください'
+  }
   if (!isFinite(p.shippingUsd) || p.shippingUsd < 0) return '海外送料は0以上にしてください'
   if (!isFinite(p.fixedCostUsd) || p.fixedCostUsd < 0) return '固定費は0以上にしてください'
   return null
@@ -109,11 +143,12 @@ export function validateTieredProfitParams(p: TieredProfitCalcParams): string | 
 export function calcTieredProfit(p: TieredProfitCalcParams): ProfitCalcResult {
   const costUsd = p.purchasePriceJpy / p.jpyPerUsd
   const targetProfitUsd = p.profitJpy / p.jpyPerUsd
+  const totalRate = p.ebayFeeRate + extraRate(p)
   const salePriceUsd = Math.ceil(
     (costUsd + targetProfitUsd + p.shippingUsd + p.fixedCostUsd)
-    / (1 - p.ebayFeeRate),
+    / (1 - totalRate),
   )
-  const profitUsd = salePriceUsd * (1 - p.ebayFeeRate)
+  const profitUsd = salePriceUsd * (1 - totalRate)
     - costUsd
     - p.shippingUsd
     - p.fixedCostUsd
