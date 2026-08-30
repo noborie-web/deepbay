@@ -68,6 +68,11 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
   const [targetProfitRate, setTargetProfitRate] = useState('0.2')
   const [shippingUsd, setShippingUsd] = useState('15')
   const [fixedCostUsd, setFixedCostUsd] = useState('0')
+  // 広告プロモーション率・関税率・ディスカウント率: いずれもeBay手数料率と
+  // 同様に販売価格に対する割合として計算に反映する(pricing.ts参照)。
+  const [adRate, setAdRate] = useState('0')
+  const [customsRate, setCustomsRate] = useState('0')
+  const [discountRate, setDiscountRate] = useState('0')
   const [profitTiers, setProfitTiers] = useState<ProfitTierInput[]>(INITIAL_PROFIT_TIERS)
   const [exchangeRateStatus, setExchangeRateStatus] = useState<'loading' | 'success' | 'error'>('loading')
   const [exchangeRateDate, setExchangeRateDate] = useState('')
@@ -174,6 +179,10 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
     ? (!rateMultiplier ? '倍率を入力してください' : (!(parseFloat(rateMultiplier) > 0 && isFinite(parseFloat(rateMultiplier))) ? '0より大きい倍率を入力してください' : null))
     : null
 
+  const parsedAdRate = parseFloat(adRate)
+  const parsedCustomsRate = parseFloat(customsRate)
+  const parsedDiscountRate = parseFloat(discountRate)
+
   const profitValidationError = mode === 'profit' ? validateProfitParams({
     purchasePriceJpy: 1000,
     jpyPerUsd: parseFloat(jpyPerUsd),
@@ -181,6 +190,9 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
     targetProfitRate: parseFloat(targetProfitRate),
     shippingUsd: parseFloat(shippingUsd),
     fixedCostUsd: parseFloat(fixedCostUsd),
+    adRate: parsedAdRate,
+    customsRate: parsedCustomsRate,
+    discountRate: parsedDiscountRate,
   }) : null
 
   const tierValidationError = mode === 'tiered'
@@ -192,6 +204,9 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
         ebayFeeRate: parseFloat(ebayFeeRate),
         shippingUsd: parseFloat(shippingUsd),
         fixedCostUsd: parseFloat(fixedCostUsd),
+        adRate: parsedAdRate,
+        customsRate: parsedCustomsRate,
+        discountRate: parsedDiscountRate,
       })
     : null
 
@@ -229,6 +244,9 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
         ebayFeeRate: parseFloat(ebayFeeRate),
         shippingUsd: parseFloat(shippingUsd),
         fixedCostUsd: parseFloat(fixedCostUsd),
+        adRate: parsedAdRate,
+        customsRate: parsedCustomsRate,
+        discountRate: parsedDiscountRate,
       }
       if (validateTieredProfitParams(params)) return null
       const { salePriceUsd } = calcTieredProfit(params)
@@ -244,6 +262,9 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
       targetProfitRate: parseFloat(targetProfitRate),
       shippingUsd: parseFloat(shippingUsd),
       fixedCostUsd: parseFloat(fixedCostUsd),
+      adRate: parsedAdRate,
+      customsRate: parsedCustomsRate,
+      discountRate: parsedDiscountRate,
     }
     const err = validateProfitParams(params)
     if (err) return null
@@ -369,6 +390,21 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                 <label className="block space-y-1">
                   <span className="text-xs text-gray-500">固定費（USD）</span>
                   <input type="number" value={fixedCostUsd} onChange={(e) => setFixedCostUsd(e.target.value)} min="0" step="0.5"
+                    className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs text-gray-500">広告プロモーション率（例: 0.1 = 10%）</span>
+                  <input aria-label="広告プロモーション率" type="number" value={adRate} onChange={(e) => setAdRate(e.target.value)} min="0" max="0.99" step="0.001"
+                    className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs text-gray-500">関税率（例: 0.1 = 10%）</span>
+                  <input aria-label="関税率" type="number" value={customsRate} onChange={(e) => setCustomsRate(e.target.value)} min="0" max="0.99" step="0.001"
+                    className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-xs text-gray-500">ディスカウント率（例: 0.1 = 10%）</span>
+                  <input aria-label="ディスカウント率" type="number" value={discountRate} onChange={(e) => setDiscountRate(e.target.value)} min="0" max="0.99" step="0.001"
                     className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
                 </label>
               </div>
@@ -501,6 +537,9 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                       targetProfitRate: parseFloat(targetProfitRate),
                       shippingUsd: parseFloat(shippingUsd),
                       fixedCostUsd: parseFloat(fixedCostUsd),
+                      adRate: parsedAdRate,
+                      customsRate: parsedCustomsRate,
+                      discountRate: parsedDiscountRate,
                     }
                     if (!validateProfitParams(params)) {
                       const r = calcProfit(params)
@@ -517,6 +556,9 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                         ebayFeeRate: parseFloat(ebayFeeRate),
                         shippingUsd: parseFloat(shippingUsd),
                         fixedCostUsd: parseFloat(fixedCostUsd),
+                        adRate: parsedAdRate,
+                        customsRate: parsedCustomsRate,
+                        discountRate: parsedDiscountRate,
                       }
                       if (!validateTieredProfitParams(params)) {
                         const result = calcTieredProfit(params)

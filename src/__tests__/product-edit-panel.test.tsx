@@ -1220,6 +1220,53 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     expect(getPrice(product)).toBe(87)
   })
 
+  // ユーザー要望: 価格一括編集(利益計算・価格帯別利益額)に広告プロモーション率・
+  // 関税率・ディスカウント率を追加し、価格計算に反映してほしい。
+  it('広告プロモーション率・関税率・ディスカウント率を入力すると、その分だけ販売価格が高く計算される', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ rate: 150, date: '2026-07-25' }),
+    })
+    const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
+    const product = makeProduct('p1', { purchase_price_jpy: 6000 })
+    const onApply = vi.fn()
+
+    render(
+      <PriceEditModal
+        products={[product]}
+        pagedIds={new Set(['p1'])}
+        getPurchaseJpy={() => 6000}
+        onApply={onApply}
+        onClose={vi.fn()}
+      />
+    )
+
+    await waitFor(() => screen.getByRole('spinbutton', { name: '1ドルあたりの円レート' }))
+
+    await userEvent.type(screen.getByRole('spinbutton', { name: '広告プロモーション率' }), '0.05')
+    await userEvent.type(screen.getByRole('spinbutton', { name: '関税率' }), '0.03')
+    await userEvent.type(screen.getByRole('spinbutton', { name: 'ディスカウント率' }), '0.02')
+
+    await userEvent.click(screen.getByRole('button', { name: /適用/ }))
+
+    expect(onApply).toHaveBeenCalledTimes(1)
+    const getPrice = onApply.mock.calls[0][0] as (target: typeof product) => number | null
+    const priceWithExtra = getPrice(product)
+
+    // 追加コストなしの場合の価格と比較して高くなっていることを確認する
+    const { calcProfit } = await import('../lib/pricing')
+    const withoutExtra = calcProfit({
+      purchasePriceJpy: 6000,
+      jpyPerUsd: 150,
+      ebayFeeRate: 0.133,
+      targetProfitRate: 0.2,
+      shippingUsd: 15,
+      fixedCostUsd: 0,
+    })
+    expect(priceWithExtra).not.toBeNull()
+    expect(priceWithExtra as number).toBeGreaterThan(withoutExtra.salePriceUsd)
+  })
+
   it('各価格帯の下へ行を追加して、利益設定を細分化できる', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,

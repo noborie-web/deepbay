@@ -58,6 +58,31 @@ describe('利益計算式', () => {
     const { salePriceUsd } = calcProfit(params)
     expect(Number.isInteger(salePriceUsd)).toBe(true)
   })
+
+  // 価格一括編集に広告プロモーション率・関税率・ディスカウント率を追加。
+  // いずれもeBay手数料率と同様、販売価格から差し引かれるコストとして
+  // 分母に合算される。
+  it('広告プロモーション率・関税率・ディスカウント率を指定すると、その分だけ販売価格が高くなる', () => {
+    const params = { ...BASE_PARAMS, shippingUsd: 0, fixedCostUsd: 0 }
+    const withoutExtra = calcProfit(params)
+    const withExtra = calcProfit({ ...params, adRate: 0.05, customsRate: 0.03, discountRate: 0.02 })
+    expect(withExtra.salePriceUsd).toBeGreaterThan(withoutExtra.salePriceUsd)
+
+    const expected = Math.ceil(withoutExtra.costUsd / (1 - 0.133 - 0.2 - 0.05 - 0.03 - 0.02))
+    expect(withExtra.salePriceUsd).toBe(expected)
+  })
+
+  it('広告プロモーション率・関税率・ディスカウント率は未指定(省略)なら0として扱う(既存呼び出し元との後方互換)', () => {
+    const params = { ...BASE_PARAMS, shippingUsd: 0, fixedCostUsd: 0 }
+    expect(calcProfit(params)).toEqual(calcProfit({ ...params, adRate: 0, customsRate: 0, discountRate: 0 }))
+  })
+
+  it('利益額は広告プロモーション率・関税率・ディスカウント率を差し引いた後の実際の手取りを反映する', () => {
+    const params = { ...BASE_PARAMS, shippingUsd: 0, fixedCostUsd: 0, adRate: 0.05, customsRate: 0.03, discountRate: 0.02 }
+    const { salePriceUsd, costUsd, profitUsd } = calcProfit(params)
+    const expectedProfit = salePriceUsd * (1 - 0.133 - 0.05 - 0.03 - 0.02) - costUsd
+    expect(profitUsd).toBeCloseTo(expectedProfit, 6)
+  })
 })
 
 describe('validateProfitParams', () => {
@@ -95,6 +120,23 @@ describe('validateProfitParams', () => {
 
   it('手数料率 + 利益率 > 100% の場合はエラー', () => {
     expect(validateProfitParams({ ...BASE_PARAMS, ebayFeeRate: 0.6, targetProfitRate: 0.5 })).not.toBeNull()
+  })
+
+  it('手数料率 + 利益率 + 広告プロモーション率 + 関税率 + ディスカウント率 >= 100% の場合はエラー', () => {
+    expect(validateProfitParams({
+      ...BASE_PARAMS,
+      ebayFeeRate: 0.3,
+      targetProfitRate: 0.3,
+      adRate: 0.2,
+      customsRate: 0.1,
+      discountRate: 0.1,
+    })).not.toBeNull()
+  })
+
+  it('広告プロモーション率・関税率・ディスカウント率が負の場合はエラー', () => {
+    expect(validateProfitParams({ ...BASE_PARAMS, adRate: -0.1 })).not.toBeNull()
+    expect(validateProfitParams({ ...BASE_PARAMS, customsRate: -0.1 })).not.toBeNull()
+    expect(validateProfitParams({ ...BASE_PARAMS, discountRate: -0.1 })).not.toBeNull()
   })
 })
 
@@ -152,6 +194,34 @@ describe('価格帯別利益額', () => {
     expect(result.salePriceUsd).toBe(72)
     expect(result.profitUsd).toBeGreaterThanOrEqual(2000 / 150)
     expect(result.profitUsd).toBeLessThan(2000 / 150 + 1)
+  })
+
+  it('広告プロモーション率・関税率・ディスカウント率を指定すると、その分だけ販売価格が高くなる', () => {
+    const params = {
+      purchasePriceJpy: 5000,
+      profitJpy: 2000,
+      jpyPerUsd: 150,
+      ebayFeeRate: 0.133,
+      shippingUsd: 15,
+      fixedCostUsd: 0,
+    }
+    const withoutExtra = calcTieredProfit(params)
+    const withExtra = calcTieredProfit({ ...params, adRate: 0.05, customsRate: 0.03, discountRate: 0.02 })
+    expect(withExtra.salePriceUsd).toBeGreaterThan(withoutExtra.salePriceUsd)
+  })
+
+  it('手数料率 + 広告プロモーション率 + 関税率 + ディスカウント率 >= 100% の場合はエラー', () => {
+    expect(validateTieredProfitParams({
+      purchasePriceJpy: 5000,
+      profitJpy: 2000,
+      jpyPerUsd: 150,
+      ebayFeeRate: 0.5,
+      shippingUsd: 15,
+      fixedCostUsd: 0,
+      adRate: 0.3,
+      customsRate: 0.1,
+      discountRate: 0.1,
+    })).not.toBeNull()
   })
 })
 
