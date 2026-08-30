@@ -53,6 +53,15 @@ export interface BulkEditSetting {
   updated_at: string
 }
 
+export interface ExtractionExclusionSummary {
+  detail_fetch_count: number
+  danger_word_excluded: number
+  active_duplicate_excluded: number
+  title_duplicate_excluded: number
+  translated_duplicate_excluded: number
+  completed_count: number
+}
+
 export interface Extraction {
   id: string
   user_id: string
@@ -67,6 +76,7 @@ export interface Extraction {
   is_bulk: boolean
   extracted_at: string | null
   error_message: string | null
+  exclusion_summary: ExtractionExclusionSummary | null
   created_at: string
   updated_at: string
   // joins

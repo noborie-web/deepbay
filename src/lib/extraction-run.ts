@@ -98,6 +98,9 @@ export async function runScrape(
       },
     })
 
+    // 除外詳細(公式ツールの「抽出結果確認」に相当する内訳)を段階ごとに記録する。
+    const detailFetchCount = scrapedList.length
+
     // 危険単語フィルタ
     const wordList: string[] = (dangerWords ?? []).map((w: { word: string }) => w.word.toLowerCase())
     const filteredList = wordList.length === 0
@@ -106,6 +109,7 @@ export async function runScrape(
           const lower = scraped.title.toLowerCase()
           return !wordList.some((word) => lower.includes(word))
         })
+    const dangerWordExcluded = scrapedList.length - filteredList.length
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let setting: any = null
@@ -238,13 +242,26 @@ export async function runScrape(
       }
     })
 
-    // 重複除外フィルタ
+    // 重複除外フィルタ。判定順(active→タイトル→翻訳後タイトル)は各行で
+    // 排他的なので、除外詳細の内訳もこの順で1行1カウントとして集計する。
+    let activeDuplicateExcluded = 0
+    let titleDuplicateExcluded = 0
+    let translatedDuplicateExcluded = 0
     const deduped = rows.filter((row: {
       source_url: string; original_title: string; ebay_title: string
     }) => {
-      if (excludeActive && existingSourceUrls.has(row.source_url)) return false
-      if (excludeTitle && existingOriginalTitles.has(row.original_title)) return false
-      if (excludeTranslated && existingEbayTitles.has(row.ebay_title)) return false
+      if (excludeActive && existingSourceUrls.has(row.source_url)) {
+        activeDuplicateExcluded += 1
+        return false
+      }
+      if (excludeTitle && existingOriginalTitles.has(row.original_title)) {
+        titleDuplicateExcluded += 1
+        return false
+      }
+      if (excludeTranslated && existingEbayTitles.has(row.ebay_title)) {
+        translatedDuplicateExcluded += 1
+        return false
+      }
       return true
     })
 
@@ -254,10 +271,24 @@ export async function runScrape(
       await supabase.from('products').insert(deduped.slice(i, i + chunkSize))
     }
 
+    const exclusionSummary = {
+      detail_fetch_count: detailFetchCount,
+      danger_word_excluded: dangerWordExcluded,
+      active_duplicate_excluded: activeDuplicateExcluded,
+      title_duplicate_excluded: titleDuplicateExcluded,
+      translated_duplicate_excluded: translatedDuplicateExcluded,
+      completed_count: deduped.length,
+    }
+
     await Promise.all([
       supabase
         .from('extractions')
-        .update({ status: 'completed', progress: 100, extracted_at: new Date().toISOString() })
+        .update({
+          status: 'completed',
+          progress: 100,
+          extracted_at: new Date().toISOString(),
+          exclusion_summary: exclusionSummary,
+        })
         .eq('id', extractionId),
       supabase.rpc('increment_extraction_used', { user_id: userId }),
     ])

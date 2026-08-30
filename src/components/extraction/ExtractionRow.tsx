@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Copy, Pencil, MoreHorizontal } from 'lucide-react'
 import Badge from '@/components/ui/Badge'
+import ExclusionSummaryModal from './ExclusionSummaryModal'
 import type { Extraction } from '@/types/database'
 
 interface Props {
@@ -16,6 +17,7 @@ interface Props {
 export default function ExtractionRow({ extraction, onViewResult, onDelete, onEdit, onList }: Props) {
   const isManual = !extraction.is_bulk
   const [menuOpen, setMenuOpen] = useState(false)
+  const [exclusionSummaryOpen, setExclusionSummaryOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -175,6 +177,7 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
         {/* ドロップダウンメニュー */}
         <div className="relative" ref={menuRef}>
           <button
+            aria-label="その他の操作"
             onClick={() => setMenuOpen((v) => !v)}
             className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 transition-colors text-gray-500"
           >
@@ -188,6 +191,15 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
                 className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors"
               >
                 抽出結果確認
+              </button>
+              <button
+                onClick={() => { setExclusionSummaryOpen(true); setMenuOpen(false) }}
+                disabled={!extraction.exclusion_summary}
+                className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
+                  extraction.exclusion_summary ? 'hover:bg-gray-50' : 'text-gray-400 cursor-not-allowed'
+                }`}
+              >
+                除外詳細
               </button>
               <button
                 disabled
@@ -219,6 +231,13 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
           )}
         </div>
       </div>
+
+      {exclusionSummaryOpen && extraction.exclusion_summary && (
+        <ExclusionSummaryModal
+          summary={extraction.exclusion_summary}
+          onClose={() => setExclusionSummaryOpen(false)}
+        />
+      )}
     </div>
   )
 }
