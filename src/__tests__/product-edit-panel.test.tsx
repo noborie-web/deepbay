@@ -1440,7 +1440,54 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
 
     expect(onApply).toHaveBeenCalledTimes(1)
     const getPrice = onApply.mock.calls[0][0] as (target: typeof product) => number | null
-    expect(getPrice(product)).toBe(87)
+    // 海外送料のデフォルトが円入力(2000円 ≒ $13.33)に変わったため、
+    // 従来のUSD直接入力(デフォルト$15)時とは期待値が異なる。
+    expect(getPrice(product)).toBe(85)
+  })
+
+  // ユーザー要望: 海外送料の入力をUSDから円に変更し、計算時に為替レートで
+  // USDへ変換する。
+  it('海外送料は円で入力し、為替レートでUSDへ換算して計算に反映される', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ rate: 150, date: '2026-07-25' }),
+    })
+    const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
+    const product = makeProduct('p1', { purchase_price_jpy: 6000 })
+    const onApply = vi.fn()
+
+    render(
+      <PriceEditModal
+        products={[product]}
+        pagedIds={new Set(['p1'])}
+        getPurchaseJpy={() => 6000}
+        onApply={onApply}
+        onClose={vi.fn()}
+      />
+    )
+
+    await waitFor(() => screen.getByRole('spinbutton', { name: '1ドルあたりの円レート' }))
+    expect(screen.getByText('海外送料（円）')).toBeInTheDocument()
+
+    const shippingInput = screen.getByRole('spinbutton', { name: '海外送料' })
+    await userEvent.clear(shippingInput)
+    await userEvent.type(shippingInput, '3000')
+
+    await userEvent.click(screen.getByRole('button', { name: /適用/ }))
+
+    expect(onApply).toHaveBeenCalledTimes(1)
+    const getPrice = onApply.mock.calls[0][0] as (target: typeof product) => number | null
+
+    const { calcProfit } = await import('../lib/pricing')
+    const expected = calcProfit({
+      purchasePriceJpy: 6000,
+      jpyPerUsd: 150,
+      ebayFeeRate: 0.133,
+      targetProfitRate: 0.2,
+      shippingUsd: 3000 / 150, // 3000円 ÷ 150円/ドル = $20
+      fixedCostUsd: 0,
+    })
+    expect(getPrice(product)).toBe(expected.salePriceUsd)
   })
 
   // ユーザー要望: 価格一括編集(利益計算・価格帯別利益額)に広告プロモーション率・
