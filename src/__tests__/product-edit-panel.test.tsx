@@ -96,11 +96,17 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Veroを除外' }))
     await userEvent.click(screen.getByRole('button', { name: 'Vero除外を実行' }))
 
+    // ユーザー要望: 除外実行時点では一覧から消えるだけで、実際のDELETE APIは
+    // まだ呼ばれない(「編集保存」を押すまで確定しない)。
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p1')).toBeNull())
+    expect(screen.getByDisplayValue('eBay Title p2')).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: '💾 編集保存' }))
+
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
     expect(fetchMock.mock.calls[2][0]).toBe('/api/products/ext-1')
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ productId: 'p1' })
-    await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p1')).toBeNull())
-    expect(screen.getByDisplayValue('eBay Title p2')).toBeTruthy()
   })
 
   // 既存ツール(公式)との機能監査で発見: 除外を一度実行した項目には
@@ -161,10 +167,15 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '価格タイプ除外を実行' }))
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ productId: 'p2' })
+    // 除外実行時点では一覧から消えるだけで、DELETE APIはまだ呼ばれない。
+    expect(fetchMock).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p2')).toBeNull())
     expect(screen.getByDisplayValue('eBay Title p1')).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: '💾 編集保存' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ productId: 'p2' })
   })
 
   // ユーザー報告: 「Vero除外したら、その他の除外クリックしてもVeroから変わらない」。
@@ -219,6 +230,69 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     await userEvent.click(screen.getByRole('button', { name: '危険セラー除外を実行' }))
 
     await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p1')).toBeNull())
+  })
+
+  // ユーザー要望: 除外は「編集保存」を押すまで確定しない。保存前に閉じれば
+  // (=コンポーネントを再マウントすれば)除外は取り消され、次に開いた際に
+  // 商品が再び表示される。
+  it('除外実行後に保存せず閉じると、次に開いたときは商品が復元されている(DELETE APIが呼ばれていないため)', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1', { price_type: 'auction' })],
+      })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    const { unmount } = render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: '価格タイプを除外' }))
+    await userEvent.click(screen.getByRole('button', { name: '価格タイプ除外を実行' }))
+    await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p1')).toBeNull())
+
+    // 保存せずに閉じる(=アンマウント)。DELETE APIは一度も呼ばれていない。
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    unmount()
+
+    // 再度開くと(=再マウント、再フェッチ)、商品が復元されている。
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1', { price_type: 'auction' })],
+    })
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+  })
+
+  // ユーザー要望: 除外だけでなく編集・検索・ポケモンタブの変更も、いずれの
+  // タブの「編集保存」ボタンからでもまとめて保存できる(全タブが同じ保存
+  // 処理を共有しているため)。
+  it('除外タブで実行した除外は、別タブ(編集タブ)の「編集保存」ボタンからも保存できる', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1', { price_type: 'auction' })],
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: '価格タイプを除外' }))
+    await userEvent.click(screen.getByRole('button', { name: '価格タイプ除外を実行' }))
+    await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p1')).toBeNull())
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // 編集タブへ切り替え、そちらの保存ボタンから保存する。
+    await userEvent.click(screen.getByRole('button', { name: '編集' }))
+    expect(screen.getByText(/保存待ちの除外: 1件/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '💾 編集保存' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/products/ext-1')
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ productId: 'p1' })
   })
 
   it('「危険単語」ボタンも同様にパネルとして開閉する', async () => {
