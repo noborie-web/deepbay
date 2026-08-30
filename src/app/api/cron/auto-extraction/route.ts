@@ -124,6 +124,10 @@ async function executeSchedule(
   db: any,
   schedule: AutoExtractionSchedule,
 ): Promise<CronResult> {
+  // 月間リセット期限(plan_reset_at)が過ぎていれば抽出回数を0に戻す
+  // (extract/route.ts と同様、専用cronを追加せず抽出実行時に遅延実行する)。
+  await db.rpc('reset_extraction_used_if_due', { user_id: schedule.user_id })
+
   const { data: profile, error: profileError } = await db
     .from('profiles')
     .select('extraction_limit, extraction_used')

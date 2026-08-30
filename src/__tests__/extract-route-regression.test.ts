@@ -45,6 +45,7 @@ describe('POST /api/extract regression after runScrape extraction', () => {
     mocks.createClient.mockReset().mockResolvedValue({
       auth: { getUser: vi.fn().mockResolvedValue({ data: { user: { id: 'user-1' } } }) },
       from: vi.fn(() => query),
+      rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
     })
     mocks.createServiceClient.mockReset().mockReturnValue({ service: true })
   })
@@ -73,5 +74,20 @@ describe('POST /api/extract regression after runScrape extraction', () => {
       'bulk-1',
       { service: true },
     )
+  })
+
+  // ユーザー要望: 「抽出回数残高はリセットできるようにしてください」。
+  // plan_reset_atが過ぎていれば抽出回数を0に戻すRPCを、抽出実行時に
+  // 呼び出すようにした(専用cronはVercel Hobbyプランの制限で追加できない)。
+  it('resets extraction_used via RPC when the monthly reset is due, before checking the limit', async () => {
+    const client = await mocks.createClient()
+
+    await POST(new NextRequest('http://localhost/api/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://jp.mercari.com/search?keyword=guitar' }),
+    }))
+
+    expect(client.rpc).toHaveBeenCalledWith('reset_extraction_used_if_due', { user_id: 'user-1' })
   })
 })
