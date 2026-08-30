@@ -44,7 +44,7 @@ describe('利益計算式', () => {
   it('手数料・利益率を正しく反映する', () => {
     const params = { ...BASE_PARAMS, shippingUsd: 0, fixedCostUsd: 0 }
     const { salePriceUsd, costUsd } = calcProfit(params)
-    const expected = Math.ceil(costUsd / (1 - 0.133 - 0.2))
+    const expected = Math.ceil((costUsd / (1 - 0.133 - 0.2)) * 100) / 100
     expect(salePriceUsd).toBe(expected)
   })
 
@@ -53,10 +53,13 @@ describe('利益計算式', () => {
     expect(profitUsd).toBeGreaterThan(0)
   })
 
-  it('端数処理: Math.ceil で1ドル単位切り上げ', () => {
+  // ユーザー要望: eBay販売価格はドル未満2桁(セント単位)まで計算する。
+  it('端数処理: セント単位(小数点2桁)で切り上げる', () => {
     const params = { ...BASE_PARAMS, purchasePriceJpy: 1000, shippingUsd: 0, fixedCostUsd: 0 }
     const { salePriceUsd } = calcProfit(params)
-    expect(Number.isInteger(salePriceUsd)).toBe(true)
+    // セント未満の端数が残っていないこと(=小数点2桁までに丸められていること)
+    expect(Number.isInteger(Math.round(salePriceUsd * 100))).toBe(true)
+    expect(salePriceUsd).toBeCloseTo(Math.round(salePriceUsd * 100) / 100, 10)
   })
 
   // 価格一括編集に広告プロモーション率・関税率・ディスカウント率を追加。
@@ -68,7 +71,7 @@ describe('利益計算式', () => {
     const withExtra = calcProfit({ ...params, adRate: 0.05, customsRate: 0.03, discountRate: 0.02 })
     expect(withExtra.salePriceUsd).toBeGreaterThan(withoutExtra.salePriceUsd)
 
-    const expected = Math.ceil(withoutExtra.costUsd / (1 - 0.133 - 0.2 - 0.05 - 0.03 - 0.02))
+    const expected = Math.ceil((withoutExtra.costUsd / (1 - 0.133 - 0.2 - 0.05 - 0.03 - 0.02)) * 100) / 100
     expect(withExtra.salePriceUsd).toBe(expected)
   })
 
@@ -191,9 +194,11 @@ describe('価格帯別利益額', () => {
       fixedCostUsd: 0,
     }
     const result = calcTieredProfit(params)
-    expect(result.salePriceUsd).toBe(72)
+    // eBay販売価格はセント単位(小数点2桁)まで計算するため、1ドル単位切り上げ
+    // より必要最小限の価格に近づく。
+    expect(result.salePriceUsd).toBe(71.13)
     expect(result.profitUsd).toBeGreaterThanOrEqual(2000 / 150)
-    expect(result.profitUsd).toBeLessThan(2000 / 150 + 1)
+    expect(result.profitUsd).toBeLessThan(2000 / 150 + 0.01)
   })
 
   it('広告プロモーション率・関税率・ディスカウント率を指定すると、その分だけ販売価格が高くなる', () => {

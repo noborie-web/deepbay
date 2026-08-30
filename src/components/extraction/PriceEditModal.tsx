@@ -233,7 +233,8 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
       if (purchase == null || !isFinite(purchase) || purchase <= 0) return null
       const rate = parseFloat(rateMultiplier)
       if (!isFinite(rate) || rate <= 0) return null
-      const price = Math.ceil(purchase * rate)
+      // eBay販売価格はセント単位(小数点2桁)まで計算する。
+      const price = Math.ceil(purchase * rate * 100) / 100
       return isSafePriceUsd(price) ? price : null
     }
     if (mode === 'tiered') {

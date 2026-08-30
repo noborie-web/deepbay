@@ -1499,9 +1499,10 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
 
     expect(onApply).toHaveBeenCalledTimes(1)
     const getPrice = onApply.mock.calls[0][0] as (target: typeof product) => number | null
-    // 海外送料のデフォルトが円入力(2000円 ≒ $13.33)に変わったため、
-    // 従来のUSD直接入力(デフォルト$15)時とは期待値が異なる。
-    expect(getPrice(product)).toBe(85)
+    // 海外送料のデフォルトが円入力(2000円 ≒ $13.33)に変わったこと、
+    // eBay販売価格がセント単位(小数点2桁)まで計算されるようになった
+    // ことにより、期待値が変化している。
+    expect(getPrice(product)).toBe(84.59)
   })
 
   // ユーザー要望: 海外送料の入力をUSDから円に変更し、計算時に為替レートで
