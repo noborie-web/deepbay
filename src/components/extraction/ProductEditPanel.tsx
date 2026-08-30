@@ -63,6 +63,9 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // 保存成功時のフィードバック。新たに編集すると(updateEditが呼ばれると)
+  // クリアされる。ユーザー要望: 保存が完了したかどうかが分からなかったため。
+  const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null)
   const [imageSize, setImageSize] = useState<ImageSize>('小')
   const [bulkSize, setBulkSize] = useState('50')
   const [editMode, setEditMode] = useState<EditMode>('簡易編集モード')
@@ -346,6 +349,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       ...prev,
       [productId]: { ...prev[productId], [field]: value },
     }))
+    // 新たに編集したら、直前の「保存しました」表示は古い情報になるため消す。
+    setSaveSuccessMsg(null)
   }, [])
 
   // ---- 一括タイトル編集 ----
@@ -472,10 +477,14 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   async function saveAll() {
     setSaving(true)
     setSaveError(null)
+    setSaveSuccessMsg(null)
     try {
       const errors: string[] = []
+      let editsSucceededCount = 0
 
+      const excludeAttemptCount = pendingExcludeIds.size
       const { failedCount: excludeFailedCount } = await flushPendingExcludes()
+      const excludeSucceededCount = excludeAttemptCount - excludeFailedCount
       if (excludeFailedCount > 0) {
         errors.push(`${excludeFailedCount}件の除外の保存に失敗しました`)
       }
@@ -541,6 +550,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         }
 
         if (allSucceeded.length > 0) {
+          editsSucceededCount = allSucceeded.length
           const succeededSet = new Set(allSucceeded)
           setProducts((prev) =>
             prev.map((p) => (succeededSet.has(p.id) && edits[p.id] ? { ...p, ...edits[p.id] } : p))
@@ -559,7 +569,14 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         if (hardError) errors.push(hardError)
       }
 
-      if (errors.length > 0) setSaveError(errors.join(' / '))
+      if (errors.length > 0) {
+        setSaveError(errors.join(' / '))
+      } else {
+        // ユーザー要望: 保存が完了したかどうかが分からなかったため、成功時にも
+        // 明示的なメッセージを表示する。
+        const totalSaved = excludeSucceededCount + editsSucceededCount
+        if (totalSaved > 0) setSaveSuccessMsg(`${totalSaved}件を保存しました`)
+      }
     } catch (e) {
       setSaveError(`通信エラー: ${e instanceof Error ? e.message : '不明なエラー'}`)
     } finally {
@@ -770,6 +787,9 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
               >
                 💾 編集保存
               </button>
+              {saveSuccessMsg && !saveError && (
+                <span className="text-xs text-green-600">{saveSuccessMsg}</span>
+              )}
               {saveError && (
                 <span className="text-xs text-red-500">{saveError}</span>
               )}
@@ -1146,6 +1166,9 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 >
                   💾 編集保存
                 </button>
+                {saveSuccessMsg && !saveError && (
+                  <span className="text-xs text-green-600">{saveSuccessMsg}</span>
+                )}
                 {saveError && (
                   <span className="text-xs text-red-500">{saveError}</span>
                 )}
@@ -1217,6 +1240,9 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 >
                   💾 編集保存
                 </button>
+                {saveSuccessMsg && !saveError && (
+                  <span className="text-xs text-green-600">{saveSuccessMsg}</span>
+                )}
                 {saveError && (
                   <span className="text-xs text-red-500">{saveError}</span>
                 )}
@@ -1365,6 +1391,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   >
                     💾 編集保存
                   </button>
+                  {saveSuccessMsg && !saveError && <span className="text-xs text-green-600">{saveSuccessMsg}</span>}
                   {saveError && <span className="text-xs text-red-500">{saveError}</span>}
                 </div>
               </div>
@@ -1391,6 +1418,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 >
                   💾 編集保存
                 </button>
+                {saveSuccessMsg && !saveError && <span className="text-xs text-green-600">{saveSuccessMsg}</span>}
                 {saveError && <span className="text-xs text-red-500">{saveError}</span>}
               </div>
             </>
