@@ -73,10 +73,17 @@ export function validateProfitParams(p: ProfitCalcParams): string | null {
   return null
 }
 
+// eBay販売価格はドル未満2桁(セント単位)まで計算する。1ドル単位への
+// 切り上げでは目標利益率・利益額を下回ることがあるため、セント単位で
+// 切り上げることで必ず目標以上の利益を確保する。
+function ceilToCents(value: number): number {
+  return Math.ceil(value * 100) / 100
+}
+
 export function calcProfit(p: ProfitCalcParams): ProfitCalcResult {
   const costUsd = p.purchasePriceJpy / p.jpyPerUsd
   const totalRate = p.ebayFeeRate + p.targetProfitRate + extraRate(p)
-  const salePriceUsd = Math.ceil(
+  const salePriceUsd = ceilToCents(
     (costUsd + p.shippingUsd + p.fixedCostUsd) /
     (1 - totalRate),
   )
@@ -144,7 +151,7 @@ export function calcTieredProfit(p: TieredProfitCalcParams): ProfitCalcResult {
   const costUsd = p.purchasePriceJpy / p.jpyPerUsd
   const targetProfitUsd = p.profitJpy / p.jpyPerUsd
   const totalRate = p.ebayFeeRate + extraRate(p)
-  const salePriceUsd = Math.ceil(
+  const salePriceUsd = ceilToCents(
     (costUsd + targetProfitUsd + p.shippingUsd + p.fixedCostUsd)
     / (1 - totalRate),
   )
