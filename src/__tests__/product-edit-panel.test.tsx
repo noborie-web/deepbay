@@ -911,6 +911,66 @@ describe('ProductEditPanel: saveAll の動作', () => {
     expect(screen.getByText(/通信エラー/)).toBeTruthy()
   })
 
+  // ユーザー質問: 「編集保存完了したかどうかどこで判断しますか？」
+  // これまで成功時に明示的なフィードバックがなかったため、保存件数を
+  // 含む成功メッセージを表示するようにした。
+  it('保存が成功すると「N件を保存しました」と表示される', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1'), makeProduct('p2')],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, succeeded: ['p1', 'p2'], failed: [] }),
+      })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getAllByDisplayValue(/eBay Title/))
+
+    const [input1, input2] = screen.getAllByDisplayValue(/eBay Title/)
+    await act(async () => {
+      await userEvent.clear(input1)
+      await userEvent.type(input1, 'New Title 1')
+      await userEvent.clear(input2)
+      await userEvent.type(input2, 'New Title 2')
+    })
+
+    await act(async () => { await userEvent.click(screen.getByText(/💾 編集保存/)) })
+
+    await waitFor(() => expect(screen.getByText('2件を保存しました')).toBeTruthy())
+  })
+
+  it('保存成功メッセージは、その後に新たに編集すると消える', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1')],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, succeeded: ['p1'], failed: [] }),
+      })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getAllByDisplayValue(/eBay Title/))
+
+    const titleInput = screen.getAllByDisplayValue(/eBay Title/)[0]
+    await act(async () => {
+      await userEvent.clear(titleInput)
+      await userEvent.type(titleInput, 'New Title')
+      await userEvent.click(screen.getByText(/💾 編集保存/))
+    })
+    await waitFor(() => expect(screen.getByText('1件を保存しました')).toBeTruthy())
+
+    await act(async () => {
+      await userEvent.type(screen.getByDisplayValue('New Title'), ' more')
+    })
+    expect(screen.queryByText('1件を保存しました')).not.toBeInTheDocument()
+  })
+
   // ユーザー報告(スクリーンショット): 保存に失敗すると常に汎用的な
   // 「保存に失敗しました」とだけ表示され、原因(セッション切れ等)が
   // 分からなかった。サーバーが返すjson.errorを表示するよう修正した。
