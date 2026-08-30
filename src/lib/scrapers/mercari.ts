@@ -209,7 +209,9 @@ function toProduct(item: any, url: string): ScrapedProduct {
 export class MercariScraper {
   name = 'メルカリ'
   siteKey = 'mercari'
-  urlPattern = /mercari\.com\/(?:jp\/items\/[^/?#]+|item\/[^/?#]+|s\/[^/?#]+|search(?:[/?#]|$))/
+  // セラーページは/s/{id}(旧来の短縮リンク)と/user/profile/{id}(実際の商品
+  // ページからリンクされる現行の正式なプロフィールURL)の両方が有効。
+  urlPattern = /mercari\.com\/(?:jp\/items\/[^/?#]+|item\/[^/?#]+|s\/[^/?#]+|user\/profile\/[^/?#]+|search(?:[/?#]|$))/
 
   matches(url: string): boolean {
     if (this.urlPattern.test(url)) return true
@@ -225,10 +227,10 @@ export class MercariScraper {
       return this.scrapeSearch(url, limit, options)
     }
 
-    // セラーページ: jp.mercari.com/s/{sellerId}
-    const sellerMatch = url.match(/mercari\.com\/s\/([^/?#]+)/)
+    // セラーページ: jp.mercari.com/s/{sellerId} または jp.mercari.com/user/profile/{sellerId}
+    const sellerMatch = url.match(/mercari\.com\/(?:s|user\/profile)\/([^/?#]+)/)
     if (sellerMatch) {
-      return this.scrapeSellerPage(sellerMatch[1], url, limit)
+      return this.scrapeSellerPage(sellerMatch[1], url, limit, options)
     }
 
     // 単品ページ: jp.mercari.com/item/{itemId}
@@ -241,7 +243,7 @@ export class MercariScraper {
     throw new ScraperError('Invalid Mercari URL', this.siteKey, url)
   }
 
-  private async scrapeSearch(url: string, limit: number, _options: ScraperOptions): Promise<ScrapedProduct[]> {
+  private async scrapeSearch(url: string, limit: number, options: ScraperOptions): Promise<ScrapedProduct[]> {
     const srcParams = new URL(url).searchParams
 
     // sort マッピング（新API仕様: SORT_SCORE / SORT_PRICE / SORT_CREATED_TIME / SORT_NUM_LIKES）
@@ -300,6 +302,11 @@ export class MercariScraper {
     const shippingPayerIds = getMultiNumberParam(srcParams, 'shipping_payer_id')
     if (shippingPayerIds.length > 0) searchCondition.shippingPayerId = shippingPayerIds
 
+    return this.runSearchApi(searchCondition, limit, url, options)
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async runSearchApi(searchCondition: Record<string, any>, limit: number, url: string, options: ScraperOptions = {}): Promise<ScrapedProduct[]> {
     const SEARCH_URL = 'https://api.mercari.jp/v2/entities:search'
     const dpopCtx = await getDPoPContext()
     const allProducts: ScrapedProduct[] = []
@@ -361,63 +368,35 @@ export class MercariScraper {
       throw new ScraperError('検索結果が0件です', this.siteKey, url)
     }
 
-    return this.enrichImages(allProducts.slice(0, limit), url, _options)
+    return this.enrichImages(allProducts.slice(0, limit), url, options)
   }
 
-  private async scrapeSellerPage(sellerId: string, url: string, limit: number): Promise<ScrapedProduct[]> {
-    const params = new URLSearchParams({
-      seller_id: sellerId,
-      status: 'on_sale',
-      limit: String(Math.min(limit, 120)),
-      offset: '0',
-    })
-
-    const res = await fetch(`https://api.mercari.jp/v2/entities/@${sellerId}/items?${params}`, {
-      headers: HEADERS,
-    })
-
-    if (!res.ok) {
-      // フォールバック: 検索APIで試す
-      return this.scrapeSellerViaSearch(sellerId, url, limit)
-    }
-
+  // 旧来の `api.mercari.jp/v2/entities/@{id}/items` は廃止されており(実データで404を確認済み)、
+  // 現在は単品検索と同じ entities:search エンドポイントに sellerId を指定して取得する。
+  private async scrapeSellerPage(sellerId: string, url: string, limit: number, options: ScraperOptions = {}): Promise<ScrapedProduct[]> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const json: any = await res.json()
-    const items: unknown[] = json?.data ?? json?.items ?? []
-    if (!Array.isArray(items) || items.length === 0) {
-      return this.scrapeSellerViaSearch(sellerId, url, limit)
+    const searchCondition: Record<string, any> = {
+      keyword: '',
+      excludeKeyword: '',
+      sort: 'SORT_CREATED_TIME',
+      order: 'ORDER_DESC',
+      status: ['STATUS_ON_SALE'],
+      sizeId: [],
+      categoryId: [],
+      brandId: [],
+      sellerId: [sellerId],
+      itemConditionId: [],
+      shippingPayerId: [],
+      shippingFromArea: [],
+      shippingMethod: [],
+      colorId: [],
+      hasCoupon: false,
+      attributes: [],
+      itemTypes: [],
+      skuIds: [],
     }
 
-    return this.enrichImages(items.map((item) => toProduct(item, url)).slice(0, limit), url)
-  }
-
-  private async scrapeSellerViaSearch(sellerId: string, url: string, limit: number): Promise<ScrapedProduct[]> {
-    const body = JSON.stringify({
-      sellerId,
-      status: 'STATUS_TRADING',
-      limit,
-      offset: 0,
-    })
-
-    const res = await fetch('https://api.mercari.jp/v2/entities/search', {
-      method: 'POST',
-      headers: { ...HEADERS, 'Content-Type': 'application/json' },
-      body,
-    })
-
-    if (!res.ok) {
-      throw new ScraperError(`Seller API error: ${res.status}`, this.siteKey, url)
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const json: any = await res.json()
-    const items: unknown[] = json?.data ?? json?.items ?? []
-
-    if (!Array.isArray(items) || items.length === 0) {
-      throw new ScraperError('No items found for this seller', this.siteKey, url)
-    }
-
-    return this.enrichImages(items.map((item) => toProduct(item, url)).slice(0, limit), url)
+    return this.runSearchApi(searchCondition, limit, url, options)
   }
 
   private async scrapeItem(itemId: string, url: string): Promise<ScrapedProduct> {

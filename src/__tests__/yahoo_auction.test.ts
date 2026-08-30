@@ -175,3 +175,105 @@ describe('YahooAuctionScraper.scrape 検索ページの一括抽出', () => {
     }
   })
 })
+
+function fakeSellerNextData(items: { auctionId: string; title: string; price: number }[], total: number): string {
+  const nd = {
+    props: {
+      pageProps: {
+        initialState: {
+          search: {
+            items: {
+              listing: {
+                items: items.map((i) => ({
+                  auctionId: i.auctionId,
+                  title: i.title,
+                  price: i.price,
+                  imageUrl: `https://example.com/${i.auctionId}.jpg?w=300&h=300`,
+                  itemCondition: 'NEW',
+                  categoryPath: [{ id: 0, name: 'オークション' }, { id: 1, name: 'カテゴリA' }],
+                  endTime: '2026-09-01T19:31:51+09:00',
+                })),
+                totalResultsAvailable: total,
+              },
+            },
+          },
+        },
+      },
+    },
+  }
+  return `<html><body><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(nd)}</script></body></html>`
+}
+
+describe('YahooAuctionScraper.matches (セラーページ)', () => {
+  it('セラーページURLにマッチする', () => {
+    const scraper = new YahooAuctionScraper()
+    expect(scraper.matches('https://auctions.yahoo.co.jp/seller/F8G32f5djiiu1pJTiqwBK36jhXmrA')).toBe(true)
+  })
+})
+
+describe('YahooAuctionScraper.scrape セラーページの一括抽出', () => {
+  it('__NEXT_DATA__のlisting.itemsから商品情報を正しく抽出し、画像をアップサイズする', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async () => new Response(
+      fakeSellerNextData([{ auctionId: 'a1', title: 'Item A1', price: 1000 }], 1),
+      { status: 200 },
+    )
+    try {
+      const scraper = new YahooAuctionScraper()
+      const results = await scraper.scrape('https://auctions.yahoo.co.jp/seller/testseller', { limit: 10 })
+      expect(results).toHaveLength(1)
+      expect(results[0]).toMatchObject({
+        sourceItemId: 'a1',
+        sourceUrl: 'https://auctions.yahoo.co.jp/jp/auction/a1',
+        title: 'Item A1',
+        price: 1000,
+        condition: 'NEW',
+        category: 'カテゴリA',
+      })
+      expect(results[0].images[0]).toContain('w=1200')
+      expect(results[0].sourceUpdatedAt).toBe(new Date('2026-09-01T19:31:51+09:00').toISOString())
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('1ページの件数が少なくても、まだ総件数に達していなければ次ページを取得し続ける', async () => {
+    let requestCount = 0
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      const b = new URL(urlStr).searchParams.get('b')
+      requestCount += 1
+      if (b === '1') {
+        return new Response(fakeSellerNextData([{ auctionId: 'b1', title: 'B1', price: 100 }, { auctionId: 'b2', title: 'B2', price: 200 }], 5), { status: 200 })
+      }
+      if (b === '51') {
+        return new Response(fakeSellerNextData([
+          { auctionId: 'b3', title: 'B3', price: 300 },
+          { auctionId: 'b4', title: 'B4', price: 400 },
+          { auctionId: 'b5', title: 'B5', price: 500 },
+        ], 5), { status: 200 })
+      }
+      return new Response(fakeSellerNextData([], 5), { status: 200 })
+    }
+    try {
+      const scraper = new YahooAuctionScraper()
+      const results = await scraper.scrape('https://auctions.yahoo.co.jp/seller/testseller', { limit: 600 })
+      expect(results).toHaveLength(5)
+      expect(requestCount).toBe(2) // 総件数5に達した時点で3ページ目は取得しない
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('出品者の商品が0件ならエラーを投げる', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async () => new Response(fakeSellerNextData([], 0), { status: 200 })
+    try {
+      const scraper = new YahooAuctionScraper()
+      await expect(scraper.scrape('https://auctions.yahoo.co.jp/seller/emptyseller')).rejects.toThrow()
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
