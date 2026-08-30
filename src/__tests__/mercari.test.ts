@@ -450,3 +450,64 @@ describe('scrapeSearch pagination', () => {
     }
   })
 })
+
+describe('MercariScraper セラーページ抽出', () => {
+  it('urlPatternが/s/{id}と/user/profile/{id}の両方にマッチする', () => {
+    const scraper = new MercariScraper()
+    expect(scraper.urlPattern.test('https://jp.mercari.com/s/430735560')).toBe(true)
+    expect(scraper.urlPattern.test('https://jp.mercari.com/user/profile/430735560')).toBe(true)
+  })
+
+  it('/user/profile/{id}形式のURLからentities:searchにsellerIdを指定してリクエストする', async () => {
+    const origFetch = globalThis.fetch
+    const requestBodies: string[] = []
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      if (urlStr.includes('entities:search')) {
+        requestBodies.push(init?.body as string ?? '')
+        return new Response(JSON.stringify({
+          items: [{ id: 'm1', name: 'seller item 1', price: 1000 }],
+          meta: {},
+        }), { status: 200 })
+      }
+      return new Response('', { status: 404 })
+    }
+
+    try {
+      const scraper = new MercariScraper()
+      const results = await scraper.scrape('https://jp.mercari.com/user/profile/430735560', { limit: 10 })
+      expect(results).toHaveLength(1)
+      expect(requestBodies.length).toBeGreaterThan(0)
+      const body = JSON.parse(requestBodies[0])
+      expect(body.searchCondition.sellerId).toEqual(['430735560'])
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('旧来の/s/{id}形式のURLからも同じくsellerId検索を実行する', async () => {
+    const origFetch = globalThis.fetch
+    const requestBodies: string[] = []
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      if (urlStr.includes('entities:search')) {
+        requestBodies.push(init?.body as string ?? '')
+        return new Response(JSON.stringify({
+          items: [{ id: 'm2', name: 'seller item 2', price: 2000 }],
+          meta: {},
+        }), { status: 200 })
+      }
+      return new Response('', { status: 404 })
+    }
+
+    try {
+      const scraper = new MercariScraper()
+      const results = await scraper.scrape('https://jp.mercari.com/s/430735560', { limit: 10 })
+      expect(results).toHaveLength(1)
+      const body = JSON.parse(requestBodies[0])
+      expect(body.searchCondition.sellerId).toEqual(['430735560'])
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})

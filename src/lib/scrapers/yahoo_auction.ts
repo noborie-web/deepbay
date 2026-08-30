@@ -4,6 +4,7 @@ import { ScraperError } from './types'
 import type { ScrapedProduct, ScraperOptions } from './types'
 
 const SEARCH_URL_PATTERN = /auctions\.yahoo\.co\.jp\/search\/search/
+const SELLER_URL_PATTERN = /auctions\.yahoo\.co\.jp\/seller\/[^/?#]+/
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const PAGE_SIZE = 50
 
@@ -36,12 +37,15 @@ export class YahooAuctionScraper extends BaseScraper {
   urlPattern = /auctions\.yahoo\.co\.jp\/(?:item\/|jp\/auction\/)/
 
   matches(url: string): boolean {
-    return this.urlPattern.test(url) || SEARCH_URL_PATTERN.test(url)
+    return this.urlPattern.test(url) || SEARCH_URL_PATTERN.test(url) || SELLER_URL_PATTERN.test(url)
   }
 
   async scrape(url: string, options: ScraperOptions = {}): Promise<ScrapedProduct[]> {
     if (SEARCH_URL_PATTERN.test(url)) {
       return this.scrapeSearch(url, options)
+    }
+    if (SELLER_URL_PATTERN.test(url)) {
+      return this.scrapeSeller(url, options)
     }
     return super.scrape(url, options)
   }
@@ -135,6 +139,120 @@ export class YahooAuctionScraper extends BaseScraper {
 
     if (allProducts.length === 0) {
       throw new ScraperError('検索結果が0件です', this.siteKey, url)
+    }
+
+    return allProducts.slice(0, limit)
+  }
+
+  // セラーページ(出品者の出品一覧)の抽出。検索ページと違い商品カードに
+  // data-auction-*属性が無く、代わりに__NEXT_DATA__内の
+  // initialState.search.items.listing.{items,totalResultsAvailable}に
+  // 構造化データ(価格・カテゴリ・状態コード・終了日時まで含む)が
+  // 埋め込まれているため、それを使う。ページネーションのb/nパラメータは
+  // 検索ページと共通(実データで別ページの異なる商品が返ることを確認済み)。
+  private async scrapeSeller(url: string, options: ScraperOptions): Promise<ScrapedProduct[]> {
+    const { userAgent = DEFAULT_UA, timeoutMs = 15000, limit = 600, onPage } = options
+    const baseUrl = new URL(url)
+
+    const allProducts: ScrapedProduct[] = []
+    const seenIds = new Set<string>()
+    let numFound: number | null = null
+    // 暴走防止用の安全上限
+    const maxPages = Math.ceil(limit / PAGE_SIZE) + 5
+
+    for (let page = 0; page < maxPages && allProducts.length < limit; page++) {
+      const offset = page * PAGE_SIZE + 1 // ヤフオクの`b`パラメータは1始まり
+      baseUrl.searchParams.set('b', String(offset))
+      baseUrl.searchParams.set('n', String(PAGE_SIZE))
+      const pageUrl = baseUrl.toString()
+
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      let html: string
+      try {
+        const res = await fetch(pageUrl, {
+          headers: { 'User-Agent': userAgent, 'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3' },
+          signal: controller.signal,
+        })
+        if (!res.ok) {
+          if (page === 0) throw new ScraperError(`HTTP ${res.status}: ${res.statusText}`, this.siteKey, url)
+          break
+        }
+        html = await res.text()
+      } catch (err) {
+        if (page === 0) {
+          if (err instanceof ScraperError) throw err
+          throw new ScraperError(err instanceof Error ? err.message : 'Unknown error', this.siteKey, url)
+        }
+        break
+      } finally {
+        clearTimeout(timer)
+      }
+
+      const $ = cheerio.load(html)
+      let listing: YahooAuctionNextDataItem | null = null
+      try {
+        const nd = JSON.parse($('#__NEXT_DATA__').text())
+        listing = nd?.props?.pageProps?.initialState?.search?.items?.listing ?? null
+      } catch {
+        listing = null
+      }
+
+      if (numFound === null && typeof listing?.totalResultsAvailable === 'number') {
+        numFound = listing.totalResultsAvailable
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawItems: any[] = Array.isArray(listing?.items) ? listing.items : []
+      const pageProducts: ScrapedProduct[] = []
+      for (const item of rawItems) {
+        const itemId: string | undefined = item?.auctionId
+        if (!itemId) continue
+
+        const categoryPath = item?.categoryPath
+        const category = Array.isArray(categoryPath) && categoryPath.length > 0
+          ? categoryPath[categoryPath.length - 1]?.name ?? null
+          : (item?.category?.name ?? null)
+
+        let sourceUpdatedAt: string | null = null
+        if (typeof item?.endTime === 'string') {
+          const d = new Date(item.endTime)
+          if (isFinite(d.getTime())) sourceUpdatedAt = d.toISOString()
+        }
+
+        pageProducts.push({
+          sourceUrl: `https://auctions.yahoo.co.jp/jp/auction/${itemId}`,
+          sourceSite: this.siteKey,
+          sourceItemId: itemId,
+          title: typeof item?.title === 'string' ? item.title : '',
+          price: typeof item?.price === 'number' ? item.price : null,
+          description: '',
+          images: typeof item?.imageUrl === 'string' ? [upsizeImage(item.imageUrl)] : [],
+          condition: typeof item?.itemCondition === 'string' ? item.itemCondition : null,
+          category,
+          sellerRatingCount: null,
+          shippingDays: null,
+          sourceUpdatedAt,
+        })
+      }
+
+      // 「そのページの結果が0件」以外(取得件数がpageSize未満など)を終了条件に
+      // してはいけない(メルカリ検索抽出で見つかった不具合と同じ罠)。
+      if (pageProducts.length === 0) break
+
+      for (const p of pageProducts) {
+        if (!seenIds.has(p.sourceItemId!)) {
+          seenIds.add(p.sourceItemId!)
+          allProducts.push(p)
+        }
+      }
+      onPage?.(allProducts.length, numFound ?? limit)
+
+      if (numFound !== null && allProducts.length >= numFound) break
+    }
+
+    if (allProducts.length === 0) {
+      throw new ScraperError('出品者の商品が0件です', this.siteKey, url)
     }
 
     return allProducts.slice(0, limit)
