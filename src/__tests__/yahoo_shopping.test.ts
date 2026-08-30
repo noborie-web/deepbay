@@ -79,3 +79,132 @@ describe('YahooShoppingScraper.parse', () => {
     expect(scraper.urlPattern.test('https://www.digimart.net/cat1/shop1484/DS10704096/')).toBe(false)
   })
 })
+
+describe('YahooShoppingScraper.matches', () => {
+  it('単品ページURLにマッチする', () => {
+    const scraper = new YahooShoppingScraper()
+    expect(scraper.matches('https://store.shopping.yahoo.co.jp/ebest/4545350055974.html')).toBe(true)
+  })
+
+  it('検索結果ページURLにもマッチする', () => {
+    const scraper = new YahooShoppingScraper()
+    expect(scraper.matches('https://shopping.yahoo.co.jp/search/Nike/0/')).toBe(true)
+  })
+
+  it('関係ないURLにはマッチしない', () => {
+    const scraper = new YahooShoppingScraper()
+    expect(scraper.matches('https://example.com/foo')).toBe(false)
+  })
+})
+
+function fakeItemLink(storeId: string, itemCode: string, title: string, price: number, imgSrc: string): string {
+  const beacon = `_cl_link:img;itemcode:${itemCode};storeid:${storeId};tname:${title};prc:${price};str_rct:100`
+  return `<a href="https://store.shopping.yahoo.co.jp/${storeId}/${itemCode}.html" data-beacon="${beacon}"><img src="${imgSrc}"></a>`
+  + `<a href="https://store.shopping.yahoo.co.jp/${storeId}/${itemCode}.html" data-beacon="_cl_link:title;itemcode:${itemCode};storeid:${storeId};tname:${title};prc:${price}"></a>`
+}
+
+function searchPageHtml(items: string[], totalCountText: string | null): string {
+  const total = totalCountText ? `<p>${totalCountText}件</p>` : ''
+  return `<html><body>${total}${items.join('')}</body></html>`
+}
+
+describe('YahooShoppingScraper.scrape 検索ページの一括抽出', () => {
+  it('data-beacon属性から商品情報を抽出し、同一商品の重複リンク(img/title)を1件に統合する', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async () => new Response(
+      searchPageHtml([fakeItemLink('zozo', '1', 'Item 1', 1000, 'https://example.com/1.jpg')], '1'),
+      { status: 200 },
+    )
+    try {
+      const scraper = new YahooShoppingScraper()
+      const results = await scraper.scrape('https://shopping.yahoo.co.jp/search/nike/0/', { limit: 10 })
+      expect(results).toHaveLength(1)
+      expect(results[0]).toMatchObject({
+        sourceItemId: 'zozo_1',
+        sourceUrl: 'https://store.shopping.yahoo.co.jp/zozo/1.html',
+        title: 'Item 1',
+        price: 1000,
+        images: ['https://example.com/1.jpg'],
+        sellerRatingCount: 100,
+      })
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('パス末尾にページ番号を付与して2ページ目以降を取得する(既存ページ番号セグメントは正規化)', async () => {
+    const requestedPaths: string[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      const path = new URL(urlStr).pathname
+      requestedPaths.push(path)
+      if (path === '/search/nike/0/') {
+        return new Response(searchPageHtml([fakeItemLink('s', 'a1', 'A1', 100, 'https://e.com/a1.jpg')], '2'), { status: 200 })
+      }
+      if (path === '/search/nike/0/2/') {
+        return new Response(searchPageHtml([fakeItemLink('s', 'a2', 'A2', 200, 'https://e.com/a2.jpg')], '2'), { status: 200 })
+      }
+      return new Response(searchPageHtml([], '2'), { status: 200 })
+    }
+    try {
+      const scraper = new YahooShoppingScraper()
+      const results = await scraper.scrape('https://shopping.yahoo.co.jp/search/nike/0/', { limit: 600 })
+      expect(results).toHaveLength(2)
+      expect(requestedPaths).toEqual(['/search/nike/0/', '/search/nike/0/2/'])
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('既にページ番号付きのURLが渡されても正しく正規化してページ1から取得する', async () => {
+    const requestedPaths: string[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      requestedPaths.push(new URL(urlStr).pathname)
+      return new Response(searchPageHtml([fakeItemLink('s', 'b1', 'B1', 100, 'https://e.com/b1.jpg')], '1'), { status: 200 })
+    }
+    try {
+      const scraper = new YahooShoppingScraper()
+      // ユーザーが3ページ目のURLをそのまま貼り付けたケースを想定
+      await scraper.scrape('https://shopping.yahoo.co.jp/search/nike/0/3/', { limit: 1 })
+      expect(requestedPaths[0]).toBe('/search/nike/0/')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('空の結果が返ったページで終了する(総件数が取得できない場合のフォールバック)', async () => {
+    let requestCount = 0
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      const path = new URL(urlStr).pathname
+      requestCount += 1
+      if (path === '/search/nike/0/') {
+        return new Response(searchPageHtml([fakeItemLink('s', 'c1', 'C1', 100, 'https://e.com/c1.jpg')], null), { status: 200 })
+      }
+      return new Response(searchPageHtml([], null), { status: 200 })
+    }
+    try {
+      const scraper = new YahooShoppingScraper()
+      const results = await scraper.scrape('https://shopping.yahoo.co.jp/search/nike/0/', { limit: 600 })
+      expect(results).toHaveLength(1)
+      expect(requestCount).toBe(2)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('検索結果が0件ならエラーを投げる', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async () => new Response(searchPageHtml([], '0'), { status: 200 })
+    try {
+      const scraper = new YahooShoppingScraper()
+      await expect(scraper.scrape('https://shopping.yahoo.co.jp/search/nonexistent/0/')).rejects.toThrow()
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
