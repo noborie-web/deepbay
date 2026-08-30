@@ -499,49 +499,64 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       })
 
       if (updates.length > 0) {
-        const res = await fetch(`/api/products/${extractionId}/bulk`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ updates }),
-        })
+        // 保存APIは一度に200件までしか受け付けないため、それより多い場合は
+        // 分割して順番に送信する(ユーザー報告: 200件超で「一度に更新できるのは
+        // 200件までです」というエラーになり保存が全く進まなかった)。
+        const BULK_CHUNK_SIZE = 200
+        const allSucceeded: string[] = []
+        const allFailed: { productId: string; error: string }[] = []
+        let hardError: string | null = null
 
-        const json: { ok?: boolean; succeeded?: string[]; failed?: { productId: string; error: string }[]; error?: string }
-          = await res.json().catch(() => ({}))
+        for (let i = 0; i < updates.length; i += BULK_CHUNK_SIZE) {
+          const chunk = updates.slice(i, i + BULK_CHUNK_SIZE)
+          const res = await fetch(`/api/products/${extractionId}/bulk`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ updates: chunk }),
+          })
 
-        if (json.ok === true) {
-          // 全成功
+          const json: { ok?: boolean; succeeded?: string[]; failed?: { productId: string; error: string }[]; error?: string }
+            = await res.json().catch(() => ({}))
+
+          if (json.ok === true) {
+            allSucceeded.push(...chunk.map((u) => u.productId as string))
+          } else if (json.succeeded && json.failed) {
+            allSucceeded.push(...json.succeeded)
+            allFailed.push(...json.failed)
+          } else if (res.status === 401 || json.error === 'Unauthorized') {
+            // ログインセッションが切れていると保存APIが401を返す。長時間の
+            // 編集作業中に起こりやすいため、専用の分かりやすい文言を出す。
+            // それ以上のチャンク送信は行わず、ここで打ち切る。
+            hardError = 'ログインセッションが切れている可能性があります。ページを再読み込みしてから再度お試しください'
+            break
+          } else {
+            // サーバーが具体的な理由(リクエスト形式エラー等)を返していても、
+            // これまでは常に汎用的な「保存に失敗しました」と表示しており、
+            // 原因が分からなかった。json.errorがあればそれを優先して表示する。
+            hardError = typeof json.error === 'string'
+              ? json.error
+              : `保存に失敗しました (status: ${res.status})`
+            break
+          }
+        }
+
+        if (allSucceeded.length > 0) {
+          const succeededSet = new Set(allSucceeded)
           setProducts((prev) =>
-            prev.map((p) => (edits[p.id] ? { ...p, ...edits[p.id] } : p))
-          )
-          setEdits({})
-        } else if (json.succeeded && json.failed) {
-          // 部分失敗 — 成功分だけ edits をクリア、失敗分は保持
-          const succeededSet = new Set(json.succeeded)
-          const failedSet = new Set(json.failed.map((f) => f.productId))
-          setProducts((prev) =>
-            prev.map((p) => (succeededSet.has(p.id) ? { ...p, ...edits[p.id] } : p))
+            prev.map((p) => (succeededSet.has(p.id) && edits[p.id] ? { ...p, ...edits[p.id] } : p))
           )
           setEdits((prev) => {
             const next = { ...prev }
             for (const id of succeededSet) delete next[id]
             return next
           })
-          const firstErrors = json.failed.slice(0, 3).map((f) => `${f.productId.slice(0, 8)}: ${f.error}`).join(' / ')
-          errors.push(`${failedSet.size}件の保存に失敗しました — ${firstErrors}`)
-        } else if (res.status === 401 || json.error === 'Unauthorized') {
-          // ログインセッションが切れていると保存APIが401を返す。長時間の
-          // 編集作業中に起こりやすいため、専用の分かりやすい文言を出す。
-          errors.push('ログインセッションが切れている可能性があります。ページを再読み込みしてから再度お試しください')
-        } else {
-          // サーバーが具体的な理由(リクエスト形式エラー等)を返していても、
-          // これまでは常に汎用的な「保存に失敗しました」と表示しており、
-          // 原因が分からなかった。json.errorがあればそれを優先して表示する。
-          errors.push(
-            typeof json.error === 'string'
-              ? json.error
-              : `保存に失敗しました (status: ${res.status})`
-          )
         }
+
+        if (allFailed.length > 0) {
+          const firstErrors = allFailed.slice(0, 3).map((f) => `${f.productId.slice(0, 8)}: ${f.error}`).join(' / ')
+          errors.push(`${allFailed.length}件の保存に失敗しました — ${firstErrors}`)
+        }
+        if (hardError) errors.push(hardError)
       }
 
       if (errors.length > 0) setSaveError(errors.join(' / '))
