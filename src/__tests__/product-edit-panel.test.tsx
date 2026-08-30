@@ -267,6 +267,64 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
       expect(previewText).toBeInTheDocument()
     })
   })
+
+  // 既存ツール(公式)との機能監査で発見: スポット文字除外も危険単語と同様に
+  // タイトル・ブランド・商品詳細を個別に判定対象へ切り替えられる
+  // (デフォルト全部オン)。
+  it('スポット文字除外は「ブランドに含む」のチェックを外すとブランド一致の商品を対象外にできる', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [
+        makeProduct('p1', { original_title: '普通のタイトル', ebay_brand: 'ジャンク品ブランド' }),
+        makeProduct('p2', { original_title: '普通のタイトル', ebay_brand: 'SafeBrand' }),
+      ],
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'スポット文字を除外' }))
+    await userEvent.click(screen.getByRole('button', { name: 'ジャンク' }))
+
+    function getPreviewText(): string {
+      return screen.getByText((_content, element) =>
+        element?.tagName === 'P' && /全2件中\s*\d+件が対象です/.test(element.textContent ?? ''),
+      ).textContent ?? ''
+    }
+
+    // デフォルトは全項目チェック済みなのでブランド一致の1件が対象
+    expect(getPreviewText()).toMatch(/全2件中\s*1件が対象です/)
+
+    // 「ブランドに含む」のチェックを外すと対象0件になる
+    await userEvent.click(screen.getByRole('checkbox', { name: 'ブランドに含む' }))
+    expect(getPreviewText()).toMatch(/全2件中\s*0件が対象です/)
+  })
+
+  it('スポット文字除外は「商品詳細に含む」がオンだと説明文にキーワードを含む商品も対象になる', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1', {
+        original_title: '普通のタイトル',
+        ebay_brand: 'SafeBrand',
+        ebay_description: 'これはジャンク品を含む説明文です',
+      })],
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'スポット文字を除外' }))
+    await userEvent.click(screen.getByRole('button', { name: 'ジャンク' }))
+
+    const previewText = screen.getByText((_content, element) =>
+      element?.tagName === 'P' && /全1件中\s*1件が対象です/.test(element.textContent ?? ''),
+    )
+    expect(previewText).toBeInTheDocument()
+  })
 })
 
 describe('ProductEditPanel: 除外実行前の対象件数プレビュー', () => {
