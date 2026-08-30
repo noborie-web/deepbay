@@ -41,6 +41,7 @@ const extraction: Extraction = {
   is_bulk: true,
   extracted_at: null,
   error_message: null,
+  exclusion_summary: null,
   created_at: '2026-07-25T00:00:00.000Z',
   updated_at: '2026-07-25T00:00:00.000Z',
   seller_account: sellers[0],
