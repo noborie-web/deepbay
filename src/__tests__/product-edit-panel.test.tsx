@@ -911,6 +911,65 @@ describe('ProductEditPanel: saveAll の動作', () => {
     expect(screen.getByText(/通信エラー/)).toBeTruthy()
   })
 
+  // ユーザー報告(スクリーンショット): 保存に失敗すると常に汎用的な
+  // 「保存に失敗しました」とだけ表示され、原因(セッション切れ等)が
+  // 分からなかった。サーバーが返すjson.errorを表示するよう修正した。
+  it('保存APIがセッション切れ(401)を返すと、分かりやすい専用メッセージを表示する', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1')],
+    })
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: 'Unauthorized' }),
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+
+    await waitFor(() => screen.getAllByDisplayValue(/eBay Title/))
+    const titleInput = screen.getAllByDisplayValue(/eBay Title/)[0]
+    await act(async () => {
+      await userEvent.clear(titleInput)
+      await userEvent.type(titleInput, 'New Title')
+    })
+
+    await act(async () => { await userEvent.click(screen.getByText(/💾 編集保存/)) })
+
+    await waitFor(() => {
+      expect(screen.getByText(/ログインセッションが切れている可能性があります/)).toBeTruthy()
+    })
+  })
+
+  it('保存APIがjson.errorを返すと、汎用メッセージではなくその内容を表示する', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1')],
+    })
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: '一度に更新できるのは200件までです' }),
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+
+    await waitFor(() => screen.getAllByDisplayValue(/eBay Title/))
+    const titleInput = screen.getAllByDisplayValue(/eBay Title/)[0]
+    await act(async () => {
+      await userEvent.clear(titleInput)
+      await userEvent.type(titleInput, 'New Title')
+    })
+
+    await act(async () => { await userEvent.click(screen.getByText(/💾 編集保存/)) })
+
+    await waitFor(() => {
+      expect(screen.getByText('一度に更新できるのは200件までです')).toBeTruthy()
+    })
+  })
+
   it('部分失敗: p1の表示は更新値、p2の入力は編集値を保持、再保存はp2のみ送信', async () => {
     // 初回ロード
     fetchMock.mockResolvedValueOnce({
