@@ -179,6 +179,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // 暗号化復元
   const [dbkId, setDbkId] = useState('')
   const [lookupResult, setLookupResult] = useState<{ found: boolean; source_url: string | null; title?: string } | null>(null)
+  const [lookedUpDbkId, setLookedUpDbkId] = useState('')
   const [looking, setLooking] = useState(false)
 
   // 稼働状況
@@ -427,11 +428,13 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // 暗号化復元
   const handleLookup = async () => {
     if (!dbkId.trim()) return
+    const code = dbkId.trim()
     setLooking(true); setLookupResult(null)
     try {
-      const res = await fetch(`/api/inventory/lookup?code=${encodeURIComponent(dbkId.trim())}`)
+      const res = await fetch(`/api/inventory/lookup?code=${encodeURIComponent(code)}`)
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'エラーが発生しました')
+      setLookedUpDbkId(code)
       setLookupResult(json)
     } catch (e) { showMsg('error', e instanceof Error ? e.message : 'エラー') }
     finally { setLooking(false) }
@@ -727,11 +730,22 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           <div className="mt-4 max-w-lg border rounded p-4 min-h-[80px] bg-gray-50 text-sm">
             {lookupResult === null ? <p className="text-gray-400">復元結果がありません。</p>
               : lookupResult.found ? (
-                <div>
-                  {lookupResult.title && <p className="font-medium text-gray-800 mb-1">{lookupResult.title}</p>}
-                  {lookupResult.source_url
-                    ? <a href={lookupResult.source_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline break-all">{lookupResult.source_url}</a>
-                    : <p className="text-gray-500">URLが登録されていません。</p>}
+                <div className="space-y-3">
+                  <p className="font-bold text-gray-900">復元結果</p>
+                  <p className="text-gray-800">
+                    <span className="text-gray-500">DBK-ID: </span>
+                    <span className="break-all">{lookedUpDbkId}</span>
+                  </p>
+                  <p className="text-gray-800">
+                    <span className="text-gray-500">商品名: </span>
+                    {lookupResult.title || '（タイトルなし）'}
+                  </p>
+                  <p className="text-gray-800">
+                    <span className="text-gray-500">商品url: </span>
+                    {lookupResult.source_url
+                      ? <a href={lookupResult.source_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline break-all">{lookupResult.source_url}</a>
+                      : 'URLが登録されていません。'}
+                  </p>
                 </div>
               ) : <p className="text-gray-500">該当する商品が見つかりませんでした。</p>}
           </div>
