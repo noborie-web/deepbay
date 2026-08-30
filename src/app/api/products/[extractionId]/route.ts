@@ -91,6 +91,10 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ e
     return NextResponse.json({ error: 'productId が無効です' }, { status: 400 })
   }
   const force = req.nextUrl.searchParams.get('force') === 'true' || body?.force === true
+  // check=true: 出品済みで削除がブロックされるかどうかだけを判定し、実際の削除は
+  // 行わない。除外を保存(saveAll)まで保留する編集画面が、削除ボタンクリック時点で
+  // 警告を出すために使う。
+  const checkOnly = req.nextUrl.searchParams.get('check') === 'true'
 
   const admin = createServiceClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -118,6 +122,10 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ e
     } catch (error) {
       return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 })
     }
+  }
+
+  if (checkOnly) {
+    return NextResponse.json({ ok: true })
   }
 
   const { error } = await admin

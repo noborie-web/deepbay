@@ -106,7 +106,7 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
     expect(fetchMock.mock.calls[2][0]).toBe('/api/products/ext-1')
-    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ productId: 'p1' })
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ productId: 'p1', force: false })
   })
 
   // 既存ツール(公式)との機能監査で発見: 除外を一度実行した項目には
@@ -175,7 +175,7 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     await userEvent.click(screen.getByRole('button', { name: '💾 編集保存' }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ productId: 'p2' })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ productId: 'p2', force: false })
   })
 
   // ユーザー報告: 「Vero除外したら、その他の除外クリックしてもVeroから変わらない」。
@@ -292,7 +292,7 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     expect(fetchMock.mock.calls[1][0]).toBe('/api/products/ext-1')
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ productId: 'p1' })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ productId: 'p1', force: false })
   })
 
   it('「危険単語」ボタンも同様にパネルとして開閉する', async () => {
@@ -434,6 +434,93 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
       element?.tagName === 'P' && /全1件中\s*1件が対象です/.test(element.textContent ?? ''),
     )
     expect(previewText).toBeInTheDocument()
+  })
+})
+
+// ユーザー要望: 商品一覧のゴミ箱削除ボタンも除外と同様、「編集保存」を
+// 押すまでDELETE APIを呼ばない。ただし出品済み商品の判定(409)はクリック
+// 時点で行い、従来通り強制削除の確認ダイアログを出す(?check=trueで
+// 実際には削除しない)。
+describe('ProductEditPanel: ゴミ箱削除ボタンの保存保留', () => {
+  it('通常商品を削除ボタンで削除すると、一覧からは消えるがDELETE APIはまだ呼ばれない', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1')],
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) }) // check=true
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Original Title p1を削除' }))
+
+    await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p1')).toBeNull())
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/products/ext-1?check=true')
+
+    // メインタブの保存ボタンで確定すると初めてDELETEが呼ばれる。
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+    await userEvent.click(screen.getByRole('button', { name: '💾 編集保存' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/products/ext-1')
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ productId: 'p1', force: false })
+  })
+
+  it('確認ダイアログでキャンセルすると削除されない', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1')],
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Original Title p1を削除' }))
+
+    expect(screen.getByDisplayValue('eBay Title p1')).toBeTruthy()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('出品済み商品を削除しようとすると警告が出て、承認すると除外予定に追加され、保存時にforce=trueで削除される', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1')],
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          error: '出品済みの商品です。',
+          blockedProducts: [{ id: 'p1', title: 'eBay Title p1' }],
+        }),
+      })
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Original Title p1を削除' }))
+
+    // 1回目: 削除確認、2回目: 出品済み警告(強制削除確認)
+    expect(confirmSpy).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p1')).toBeNull())
+
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+    await userEvent.click(screen.getByRole('button', { name: '💾 編集保存' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/products/ext-1?force=true')
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ productId: 'p1', force: true })
   })
 })
 

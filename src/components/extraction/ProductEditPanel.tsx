@@ -91,6 +91,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // 保存前にパネルを閉じれば除外は取り消される。他の項目の編集(edits)と
   // 同様に、saveAll()実行時にまとめて反映する。
   const [pendingExcludeIds, setPendingExcludeIds] = useState<Set<string>>(new Set())
+  // 出品済み商品を強制削除する確認を得た除外予定ID(保存時にforce=trueを付与する)。
+  const [forcedExcludeIds, setForcedExcludeIds] = useState<Set<string>>(new Set())
 
   // Vero・危険セラー・危険単語は抽出設定(サーバー側)に依存するため、
   // 実行前の件数プレビューを表示するには先に設定を取得しておく必要がある。
@@ -442,10 +444,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     if (idsToDelete.length === 0) return { failedCount: 0 }
 
     const results = await Promise.all(idsToDelete.map(async (productId) => {
-      const response = await fetch(`/api/products/${extractionId}`, {
+      // ゴミ箱ボタンで出品済み商品の強制削除が確認済みの場合はforce=trueを付与する。
+      const force = forcedExcludeIds.has(productId)
+      const response = await fetch(`/api/products/${extractionId}${force ? '?force=true' : ''}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId }),
+        body: JSON.stringify({ productId, force }),
       })
       return { productId, ok: response.ok }
     }))
@@ -453,6 +457,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     const succeededIds = new Set(results.filter((r) => r.ok).map((r) => r.productId))
     const failedCount = results.length - succeededIds.size
     setPendingExcludeIds((prev) => {
+      const next = new Set(prev)
+      for (const id of succeededIds) next.delete(id)
+      return next
+    })
+    setForcedExcludeIds((prev) => {
       const next = new Set(prev)
       for (const id of succeededIds) next.delete(id)
       return next
@@ -532,9 +541,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     }
   }
 
+  // ゴミ箱ボタンでの商品削除も除外と同様、実際のDELETEはsaveAll()まで保留する。
+  // ただし出品済み商品かどうかの判定(409)はクリック時点で行い、その場合のみ
+  // 従来通り強制削除の確認ダイアログを出す(?check=trueで実際には削除しない)。
   async function deleteProduct(productId: string) {
-    if (!confirm('この商品を削除しますか？')) return
-    let res = await fetch(`/api/products/${extractionId}`, {
+    if (!confirm('この商品を削除しますか？（「編集保存」を押すまで確定しません）')) return
+    const res = await fetch(`/api/products/${extractionId}?check=true`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ productId }),
@@ -549,21 +561,17 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         json.error ?? '出品済みの商品です。',
         titles,
         'eBay側のリスティングは削除されず、今後この商品の自動照合ができなくなります。',
-        'それでも削除しますか？',
+        'それでも除外予定に追加しますか？（「編集保存」を押すまで確定しません）',
       ].filter(Boolean).join('\n\n')
       if (!confirm(warning)) return
-      res = await fetch(`/api/products/${extractionId}?force=true`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId, force: true }),
-      })
-    }
-    if (res.ok) {
-      setProducts((prev) => prev.filter((p) => p.id !== productId))
-    } else {
+      setForcedExcludeIds((prev) => new Set(prev).add(productId))
+    } else if (!res.ok) {
       const json = await res.json().catch(() => ({})) as { error?: string }
       alert(`削除に失敗しました: ${json.error ?? res.status}`)
+      return
     }
+    setPendingExcludeIds((prev) => new Set(prev).add(productId))
+    setProducts((prev) => prev.filter((p) => p.id !== productId))
   }
 
   const getTitle = (p: Product) =>
@@ -1382,6 +1390,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                       {/* アクションボタン */}
                       <div className="flex flex-col gap-2 items-center pt-1 shrink-0">
                         <button
+                          aria-label={`${product.original_title}を削除`}
                           onClick={() => deleteProduct(product.id)}
                           className="w-8 h-8 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center"
                         >

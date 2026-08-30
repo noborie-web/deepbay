@@ -195,4 +195,42 @@ describe('protected product deletion', () => {
     expect(response.status).toBe(200)
     expect(state.deleteTables).toEqual(['products'])
   })
+
+  // ?check=true: 削除ボタンクリック時点で出品済みかどうかだけを判定し、実際の
+  // 削除はしない(編集画面が「編集保存」まで削除を保留するために使う)。
+  it('check=true does not delete an unlisted product, only reports it is deletable', async () => {
+    state.products = [unlistedProduct]
+    const { DELETE } = await import('@/app/api/products/[extractionId]/route')
+    const response = await DELETE(
+      new NextRequest('http://localhost/api/products/extraction-1?check=true', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: unlistedProduct.id }),
+      }),
+      { params: Promise.resolve({ extractionId: 'extraction-1' }) },
+    )
+
+    expect(response.status).toBe(200)
+    expect(state.deleteTables).toEqual([])
+  })
+
+  it('check=true still blocks (409) a listed product without deleting anything', async () => {
+    state.products = [listedProduct]
+    const { DELETE } = await import('@/app/api/products/[extractionId]/route')
+    const response = await DELETE(
+      new NextRequest('http://localhost/api/products/extraction-1?check=true', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: listedProduct.id }),
+      }),
+      { params: Promise.resolve({ extractionId: 'extraction-1' }) },
+    )
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toEqual({
+      error: LISTED_PRODUCT_DELETE_ERROR,
+      blockedProducts: [{ id: 'product-listed', title: 'Listed title' }],
+    })
+    expect(state.deleteTables).toEqual([])
+  })
 })
