@@ -505,7 +505,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           body: JSON.stringify({ updates }),
         })
 
-        const json: { ok?: boolean; succeeded?: string[]; failed?: { productId: string; error: string }[] }
+        const json: { ok?: boolean; succeeded?: string[]; failed?: { productId: string; error: string }[]; error?: string }
           = await res.json().catch(() => ({}))
 
         if (json.ok === true) {
@@ -528,8 +528,19 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           })
           const firstErrors = json.failed.slice(0, 3).map((f) => `${f.productId.slice(0, 8)}: ${f.error}`).join(' / ')
           errors.push(`${failedSet.size}件の保存に失敗しました — ${firstErrors}`)
+        } else if (res.status === 401 || json.error === 'Unauthorized') {
+          // ログインセッションが切れていると保存APIが401を返す。長時間の
+          // 編集作業中に起こりやすいため、専用の分かりやすい文言を出す。
+          errors.push('ログインセッションが切れている可能性があります。ページを再読み込みしてから再度お試しください')
         } else {
-          errors.push('保存に失敗しました')
+          // サーバーが具体的な理由(リクエスト形式エラー等)を返していても、
+          // これまでは常に汎用的な「保存に失敗しました」と表示しており、
+          // 原因が分からなかった。json.errorがあればそれを優先して表示する。
+          errors.push(
+            typeof json.error === 'string'
+              ? json.error
+              : `保存に失敗しました (status: ${res.status})`
+          )
         }
       }
 
