@@ -30,7 +30,7 @@ import {
   findVeroProductIds,
   getProductPriceType,
 } from '@/lib/product-exclusion'
-import type { ProductPriceType } from '@/lib/product-exclusion'
+import type { KeywordMatchField, ProductPriceType } from '@/lib/product-exclusion'
 import {
   DEFAULT_PRODUCT_SEARCH_FILTERS,
   filterProducts,
@@ -94,6 +94,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     words: string[]
   } | null>(null)
   const dangerSettingsFetchedRef = useRef(false)
+
+  // 危険単語: 判定対象項目(タイトル/ブランド/商品詳細)を個別に選択できる。
+  // 公式ツールに合わせデフォルトは全て有効。
+  const [wordCheckTitle, setWordCheckTitle] = useState(true)
+  const [wordCheckBrand, setWordCheckBrand] = useState(true)
+  const [wordCheckDescription, setWordCheckDescription] = useState(true)
 
   // スポット文字
   const SPOT_PRESETS = ['難あり', 'ジャンク', '破損', '動作未確認', '訳あり', '傷あり', 'シミ', '汚れ', 'カビ', '臭い', 'NG']
@@ -216,9 +222,17 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     return deleteExcludedProducts(findDangerSellerProductIds(products, sellerUrls))
   }
 
+  function wordCheckFields(): KeywordMatchField[] {
+    const fields: KeywordMatchField[] = []
+    if (wordCheckTitle) fields.push('title')
+    if (wordCheckBrand) fields.push('brand')
+    if (wordCheckDescription) fields.push('description')
+    return fields
+  }
+
   async function excludeDangerWords(): Promise<string[]> {
     const { words } = await loadDangerSettings()
-    return deleteExcludedProducts(findKeywordProductIds(products, words))
+    return deleteExcludedProducts(findKeywordProductIds(products, words, wordCheckFields()))
   }
 
   async function excludeByPriceType(): Promise<string[]> {
@@ -565,7 +579,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // 食い違うことはない。
   const veroPreviewCount = dangerSettings ? findVeroProductIds(products, dangerSettings.veroBrands).length : null
   const sellerPreviewCount = dangerSettings ? findDangerSellerProductIds(products, dangerSettings.sellerUrls).length : null
-  const wordPreviewCount = dangerSettings ? findKeywordProductIds(products, dangerSettings.words).length : null
+  const wordPreviewCount = dangerSettings ? findKeywordProductIds(products, dangerSettings.words, wordCheckFields()).length : null
   const spotPreviewCount = findKeywordProductIds(products, spotKeywords()).length
   const quickPreviewCount = findKeywordProductIds(products, quickKeywordList()).length
   const pricePreviewCount = findPriceRangeProductIds(
@@ -787,20 +801,35 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
               {excludePanel === 'word' && (
                 <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
-                  <p className="text-xs text-gray-500">
-                    抽出危険設定に登録した危険単語を含む商品を除外します。
-                  </p>
+                  <div className="flex items-center gap-5">
+                    <label className="flex items-center gap-1.5 text-xs text-gray-700">
+                      <input type="checkbox" checked={wordCheckTitle} onChange={(e) => setWordCheckTitle(e.target.checked)} />
+                      タイトルに含む
+                    </label>
+                    <label className="flex items-center gap-1.5 text-xs text-gray-700">
+                      <input type="checkbox" checked={wordCheckBrand} onChange={(e) => setWordCheckBrand(e.target.checked)} />
+                      ブランドに含む
+                    </label>
+                    <label className="flex items-center gap-1.5 text-xs text-gray-700">
+                      <input type="checkbox" checked={wordCheckDescription} onChange={(e) => setWordCheckDescription(e.target.checked)} />
+                      商品詳細に含む
+                    </label>
+                  </div>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['word'] || wordCheckFields().length === 0}
+                      onClick={() => runExclude('word', excludeDangerWords)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['word'] ? '実行中...' : '危険単語除外を実行'}
+                    </button>
+                  </div>
                   <p className="text-xs text-gray-600">
                     {dangerSettings === null
                       ? '対象件数を確認中...'
                       : <>全{products.length}件中 <strong className="text-gray-900">{wordPreviewCount}件</strong>が対象です</>}
                   </p>
-                  <div className="flex justify-end">
-                    <button type="button" disabled={excludeRunning['word']} onClick={() => runExclude('word', excludeDangerWords)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
-                      {excludeRunning['word'] ? '実行中...' : '危険単語除外を実行'}
-                    </button>
-                  </div>
+                  <p className="text-xs text-gray-500">
+                    抽出危険設定に登録した危険単語が含まれている商品を除外します。大文字小文字関係なく除外されます。
+                  </p>
                 </div>
               )}
 

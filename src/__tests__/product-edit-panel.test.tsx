@@ -205,6 +205,68 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     await userEvent.click(screen.getByRole('button', { name: '危険単語を除外' }))
     expect(screen.queryByText(/抽出危険設定に登録した危険単語/)).not.toBeInTheDocument()
   })
+
+  // 既存ツール(公式)との機能監査で発見: 危険単語除外はタイトルだけでなく
+  // ブランド・商品詳細も判定対象にでき、それぞれチェックボックスで
+  // オン/オフできる(デフォルト全部オン)。
+  it('危険単語除外は「ブランドに含む」のチェックを外すとブランド一致の商品を対象外にできる', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          makeProduct('p1', { original_title: '普通のタイトル', ebay_brand: 'DangerBrand' }),
+          makeProduct('p2', { original_title: '普通のタイトル', ebay_brand: 'SafeBrand' }),
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ words: [{ word: 'DangerBrand' }] }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: '危険単語を除外' }))
+
+    function getPreviewText(): string {
+      return screen.getByText((_content, element) =>
+        element?.tagName === 'P' && /全2件中\s*\d+件が対象です/.test(element.textContent ?? ''),
+      ).textContent ?? ''
+    }
+
+    // デフォルトは全項目チェック済みなのでブランド一致の1件が対象
+    await waitFor(() => expect(getPreviewText()).toMatch(/全2件中\s*1件が対象です/))
+
+    // 「ブランドに含む」のチェックを外すと対象0件になる
+    await userEvent.click(screen.getByRole('checkbox', { name: 'ブランドに含む' }))
+    expect(getPreviewText()).toMatch(/全2件中\s*0件が対象です/)
+  })
+
+  it('危険単語除外は「商品詳細に含む」がオンだと説明文にキーワードを含む商品も対象になる', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1', {
+          original_title: '普通のタイトル',
+          ebay_brand: 'SafeBrand',
+          ebay_description: 'これは危険ワードNGを含む説明文です',
+        })],
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ words: [{ word: 'NG' }] }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: '危険単語を除外' }))
+
+    await waitFor(() => {
+      const previewText = screen.getByText((_content, element) =>
+        element?.tagName === 'P' && /全1件中\s*1件が対象です/.test(element.textContent ?? ''),
+      )
+      expect(previewText).toBeInTheDocument()
+    })
+  })
 })
 
 describe('ProductEditPanel: 除外実行前の対象件数プレビュー', () => {
