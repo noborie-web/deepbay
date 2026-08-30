@@ -86,6 +86,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [excludePanel, setExcludePanel] = useState<string | null>(null)
   // 除外済みフラグ: 公式ツールに合わせ、除外を一度実行した項目にチェックマークを表示する。
   const [excludeDone, setExcludeDone] = useState<Record<string, boolean>>({})
+  // 除外予定ID: 除外を実行した時点では一覧から消すだけで、実際のDELETE APIは
+  // 呼ばない(ユーザー要望: メインタブの「編集保存」を押すまで確定させない)。
+  // 保存前にパネルを閉じれば除外は取り消される。他の項目の編集(edits)と
+  // 同様に、saveAll()実行時にまとめて反映する。
+  const [pendingExcludeIds, setPendingExcludeIds] = useState<Set<string>>(new Set())
 
   // Vero・危険セラー・危険単語は抽出設定(サーバー側)に依存するため、
   // 実行前の件数プレビューを表示するには先に設定を取得しておく必要がある。
@@ -170,7 +175,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       setExcludeDone((v) => ({ ...v, [key]: true }))
       if (removedIds.length > 0) {
         setProducts((prev) => prev.filter((p) => !removedIds.includes(p.id)))
-        setExcludeMsg(`${removedIds.length}件を除外しました`)
+        setExcludeMsg(`${removedIds.length}件を除外予定に追加しました（「編集保存」を押すまで確定しません）`)
       } else {
         setExcludeMsg('除外対象がありませんでした')
       }
@@ -181,22 +186,15 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     }
   }
 
+  // 除外APIは即座には呼ばず、除外予定として保持するだけにする。実際の
+  // DELETEはsaveAll()でまとめて実行される。
   async function deleteExcludedProducts(productIds: string[]): Promise<string[]> {
     if (productIds.length === 0) return []
-
-    const results = await Promise.all(productIds.map(async (productId) => {
-      const response = await fetch(`/api/products/${extractionId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId }),
-      })
-      return { productId, ok: response.ok }
-    }))
-
-    const failed = results.filter((result) => !result.ok)
-    if (failed.length > 0) {
-      throw new Error(`${failed.length}件の除外に失敗しました`)
-    }
+    setPendingExcludeIds((prev) => {
+      const next = new Set(prev)
+      for (const id of productIds) next.add(id)
+      return next
+    })
     return productIds
   }
 
@@ -437,10 +435,42 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   }
 
   // ---- 一括保存 (Bulk API) ----
+  // 除外予定商品の実際のDELETEを実行する。成功分だけpendingExcludeIdsから
+  // 取り除き、失敗分は次回保存時に再試行できるよう保持する。
+  async function flushPendingExcludes(): Promise<{ failedCount: number }> {
+    const idsToDelete = Array.from(pendingExcludeIds)
+    if (idsToDelete.length === 0) return { failedCount: 0 }
+
+    const results = await Promise.all(idsToDelete.map(async (productId) => {
+      const response = await fetch(`/api/products/${extractionId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId }),
+      })
+      return { productId, ok: response.ok }
+    }))
+
+    const succeededIds = new Set(results.filter((r) => r.ok).map((r) => r.productId))
+    const failedCount = results.length - succeededIds.size
+    setPendingExcludeIds((prev) => {
+      const next = new Set(prev)
+      for (const id of succeededIds) next.delete(id)
+      return next
+    })
+    return { failedCount }
+  }
+
   async function saveAll() {
     setSaving(true)
     setSaveError(null)
     try {
+      const errors: string[] = []
+
+      const { failedCount: excludeFailedCount } = await flushPendingExcludes()
+      if (excludeFailedCount > 0) {
+        errors.push(`${excludeFailedCount}件の除外の保存に失敗しました`)
+      }
+
       const updates = Object.entries(edits).map(([productId, fields]) => {
         // タイトルは常に80文字以内
         const ebay_title = typeof fields.ebay_title === 'string'
@@ -459,38 +489,42 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         return out
       })
 
-      const res = await fetch(`/api/products/${extractionId}/bulk`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ updates }),
-      })
-
-      const json: { ok?: boolean; succeeded?: string[]; failed?: { productId: string; error: string }[] }
-        = await res.json().catch(() => ({}))
-
-      if (json.ok === true) {
-        // 全成功
-        setProducts((prev) =>
-          prev.map((p) => (edits[p.id] ? { ...p, ...edits[p.id] } : p))
-        )
-        setEdits({})
-      } else if (json.succeeded && json.failed) {
-        // 部分失敗 — 成功分だけ edits をクリア、失敗分は保持
-        const succeededSet = new Set(json.succeeded)
-        const failedSet = new Set(json.failed.map((f) => f.productId))
-        setProducts((prev) =>
-          prev.map((p) => (succeededSet.has(p.id) ? { ...p, ...edits[p.id] } : p))
-        )
-        setEdits((prev) => {
-          const next = { ...prev }
-          for (const id of succeededSet) delete next[id]
-          return next
+      if (updates.length > 0) {
+        const res = await fetch(`/api/products/${extractionId}/bulk`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ updates }),
         })
-        const firstErrors = json.failed.slice(0, 3).map((f) => `${f.productId.slice(0, 8)}: ${f.error}`).join(' / ')
-        setSaveError(`${failedSet.size}件の保存に失敗しました — ${firstErrors}`)
-      } else {
-        setSaveError('保存に失敗しました')
+
+        const json: { ok?: boolean; succeeded?: string[]; failed?: { productId: string; error: string }[] }
+          = await res.json().catch(() => ({}))
+
+        if (json.ok === true) {
+          // 全成功
+          setProducts((prev) =>
+            prev.map((p) => (edits[p.id] ? { ...p, ...edits[p.id] } : p))
+          )
+          setEdits({})
+        } else if (json.succeeded && json.failed) {
+          // 部分失敗 — 成功分だけ edits をクリア、失敗分は保持
+          const succeededSet = new Set(json.succeeded)
+          const failedSet = new Set(json.failed.map((f) => f.productId))
+          setProducts((prev) =>
+            prev.map((p) => (succeededSet.has(p.id) ? { ...p, ...edits[p.id] } : p))
+          )
+          setEdits((prev) => {
+            const next = { ...prev }
+            for (const id of succeededSet) delete next[id]
+            return next
+          })
+          const firstErrors = json.failed.slice(0, 3).map((f) => `${f.productId.slice(0, 8)}: ${f.error}`).join(' / ')
+          errors.push(`${failedSet.size}件の保存に失敗しました — ${firstErrors}`)
+        } else {
+          errors.push('保存に失敗しました')
+        }
       }
+
+      if (errors.length > 0) setSaveError(errors.join(' / '))
     } catch (e) {
       setSaveError(`通信エラー: ${e instanceof Error ? e.message : '不明なエラー'}`)
     } finally {
@@ -692,9 +726,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 </select>
               </div>
               {/* 編集保存 */}
+              {pendingExcludeIds.size > 0 && (
+                <span className="text-xs text-amber-600">保存待ちの除外: {pendingExcludeIds.size}件</span>
+              )}
               <button
                 onClick={saveAll}
-                disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
+                disabled={saving || (Object.keys(edits).length === 0 && pendingExcludeIds.size === 0) || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
                 className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1 text-xs font-medium transition-colors"
               >
                 💾 編集保存
@@ -1063,6 +1100,22 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
               {excludeMsg && (
                 <p className="mx-4 mb-4 text-xs text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">{excludeMsg}</p>
               )}
+
+              <div className="mx-4 mb-4 flex items-center justify-end gap-3">
+                {pendingExcludeIds.size > 0 && (
+                  <span className="text-xs text-amber-600">保存待ちの除外: {pendingExcludeIds.size}件</span>
+                )}
+                <button
+                  onClick={saveAll}
+                  disabled={saving || (Object.keys(edits).length === 0 && pendingExcludeIds.size === 0) || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
+                  className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium transition-colors"
+                >
+                  💾 編集保存
+                </button>
+                {saveError && (
+                  <span className="text-xs text-red-500">{saveError}</span>
+                )}
+              </div>
             </div>
           )}
 
@@ -1120,9 +1173,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 </div>
               </div>
               <div className="mt-4 flex items-center justify-end gap-3">
+                {pendingExcludeIds.size > 0 && (
+                  <span className="text-xs text-amber-600">保存待ちの除外: {pendingExcludeIds.size}件</span>
+                )}
                 <button
                   onClick={saveAll}
-                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
+                  disabled={saving || (Object.keys(edits).length === 0 && pendingExcludeIds.size === 0) || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
                   className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium transition-colors"
                 >
                   💾 編集保存
@@ -1264,10 +1320,13 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   {products.length}件中 <span className="font-semibold text-blue-600">{visibleProducts.length}件</span> を表示
                 </p>
                 <div className="flex items-center gap-3">
+                  {pendingExcludeIds.size > 0 && (
+                    <span className="text-xs text-amber-600">保存待ちの除外: {pendingExcludeIds.size}件</span>
+                  )}
                   <button
                     type="button"
                     onClick={saveAll}
-                    disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
+                    disabled={saving || (Object.keys(edits).length === 0 && pendingExcludeIds.size === 0) || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
                     className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium"
                   >
                     💾 編集保存
@@ -1287,10 +1346,13 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 onApply={applyPokemonEdit}
               />
               <div className="flex items-center justify-end gap-3 px-4 py-3 border-b bg-gray-50">
+                {pendingExcludeIds.size > 0 && (
+                  <span className="text-xs text-amber-600">保存待ちの除外: {pendingExcludeIds.size}件</span>
+                )}
                 <button
                   type="button"
                   onClick={saveAll}
-                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
+                  disabled={saving || (Object.keys(edits).length === 0 && pendingExcludeIds.size === 0) || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
                   className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium"
                 >
                   💾 編集保存
