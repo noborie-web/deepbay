@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import * as cheerio from 'cheerio'
-import { MercariShopsScraper } from '../lib/scrapers/mercari_shops'
+import { MercariShopsScraper, _extractSearchItems } from '../lib/scrapers/mercari_shops'
 
 const SAMPLE_HTML = `
 <html>
@@ -102,5 +102,74 @@ describe('MercariShopsScraper.parse', () => {
     expect(scraper.urlPattern.test('https://jp.mercari.com/shops/product/2JKpMCyG4rfKh7hRqtW8rv')).toBe(true)
     expect(scraper.urlPattern.test('https://jp.mercari.com/item/m12345678')).toBe(false)
     expect(scraper.urlPattern.test('https://www.trefac.jp/store/1/c1/')).toBe(false)
+  })
+})
+
+describe('MercariShopsScraper.matches', () => {
+  it('単品ページURLにマッチする', () => {
+    const scraper = new MercariShopsScraper()
+    expect(scraper.matches('https://jp.mercari.com/shops/product/2JKpMCyG4rfKh7hRqtW8rv')).toBe(true)
+  })
+
+  it('メルカリShopsのみに絞った検索URL(item_types=beyond)にマッチする', () => {
+    const scraper = new MercariShopsScraper()
+    expect(scraper.matches('https://jp.mercari.com/search?item_types=beyond&keyword=nike&sort=score')).toBe(true)
+  })
+
+  it('item_types=beyondを含まない通常のメルカリ検索URLにはマッチしない', () => {
+    const scraper = new MercariShopsScraper()
+    expect(scraper.matches('https://jp.mercari.com/search?keyword=nike')).toBe(false)
+  })
+
+  it('関係ないURLにはマッチしない', () => {
+    const scraper = new MercariShopsScraper()
+    expect(scraper.matches('https://example.com/foo')).toBe(false)
+  })
+})
+
+describe('_extractSearchItems (検索結果ページ1ページ分の抽出)', () => {
+  const SEARCH_CARD_HTML = `
+    <html><body>
+      <a href="/shops/product/abc123" data-testid="thumbnail-link">
+        <img alt="商品タイトル1のサムネイル" src="https://assets.mercari-shops-static.com/-/small/plain/abc123.jpg@webp">
+        <div class="priceContainer__x"><span class="merPrice"><span>¥</span><span>1,000</span></span></div>
+      </a>
+      <a href="/shops/product/def456" data-testid="thumbnail-link">
+        <img alt="商品タイトル2のサムネイル" src="https://assets.mercari-shops-static.com/-/small/plain/def456.jpg@webp">
+        <div class="priceContainer__x"><span class="merPrice"><span>¥</span><span>2,500</span></span></div>
+      </a>
+    </body></html>
+  `
+
+  it('サムネイルリンクから商品情報を抽出し、alt属性の末尾の「のサムネイル」を取り除く', () => {
+    const $ = cheerio.load(SEARCH_CARD_HTML)
+    const items = _extractSearchItems($, new Set())
+    expect(items).toHaveLength(2)
+    expect(items[0]).toMatchObject({
+      sourceItemId: 'abc123',
+      sourceUrl: 'https://jp.mercari.com/shops/product/abc123',
+      title: '商品タイトル1',
+      price: 1000,
+    })
+  })
+
+  it('画像URLを/-/small/plain/@webpから/-/large/plain/@jpgにアップサイズする', () => {
+    const $ = cheerio.load(SEARCH_CARD_HTML)
+    const items = _extractSearchItems($, new Set())
+    expect(items[0].images).toEqual(['https://assets.mercari-shops-static.com/-/large/plain/abc123.jpg@jpg'])
+  })
+
+  it('既にseenIdsに含まれる商品IDはスキップする(ページをまたいだ重複除外)', () => {
+    const $ = cheerio.load(SEARCH_CARD_HTML)
+    const seenIds = new Set(['abc123'])
+    const items = _extractSearchItems($, seenIds)
+    expect(items).toHaveLength(1)
+    expect(items[0].sourceItemId).toBe('def456')
+  })
+
+  it('カードが無いページでは空配列を返す', () => {
+    const $ = cheerio.load('<html><body></body></html>')
+    const items = _extractSearchItems($, new Set())
+    expect(items).toEqual([])
   })
 })
