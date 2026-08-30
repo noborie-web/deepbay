@@ -103,6 +103,42 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     expect(screen.getByDisplayValue('eBay Title p2')).toBeTruthy()
   })
 
+  // 既存ツール(公式)との機能監査で発見: 除外を一度実行した項目には
+  // チェックマークが表示され、実行済みかどうかが一覧から分かる。
+  it('除外を実行すると、その項目のボタン横にチェックマークが表示される', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          makeProduct('p1', { price_type: 'fixed' }),
+          makeProduct('p2', { price_type: 'auction' }),
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    const priceTypeButton = screen.getByRole('button', { name: '価格タイプを除外' })
+    const priceTypeRow = priceTypeButton.closest('div') as HTMLElement
+
+    // 実行前はチェックマークがない
+    expect(within(priceTypeRow).queryByLabelText('除外済み')).not.toBeInTheDocument()
+
+    await userEvent.click(priceTypeButton)
+    await userEvent.click(screen.getByRole('button', { name: '価格タイプ除外を実行' }))
+
+    // 実行後はチェックマークが表示される
+    await waitFor(() => expect(within(priceTypeRow).getByLabelText('除外済み')).toBeInTheDocument())
+
+    // 他の未実行項目にはチェックマークがない
+    const veroButton = screen.getByRole('button', { name: 'Veroを除外' })
+    const veroRow = veroButton.closest('div') as HTMLElement
+    expect(within(veroRow).queryByLabelText('除外済み')).not.toBeInTheDocument()
+  })
+
   it('価格タイプの初期選択ではオークション商品だけを除外する', async () => {
     fetchMock
       .mockResolvedValueOnce({
