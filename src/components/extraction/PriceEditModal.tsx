@@ -179,9 +179,10 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
     ? (!rateMultiplier ? '倍率を入力してください' : (!(parseFloat(rateMultiplier) > 0 && isFinite(parseFloat(rateMultiplier))) ? '0より大きい倍率を入力してください' : null))
     : null
 
-  const parsedAdRate = parseFloat(adRate)
-  const parsedCustomsRate = parseFloat(customsRate)
-  const parsedDiscountRate = parseFloat(discountRate)
+  // 入力欄は「4 = 4%」のパーセント表記のため、計算式が使う小数(0.04)に変換する。
+  const parsedAdRate = parseFloat(adRate) / 100
+  const parsedCustomsRate = parseFloat(customsRate) / 100
+  const parsedDiscountRate = parseFloat(discountRate) / 100
 
   const profitValidationError = mode === 'profit' ? validateProfitParams({
     purchasePriceJpy: 1000,
@@ -393,18 +394,18 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                     className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
                 </label>
                 <label className="block space-y-1">
-                  <span className="text-xs text-gray-500">広告プロモーション率（例: 0.1 = 10%）</span>
-                  <input aria-label="広告プロモーション率" type="number" value={adRate} onChange={(e) => setAdRate(e.target.value)} min="0" max="0.99" step="0.001"
+                  <span className="text-xs text-gray-500">広告プロモーション率（%）（例: 4 = 4%）</span>
+                  <input aria-label="広告プロモーション率" type="number" value={adRate} onChange={(e) => setAdRate(e.target.value)} min="0" max="99" step="0.1"
                     className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
                 </label>
                 <label className="block space-y-1">
-                  <span className="text-xs text-gray-500">関税率（例: 0.1 = 10%）</span>
-                  <input aria-label="関税率" type="number" value={customsRate} onChange={(e) => setCustomsRate(e.target.value)} min="0" max="0.99" step="0.001"
+                  <span className="text-xs text-gray-500">関税率（%）（例: 4 = 4%）</span>
+                  <input aria-label="関税率" type="number" value={customsRate} onChange={(e) => setCustomsRate(e.target.value)} min="0" max="99" step="0.1"
                     className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
                 </label>
                 <label className="block space-y-1">
-                  <span className="text-xs text-gray-500">ディスカウント率（例: 0.1 = 10%）</span>
-                  <input aria-label="ディスカウント率" type="number" value={discountRate} onChange={(e) => setDiscountRate(e.target.value)} min="0" max="0.99" step="0.001"
+                  <span className="text-xs text-gray-500">ディスカウント率（%）（例: 4 = 4%）</span>
+                  <input aria-label="ディスカウント率" type="number" value={discountRate} onChange={(e) => setDiscountRate(e.target.value)} min="0" max="99" step="0.1"
                     className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
                 </label>
               </div>

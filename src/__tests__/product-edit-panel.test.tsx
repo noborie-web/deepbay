@@ -1243,9 +1243,11 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
 
     await waitFor(() => screen.getByRole('spinbutton', { name: '1ドルあたりの円レート' }))
 
-    await userEvent.type(screen.getByRole('spinbutton', { name: '広告プロモーション率' }), '0.05')
-    await userEvent.type(screen.getByRole('spinbutton', { name: '関税率' }), '0.03')
-    await userEvent.type(screen.getByRole('spinbutton', { name: 'ディスカウント率' }), '0.02')
+    // 入力欄は「4 = 4%」のパーセント表記(ユーザー報告: 小数入力だと
+    // 誤って"4"や"13"のような値を入れてしまい100%を超えるバグがあった)
+    await userEvent.type(screen.getByRole('spinbutton', { name: '広告プロモーション率' }), '5')
+    await userEvent.type(screen.getByRole('spinbutton', { name: '関税率' }), '3')
+    await userEvent.type(screen.getByRole('spinbutton', { name: 'ディスカウント率' }), '2')
 
     await userEvent.click(screen.getByRole('button', { name: /適用/ }))
 
@@ -1265,6 +1267,42 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     })
     expect(priceWithExtra).not.toBeNull()
     expect(priceWithExtra as number).toBeGreaterThan(withoutExtra.salePriceUsd)
+  })
+
+  // ユーザー報告の再現: 3項目にeBay手数料率と同じ「0.1 = 10%」の小数入力を
+  // 期待していたところ、実際は「4」「13」「5」のようなパーセント値をその
+  // まま入力してしまい、100%超過エラーで適用ボタンが押せなくなっていた。
+  // 入力欄をパーセント表記(4 = 4%)に変更したことで、同じ入力値でも
+  // 100%を超えず、適用ボタンが押せることを確認する。
+  it('広告プロモーション率4・関税率13・ディスカウント率5を入力しても100%を超えず適用できる', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ rate: 154.56, date: '2026-08-30' }),
+    })
+    const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
+    const product = makeProduct('p1', { purchase_price_jpy: 6000 })
+    const onApply = vi.fn()
+
+    render(
+      <PriceEditModal
+        products={[product]}
+        pagedIds={new Set(['p1'])}
+        getPurchaseJpy={() => 6000}
+        onApply={onApply}
+        onClose={vi.fn()}
+      />
+    )
+
+    await userEvent.click(screen.getByLabelText('価格帯別利益額'))
+    await waitFor(() => screen.getByRole('spinbutton', { name: '1ドルあたりの円レート' }))
+
+    // eBay手数料率はデフォルト値(0.133)のまま
+    await userEvent.type(screen.getByRole('spinbutton', { name: '広告プロモーション率' }), '4')
+    await userEvent.type(screen.getByRole('spinbutton', { name: '関税率' }), '13')
+    await userEvent.type(screen.getByRole('spinbutton', { name: 'ディスカウント率' }), '5')
+
+    expect(screen.queryByText(/100%未満にしてください/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /適用/ })).not.toBeDisabled()
   })
 
   it('各価格帯の下へ行を追加して、利益設定を細分化できる', async () => {
