@@ -118,10 +118,12 @@ export function findPriceRangeProductIds(
     .map((product) => product.id)
 }
 
-export function findLowRatingProductIds(products: Product[], max: number | null): string[] {
-  if (max === null) return []
+// 既存ツール(公式)との機能監査で発見: 評価数除外は「N件以下」ではなく
+// 「N件未満」(下限)で判定する。境界値ちょうど(N件)のセラーは対象外。
+export function findLowRatingProductIds(products: Product[], min: number | null): string[] {
+  if (min === null) return []
   return products
-    .filter((product) => product.seller_rating_count !== null && product.seller_rating_count <= max)
+    .filter((product) => product.seller_rating_count !== null && product.seller_rating_count < min)
     .map((product) => product.id)
 }
 

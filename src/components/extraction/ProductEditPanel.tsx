@@ -118,8 +118,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // 簡易除外
   const [quickKeywords, setQuickKeywords] = useState('')
 
-  // 評価数フィルタ
-  const [ratingMax, setRatingMax] = useState('')
+  // 評価数フィルタ: セラーの総合評価数がこの件数未満なら除外(下限)
+  const [ratingMin, setRatingMin] = useState('')
 
   // 発送日数フィルタ
   const [shippingDaysMax, setShippingDaysMax] = useState('')
@@ -280,8 +280,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   }
 
   async function excludeByRating(): Promise<string[]> {
-    const max = ratingMax !== '' ? Number(ratingMax) : null
-    return deleteExcludedProducts(findLowRatingProductIds(products, max))
+    const min = ratingMin !== '' ? Number(ratingMin) : null
+    return deleteExcludedProducts(findLowRatingProductIds(products, min))
   }
 
   async function excludeByShippingDays(): Promise<string[]> {
@@ -600,7 +600,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     priceMax !== '' ? Number(priceMax) : null,
     priceTarget,
   ).length
-  const ratingPreviewCount = findLowRatingProductIds(products, ratingMax !== '' ? Number(ratingMax) : null).length
+  const ratingPreviewCount = findLowRatingProductIds(products, ratingMin !== '' ? Number(ratingMin) : null).length
   const shippingPreviewCount = findSlowShippingProductIds(products, shippingDaysMax !== '' ? Number(shippingDaysMax) : null).length
   const updatedPreviewCount = findStaleProductIds(products, Number(updatedMonthsAgo) || 3).length
 
@@ -881,13 +881,13 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
 
               {excludePanel === 'rating' && (
                 <div className="mx-4 mb-2 p-3 bg-white border rounded-lg space-y-2">
-                  <p className="text-xs text-gray-500">セラー評価数がN件以下の商品を除外します（メルカリのみ対応）</p>
+                  <p className="text-xs text-gray-500">セラーの総合評価数がN件未満の商品を除外します（メルカリのみ対応）</p>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-600">評価数</span>
-                    <input type="number" value={ratingMax} onChange={(e) => setRatingMax(e.target.value)}
+                    <input type="number" value={ratingMin} onChange={(e) => setRatingMin(e.target.value)}
                       placeholder="例: 10" min="0"
                       className="border rounded px-2 py-1 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-blue-300" />
-                    <span className="text-xs text-gray-500">件以下を除外</span>
+                    <span className="text-xs text-gray-500">件未満を除外</span>
                   </div>
                   <p className="text-xs text-gray-600">
                     全{products.length}件中 <strong className="text-gray-900">{ratingPreviewCount}件</strong>が対象です
