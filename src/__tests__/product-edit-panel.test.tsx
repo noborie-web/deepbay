@@ -130,6 +130,79 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p2')).toBeNull())
     expect(screen.getByDisplayValue('eBay Title p1')).toBeTruthy()
   })
+
+  // ユーザー報告: 「Vero除外したら、その他の除外クリックしてもVeroから変わらない」。
+  // 原因は「危険セラー」「危険単語」ボタンだけ他の除外ボタンと違いtogglePanelを
+  // 呼ばず即実行する仕様だったため、Veroパネルを開いた状態でこれらを押しても
+  // パネル表示が切り替わらなかった(APIは裏で呼ばれているが画面上変化がない)。
+  // 他の除外ボタンと同様にパネルを開閉する方式に統一して修正した。
+  it('Vero除外実行後に「危険セラー」ボタンを押すと、危険セラーの確認パネルに切り替わる', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1', { ebay_brand: 'Nintendo' })],
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ vero: [] }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'Veroを除外' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Vero除外を実行' }))
+    await waitFor(() => screen.getByText('除外対象がありませんでした'))
+    expect(screen.getByText(/抽出設定のVeroブランドと/)).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '危険セラーを除外' }))
+
+    expect(screen.queryByText(/抽出設定のVeroブランドと/)).not.toBeInTheDocument()
+    expect(screen.getByText(/抽出危険設定に登録した危険セラー/)).toBeInTheDocument()
+    // 確認パネル内の実行ボタンを押すまでは除外APIは呼ばれない。
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('「危険セラー除外を実行」を押すと除外APIが呼ばれ、対象商品が除外される', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1', { source_url: 'https://example.com/danger/p1' })],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ sellers: [{ seller_url: 'https://example.com/danger' }] }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: '危険セラーを除外' }))
+    await userEvent.click(screen.getByRole('button', { name: '危険セラー除外を実行' }))
+
+    await waitFor(() => expect(screen.queryByDisplayValue('eBay Title p1')).toBeNull())
+  })
+
+  it('「危険単語」ボタンも同様にパネルとして開閉する', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1')],
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
+    await userEvent.click(screen.getByRole('button', { name: '危険単語を除外' }))
+    expect(screen.getByText(/抽出危険設定に登録した危険単語/)).toBeInTheDocument()
+
+    // 再度押すとパネルが閉じる(他の除外ボタンと同じトグル挙動)。
+    await userEvent.click(screen.getByRole('button', { name: '危険単語を除外' }))
+    expect(screen.queryByText(/抽出危険設定に登録した危険単語/)).not.toBeInTheDocument()
+  })
 })
 
 describe('ProductEditPanel: アイテムスペシフィック編集', () => {

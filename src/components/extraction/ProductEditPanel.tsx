@@ -709,16 +709,16 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">危険セラー</span>
-                  <button type="button" disabled={excludeRunning['seller']} onClick={() => runExclude('seller', excludeDangerSellers)}
-                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
-                    {excludeRunning['seller'] ? '...' : '除外'}
+                  <button type="button" aria-label="危険セラーを除外" onClick={() => togglePanel('seller')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'seller' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">危険単語</span>
-                  <button type="button" disabled={excludeRunning['word']} onClick={() => runExclude('word', excludeDangerWords)}
-                    className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed">
-                    {excludeRunning['word'] ? '...' : '除外'}
+                  <button type="button" aria-label="危険単語を除外" onClick={() => togglePanel('word')}
+                    className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'word' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
+                    除外
                   </button>
                 </div>
                 <div className="flex items-center justify-between gap-2">
@@ -781,6 +781,34 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     <button type="button" disabled={excludeRunning['vero']} onClick={() => runExclude('vero', excludeVero)}
                       className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
                       {excludeRunning['vero'] ? '実行中...' : 'Vero除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {excludePanel === 'seller' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
+                  <p className="text-xs text-gray-500">
+                    抽出危険設定に登録した危険セラーの商品を除外します。
+                  </p>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['seller']} onClick={() => runExclude('seller', excludeDangerSellers)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['seller'] ? '実行中...' : '危険セラー除外を実行'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {excludePanel === 'word' && (
+                <div className="mx-4 mb-4 p-3 bg-white border rounded-lg space-y-2">
+                  <p className="text-xs text-gray-500">
+                    抽出危険設定に登録した危険単語を含む商品を除外します。
+                  </p>
+                  <div className="flex justify-end">
+                    <button type="button" disabled={excludeRunning['word']} onClick={() => runExclude('word', excludeDangerWords)}
+                      className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
+                      {excludeRunning['word'] ? '実行中...' : '危険単語除外を実行'}
                     </button>
                   </div>
                 </div>
