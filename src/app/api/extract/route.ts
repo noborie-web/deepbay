@@ -16,6 +16,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  // 月間リセット期限(plan_reset_at)が過ぎていれば抽出回数を0に戻す。
+  // 専用cronは追加できない(Vercel Hobbyプランの制限)ため、抽出実行時に
+  // 遅延実行する。生成済みのDatabase型にFunctions定義がなくrpc()の型が
+  // 合わないため、既存のincrement_extraction_used呼び出し(extraction-run.ts)
+  // と同様にキャストして呼び出す。
+  await (supabase.rpc as unknown as (fn: string, args: Record<string, unknown>) => Promise<unknown>)(
+    'reset_extraction_used_if_due', { user_id: user.id },
+  )
+
   // 抽出回数チェック
   const { data: profile } = await supabase
     .from('profiles')

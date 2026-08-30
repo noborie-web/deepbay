@@ -104,6 +104,7 @@ function makeDatabase(options: {
   }
 
   const db = {
+    rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
     from(table: string) {
       const state: QueryState = { table, operation: null, filters: [] }
       const finish = () => Promise.resolve(resolveQuery(state))
@@ -201,6 +202,9 @@ describe('GET /api/cron/auto-extraction', () => {
       'bulk-1',
       db,
     )
+    // ユーザー要望: 抽出回数残高のリセット。plan_reset_atが過ぎていれば
+    // 抽出回数を0に戻すRPCを、スケジュール実行時にも呼び出すようにした。
+    expect(db.rpc).toHaveBeenCalledWith('reset_extraction_used_if_due', { user_id: 'user-1' })
     expect(calls.find(call => call.table === 'auto_extraction_schedules')?.filters).toEqual(expect.arrayContaining([
       ['enabled', true],
       ['schedule_day_of_month', 24],

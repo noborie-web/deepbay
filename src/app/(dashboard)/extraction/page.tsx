@@ -7,6 +7,13 @@ export default async function ExtractionPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
+  // 月間リセット期限(plan_reset_at)が過ぎていれば抽出回数を0に戻す
+  // (extract/route.ts と同様、専用cronを追加せず表示時に遅延実行する。
+  // 生成済みのDatabase型にFunctions定義がないためキャストして呼び出す)。
+  await (supabase.rpc as unknown as (fn: string, args: Record<string, unknown>) => Promise<unknown>)(
+    'reset_extraction_used_if_due', { user_id: user.id },
+  )
+
   const [
     { data: profile },
     { data: sellers },
