@@ -182,11 +182,12 @@ describe('価格範囲除外判定', () => {
 })
 
 describe('評価数・発送日数・最終更新月の除外判定', () => {
-  it('評価数がN件以下の商品を抽出する(nullは対象外)', () => {
+  it('評価数がN件未満の商品を抽出する(境界値ちょうどは対象外、nullも対象外)(既存ツールとの機能監査で「以下」→「未満」に修正)', () => {
     const products = [
       makeProduct('p1', { seller_rating_count: 3 }),
-      makeProduct('p2', { seller_rating_count: 50 }),
-      makeProduct('p3', { seller_rating_count: null }),
+      makeProduct('p2', { seller_rating_count: 5 }),
+      makeProduct('p3', { seller_rating_count: 50 }),
+      makeProduct('p4', { seller_rating_count: null }),
     ]
     expect(findLowRatingProductIds(products, 5)).toEqual(['p1'])
   })
