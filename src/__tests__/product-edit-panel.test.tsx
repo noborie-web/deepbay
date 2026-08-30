@@ -1124,6 +1124,43 @@ describe('ProductEditPanel: 編集タブの保存操作', () => {
     expect(saveBtn).toBeDisabled()
     expect(screen.getByText('0以上の値を入力してください')).toBeTruthy()
   })
+
+  // ユーザー報告: 保存APIは一度に200件までしか受け付けないため、
+  // 200件を超える編集を一括保存しようとすると「一度に更新できるのは
+  // 200件までです」というエラーになり、保存が全く進まなかった。
+  // クライアント側で200件ずつに分割して送信するよう修正した。
+  it('200件を超える編集は200件ずつ分割して保存APIへ送信される', async () => {
+    const manyProducts = Array.from({ length: 250 }, (_, i) => makeProduct(`p${i}`))
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => manyProducts })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, succeeded: manyProducts.slice(0, 200).map((p) => p.id), failed: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, succeeded: manyProducts.slice(200).map((p) => p.id), failed: [] }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p0'))
+
+    await userEvent.click(screen.getByRole('button', { name: '編集' }))
+    // 「ブランド」というテキストは編集タブの一括編集グリッドと、各商品の
+    // サイドバー(250件分)の両方に現れるため、最初の1件(一括編集グリッド側)
+    // を対象にする。
+    const brandRow = screen.getAllByText('ブランド')[0].closest('div') as HTMLElement
+    await userEvent.click(within(brandRow).getByRole('button', { name: '編集' }))
+
+    await userEvent.type(screen.getByPlaceholderText('例: PILOT'), 'PILOT')
+    await userEvent.click(screen.getByLabelText('抽出商品すべて'))
+    await userEvent.click(screen.getByRole('button', { name: /適用 \(250件\)/ }))
+
+    await userEvent.click(screen.getByRole('button', { name: '💾 編集保存' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    const firstChunk = JSON.parse(fetchMock.mock.calls[1][1].body as string)
+    const secondChunk = JSON.parse(fetchMock.mock.calls[2][1].body as string)
+    expect(firstChunk.updates).toHaveLength(200)
+    expect(secondChunk.updates).toHaveLength(50)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '💾 編集保存' })).toBeDisabled())
+  })
 })
 
 describe('ProductEditPanel: ブランド編集', () => {
