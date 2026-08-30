@@ -61,15 +61,31 @@ export function findPriceTypeProductIds(
     .map((product) => product.id)
 }
 
-// スポット文字・簡易除外・危険単語はいずれも「商品タイトルにキーワードが
-// 含まれるか」という同一のロジックのため、1つの関数にまとめて共有する。
-export function findKeywordProductIds(products: Product[], keywords: string[]): string[] {
-  if (keywords.length === 0) return []
+export type KeywordMatchField = 'title' | 'brand' | 'description'
+
+function keywordSearchText(product: Product, field: KeywordMatchField): string {
+  switch (field) {
+    case 'title': return product.original_title
+    case 'brand': return product.ebay_brand ?? ''
+    case 'description': return product.ebay_description ?? ''
+  }
+}
+
+// スポット文字・簡易除外・危険単語はいずれも「指定したキーワードが
+// 商品の特定項目に含まれるか」という同一のロジックのため、1つの関数に
+// まとめて共有する。判定対象項目(タイトル/ブランド/商品詳細)は
+// fieldsで指定でき、デフォルトはタイトルのみ(既存の呼び出し元との互換維持)。
+export function findKeywordProductIds(
+  products: Product[],
+  keywords: string[],
+  fields: KeywordMatchField[] = ['title'],
+): string[] {
+  if (keywords.length === 0 || fields.length === 0) return []
   const lowerKeywords = keywords.map((w) => w.toLowerCase())
   return products
     .filter((product) => {
-      const lower = product.original_title.toLowerCase()
-      return lowerKeywords.some((w) => lower.includes(w))
+      const combined = fields.map((field) => keywordSearchText(product, field)).join(' ').toLowerCase()
+      return lowerKeywords.some((w) => combined.includes(w))
     })
     .map((product) => product.id)
 }

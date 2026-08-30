@@ -125,6 +125,26 @@ describe('キーワード除外判定(スポット文字・簡易除外・危険
   it('キーワードが空なら何も除外しない', () => {
     expect(findKeywordProductIds([makeProduct('p1')], [])).toEqual([])
   })
+
+  it('fieldsを指定するとブランド・商品詳細も判定対象にできる(既存ツールとの機能監査で追加)', () => {
+    const products = [
+      makeProduct('p1', { original_title: '普通', ebay_brand: 'RiskyBrand', ebay_description: '普通の説明' }),
+      makeProduct('p2', { original_title: '普通', ebay_brand: 'SafeBrand', ebay_description: '危険ワードABCDを含む説明' }),
+      makeProduct('p3', { original_title: '普通', ebay_brand: 'SafeBrand', ebay_description: '普通の説明' }),
+    ]
+    expect(findKeywordProductIds(products, ['RiskyBrand'], ['title', 'brand', 'description'])).toEqual(['p1'])
+    expect(findKeywordProductIds(products, ['ABCD'], ['title', 'brand', 'description'])).toEqual(['p2'])
+  })
+
+  it('デフォルト(fields未指定)はタイトルのみを判定し、ブランド一致は対象にしない(スポット文字・簡易除外の既存挙動を維持)', () => {
+    const products = [makeProduct('p1', { original_title: '普通', ebay_brand: 'DangerBrand' })]
+    expect(findKeywordProductIds(products, ['DangerBrand'])).toEqual([])
+  })
+
+  it('fieldsを空配列で指定すると何も除外しない', () => {
+    const products = [makeProduct('p1', { original_title: 'ジャンク' })]
+    expect(findKeywordProductIds(products, ['ジャンク'], [])).toEqual([])
+  })
 })
 
 describe('危険セラー除外判定', () => {
