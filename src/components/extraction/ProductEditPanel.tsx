@@ -569,6 +569,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     const p = fields.ebay_price
     return p !== undefined && p !== null && (typeof p !== 'number' || !isFinite(p) || p <= 0)
   })
+  // 不正仕入価格: edits に入っているが null でもなく0以上の有限数でもない
+  const hasPurchasePriceError = Object.values(edits).some((fields) => {
+    const p = fields.purchase_price_jpy
+    return p !== undefined && p !== null && (typeof p !== 'number' || !isFinite(p) || p < 0)
+  })
   const hasBrandError = Object.values(edits).some((fields) => {
     const brand = fields.ebay_brand
     return typeof brand === 'string' && (brand.trim().length === 0 || brand.length > 65)
@@ -689,7 +694,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
               {/* 編集保存 */}
               <button
                 onClick={saveAll}
-                disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError || hasDescriptionError}
+                disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
                 className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1 text-xs font-medium transition-colors"
               >
                 💾 編集保存
@@ -1117,7 +1122,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
               <div className="mt-4 flex items-center justify-end gap-3">
                 <button
                   onClick={saveAll}
-                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError || hasDescriptionError}
+                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
                   className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium transition-colors"
                 >
                   💾 編集保存
@@ -1262,7 +1267,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <button
                     type="button"
                     onClick={saveAll}
-                    disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError || hasDescriptionError}
+                    disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
                     className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium"
                   >
                     💾 編集保存
@@ -1285,7 +1290,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 <button
                   type="button"
                   onClick={saveAll}
-                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasBrandError || hasDescriptionError}
+                  disabled={saving || Object.keys(edits).length === 0 || hasPriceError || hasPurchasePriceError || hasBrandError || hasDescriptionError}
                   className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded px-3 py-1.5 text-xs font-medium"
                 >
                   💾 編集保存
@@ -1451,13 +1456,35 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                               })()}
                             </div>
                             <div>
-                              <label className="text-xs text-gray-500 block mb-0.5">仕入価格（参照用）</label>
-                              <div className="flex items-center border rounded overflow-hidden bg-gray-50">
-                                <span className="flex-1 px-2 py-1.5 text-sm text-gray-500 select-none">
-                                  {getPurchaseJpy(product) != null ? getPurchaseJpy(product)!.toLocaleString() : '—'}
-                                </span>
-                                <span className="px-2 text-xs text-gray-400 border-l h-full flex items-center">円</span>
+                              <label className="text-xs text-gray-500 block mb-0.5">仕入価格</label>
+                              <div className={`flex items-center border rounded overflow-hidden ${
+                                getPurchaseJpy(product) !== null && (getPurchaseJpy(product)! < 0 || !isFinite(getPurchaseJpy(product)!))
+                                  ? 'border-red-400' : ''
+                              }`}>
+                                <input
+                                  type="number"
+                                  value={getPurchaseJpy(product) ?? ''}
+                                  onChange={(e) => {
+                                    const raw = e.target.value
+                                    if (raw === '') {
+                                      updateEdit(product.id, 'purchase_price_jpy', null)
+                                    } else {
+                                      const n = parseFloat(raw)
+                                      // NaN → null (クリア扱い); 負数はそのまま保持してエラー表示
+                                      updateEdit(product.id, 'purchase_price_jpy', isNaN(n) ? null : n)
+                                    }
+                                  }}
+                                  placeholder="仕入価格未設定"
+                                  className="flex-1 px-2 py-1.5 text-sm focus:outline-none min-w-0"
+                                />
+                                <span className="px-2 text-xs text-gray-500 bg-gray-50 border-l h-full flex items-center">円</span>
                               </div>
+                              {(() => {
+                                const v = getPurchaseJpy(product)
+                                return v !== null && (v < 0 || !isFinite(v))
+                                  ? <p className="text-xs text-red-500 mt-0.5">0以上の値を入力してください</p>
+                                  : null
+                              })()}
                             </div>
                           </div>
                           <div>

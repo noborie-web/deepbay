@@ -842,6 +842,68 @@ describe('ProductEditPanel: 編集タブの保存操作', () => {
 
     expect(saveBtn).not.toBeDisabled()
   })
+
+  // ユーザー要望: これまで「仕入価格（参照用）」は表示専用で編集できず、
+  // 修正したい場合に反映する手段がなかった。編集可能にして保存できるようにする。
+  it('仕入価格を編集して保存すると、purchase_price_jpyが保存APIへ送られる', async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct('p1', { purchase_price_jpy: 5000 })],
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, succeeded: ['p1'], failed: [] }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: '編集' }))
+    })
+
+    const purchasePriceInput = screen.getByDisplayValue('5000')
+    await act(async () => {
+      await userEvent.clear(purchasePriceInput)
+      await userEvent.type(purchasePriceInput, '6500')
+    })
+
+    const saveBtn = screen.getByText(/💾 編集保存/)
+    expect(saveBtn).not.toBeDisabled()
+    await act(async () => { await userEvent.click(saveBtn) })
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls
+      const saveCall = calls.find((c) => typeof c[0] === 'string' && c[0].includes('/bulk'))
+      expect(saveCall).toBeTruthy()
+      const body = JSON.parse(saveCall![1].body as string)
+      expect(body.updates[0].purchase_price_jpy).toBe(6500)
+    })
+  })
+
+  it('仕入価格を負の値にすると保存ボタンが無効になる', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [makeProduct('p1', { purchase_price_jpy: 5000 })],
+    })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: '編集' }))
+    })
+
+    const purchasePriceInput = screen.getByDisplayValue('5000')
+    await act(async () => {
+      await userEvent.clear(purchasePriceInput)
+      await userEvent.type(purchasePriceInput, '-100')
+    })
+
+    const saveBtn = screen.getByText(/💾 編集保存/)
+    expect(saveBtn).toBeDisabled()
+    expect(screen.getByText('0以上の値を入力してください')).toBeTruthy()
+  })
 })
 
 describe('ProductEditPanel: ブランド編集', () => {
