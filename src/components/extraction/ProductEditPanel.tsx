@@ -84,6 +84,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [excludeRunning, setExcludeRunning] = useState<Record<string, boolean>>({})
   const [excludeMsg, setExcludeMsg] = useState('')
   const [excludePanel, setExcludePanel] = useState<string | null>(null)
+  // 除外済みフラグ: 公式ツールに合わせ、除外を一度実行した項目にチェックマークを表示する。
+  const [excludeDone, setExcludeDone] = useState<Record<string, boolean>>({})
 
   // Vero・危険セラー・危険単語は抽出設定(サーバー側)に依存するため、
   // 実行前の件数プレビューを表示するには先に設定を取得しておく必要がある。
@@ -165,6 +167,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     setExcludeMsg('')
     try {
       const removedIds = await fn()
+      setExcludeDone((v) => ({ ...v, [key]: true }))
       if (removedIds.length > 0) {
         setProducts((prev) => prev.filter((p) => !removedIds.includes(p.id)))
         setExcludeMsg(`${removedIds.length}件を除外しました`)
@@ -707,6 +710,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'vero' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
+                  {excludeDone['vero'] && <span className="text-green-600" aria-label="除外済み">✓</span>}
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">危険セラー</span>
@@ -714,6 +718,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'seller' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
+                  {excludeDone['seller'] && <span className="text-green-600" aria-label="除外済み">✓</span>}
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">危険単語</span>
@@ -721,6 +726,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'word' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
+                  {excludeDone['word'] && <span className="text-green-600" aria-label="除外済み">✓</span>}
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">スポット文字</span>
@@ -728,6 +734,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'spot' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
+                  {excludeDone['spot'] && <span className="text-green-600" aria-label="除外済み">✓</span>}
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">評価数</span>
@@ -735,6 +742,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'rating' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
+                  {excludeDone['rating'] && <span className="text-green-600" aria-label="除外済み">✓</span>}
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">発送日数</span>
@@ -742,6 +750,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'shipping' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
+                  {excludeDone['shipping'] && <span className="text-green-600" aria-label="除外済み">✓</span>}
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">最終更新月</span>
@@ -749,6 +758,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'updated' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
+                  {excludeDone['updated'] && <span className="text-green-600" aria-label="除外済み">✓</span>}
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">価格タイプ</span>
@@ -756,6 +766,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'priceType' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
+                  {excludeDone['priceType'] && <span className="text-green-600" aria-label="除外済み">✓</span>}
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">価格範囲</span>
@@ -763,6 +774,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'price' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
+                  {excludeDone['price'] && <span className="text-green-600" aria-label="除外済み">✓</span>}
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">簡易除外</span>
@@ -770,6 +782,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'quick' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
+                  {excludeDone['quick'] && <span className="text-green-600" aria-label="除外済み">✓</span>}
                 </div>
               </div>
 
