@@ -101,10 +101,14 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [wordCheckBrand, setWordCheckBrand] = useState(true)
   const [wordCheckDescription, setWordCheckDescription] = useState(true)
 
-  // スポット文字
+  // スポット文字: 危険単語と同様、判定対象項目(タイトル/ブランド/商品詳細)を
+  // 個別に選択できる。公式ツールに合わせデフォルトは全て有効。
   const SPOT_PRESETS = ['難あり', 'ジャンク', '破損', '動作未確認', '訳あり', '傷あり', 'シミ', '汚れ', 'カビ', '臭い', 'NG']
   const [spotSelected, setSpotSelected] = useState<Set<string>>(new Set())
   const [spotCustom, setSpotCustom] = useState('')
+  const [spotCheckTitle, setSpotCheckTitle] = useState(true)
+  const [spotCheckBrand, setSpotCheckBrand] = useState(true)
+  const [spotCheckDescription, setSpotCheckDescription] = useState(true)
 
   // 価格範囲
   const [priceMin, setPriceMin] = useState('')
@@ -249,8 +253,16 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     ]
   }
 
+  function spotCheckFields(): KeywordMatchField[] {
+    const fields: KeywordMatchField[] = []
+    if (spotCheckTitle) fields.push('title')
+    if (spotCheckBrand) fields.push('brand')
+    if (spotCheckDescription) fields.push('description')
+    return fields
+  }
+
   async function excludeSpotWords(): Promise<string[]> {
-    return deleteExcludedProducts(findKeywordProductIds(products, spotKeywords()))
+    return deleteExcludedProducts(findKeywordProductIds(products, spotKeywords(), spotCheckFields()))
   }
 
   function quickKeywordList(): string[] {
@@ -580,7 +592,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const veroPreviewCount = dangerSettings ? findVeroProductIds(products, dangerSettings.veroBrands).length : null
   const sellerPreviewCount = dangerSettings ? findDangerSellerProductIds(products, dangerSettings.sellerUrls).length : null
   const wordPreviewCount = dangerSettings ? findKeywordProductIds(products, dangerSettings.words, wordCheckFields()).length : null
-  const spotPreviewCount = findKeywordProductIds(products, spotKeywords()).length
+  const spotPreviewCount = findKeywordProductIds(products, spotKeywords(), spotCheckFields()).length
   const quickPreviewCount = findKeywordProductIds(products, quickKeywordList()).length
   const pricePreviewCount = findPriceRangeProductIds(
     products,
@@ -712,7 +724,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-gray-700">スポット文字</span>
-                  <button type="button" onClick={() => togglePanel('spot')}
+                  <button type="button" aria-label="スポット文字を除外" onClick={() => togglePanel('spot')}
                     className={`border rounded px-2.5 py-1 text-xs transition-colors ${excludePanel === 'spot' ? 'bg-blue-500 text-white border-blue-500' : 'border-blue-400 text-blue-600 hover:bg-blue-50'}`}>
                     除外
                   </button>
@@ -954,15 +966,29 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <input type="text" value={spotCustom} onChange={(e) => setSpotCustom(e.target.value)}
                     placeholder="カスタムキーワード（カンマ区切り）"
                     className="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300" />
-                  <p className="text-xs text-gray-600">
-                    全{products.length}件中 <strong className="text-gray-900">{spotPreviewCount}件</strong>が対象です
-                  </p>
+                  <div className="flex items-center gap-5">
+                    <label className="flex items-center gap-1.5 text-xs text-gray-700">
+                      <input type="checkbox" checked={spotCheckTitle} onChange={(e) => setSpotCheckTitle(e.target.checked)} />
+                      タイトルに含む
+                    </label>
+                    <label className="flex items-center gap-1.5 text-xs text-gray-700">
+                      <input type="checkbox" checked={spotCheckBrand} onChange={(e) => setSpotCheckBrand(e.target.checked)} />
+                      ブランドに含む
+                    </label>
+                    <label className="flex items-center gap-1.5 text-xs text-gray-700">
+                      <input type="checkbox" checked={spotCheckDescription} onChange={(e) => setSpotCheckDescription(e.target.checked)} />
+                      商品詳細に含む
+                    </label>
+                  </div>
                   <div className="flex justify-end">
-                    <button type="button" disabled={excludeRunning['spot']} onClick={() => runExclude('spot', excludeSpotWords)}
+                    <button type="button" disabled={excludeRunning['spot'] || spotCheckFields().length === 0} onClick={() => runExclude('spot', excludeSpotWords)}
                       className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-1.5 text-xs disabled:opacity-50 disabled:cursor-not-allowed">
                       {excludeRunning['spot'] ? '実行中...' : '除外を実行'}
                     </button>
                   </div>
+                  <p className="text-xs text-gray-600">
+                    全{products.length}件中 <strong className="text-gray-900">{spotPreviewCount}件</strong>が対象です
+                  </p>
                 </div>
               )}
 
