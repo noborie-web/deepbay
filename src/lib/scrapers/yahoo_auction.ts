@@ -106,6 +106,11 @@ export class YahooAuctionScraper extends BaseScraper {
         const priceRaw = $el.attr('data-auction-price')
         const price = priceRaw ? parseInt(priceRaw, 10) || null : null
         const imgSrc = $el.attr('data-auction-img') ?? ''
+        // 危険セラー除外の個別商品判定用。実データ確認: 検索結果カードは
+        // data-auction-auc-seller-id属性を持ち、その値はセラーページURL
+        // (auctions.yahoo.co.jp/seller/{id})の識別子と一致する。
+        const sellerId = $el.attr('data-auction-auc-seller-id') ?? ''
+        const sellerUrl = sellerId ? `https://auctions.yahoo.co.jp/seller/${sellerId}` : null
         pageProducts.push({
           sourceUrl: `https://auctions.yahoo.co.jp/jp/auction/${itemId}`,
           sourceSite: this.siteKey,
@@ -119,6 +124,7 @@ export class YahooAuctionScraper extends BaseScraper {
           sellerRatingCount: null,
           shippingDays: null,
           sourceUpdatedAt: null,
+          sellerUrl,
         })
       })
 
@@ -153,6 +159,10 @@ export class YahooAuctionScraper extends BaseScraper {
   private async scrapeSeller(url: string, options: ScraperOptions): Promise<ScrapedProduct[]> {
     const { userAgent = DEFAULT_UA, timeoutMs = 15000, limit = 600, onPage } = options
     const baseUrl = new URL(url)
+    // セラーページを抽出している時点で、掲載される全商品の出品者IDは
+    // URL自体から自明(危険セラー除外の個別商品判定に使う)。
+    const sellerId = url.match(/seller\/([^/?#]+)/)?.[1] ?? null
+    const sellerUrl = sellerId ? `https://auctions.yahoo.co.jp/seller/${sellerId}` : null
 
     const allProducts: ScrapedProduct[] = []
     const seenIds = new Set<string>()
@@ -233,6 +243,7 @@ export class YahooAuctionScraper extends BaseScraper {
           sellerRatingCount: null,
           shippingDays: null,
           sourceUpdatedAt,
+          sellerUrl,
         })
       }
 
@@ -292,6 +303,13 @@ export class YahooAuctionScraper extends BaseScraper {
         ? nextItem.seller.rating.summary
         : (typeof nextItem.seller?.rating?.ult?.allPoint === 'number' ? nextItem.seller.rating.ult.allPoint : null)
 
+      // 危険セラー除外の個別商品判定用。実データ確認: __NEXT_DATA__の
+      // seller.aucUserIdがセラーページURL(auctions.yahoo.co.jp/seller/{id})
+      // の識別子と一致する。
+      const sellerUrl: string | null = typeof nextItem.seller?.aucUserId === 'string'
+        ? `https://auctions.yahoo.co.jp/seller/${nextItem.seller.aucUserId}`
+        : null
+
       let sourceUpdatedAt: string | null = null
       if (typeof nextItem.endTime === 'string') {
         const d = new Date(nextItem.endTime)
@@ -311,6 +329,7 @@ export class YahooAuctionScraper extends BaseScraper {
         sellerRatingCount,
         shippingDays,
         sourceUpdatedAt,
+        sellerUrl,
       }
     }
 

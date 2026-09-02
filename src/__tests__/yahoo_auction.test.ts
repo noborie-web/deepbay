@@ -23,7 +23,7 @@ const NEXT_DATA_ITEM_HTML = `
               conditionName: 'やや傷や汚れあり',
               description: ['説明文1行目', '説明文2行目'],
               shipScheduleName: '支払い手続きから1～2日で発送',
-              seller: { rating: { summary: 22 } },
+              seller: { rating: { summary: 22 }, aucUserId: 'CrW43BeNqpH9Xy5qjVL2RcpLeqcgH' },
               endTime: '2026-09-01T19:31:51+09:00',
             },
           },
@@ -49,6 +49,8 @@ describe('YahooAuctionScraper.parse (__NEXT_DATA__経由)', () => {
     expect(product.shippingDays).toBe(1)
     expect(product.sellerRatingCount).toBe(22)
     expect(product.sourceUpdatedAt).toBe(new Date('2026-09-01T19:31:51+09:00').toISOString())
+    // 危険セラー除外の個別商品判定用(2026-09-02実データ確認: seller.aucUserId)
+    expect(product.sellerUrl).toBe('https://auctions.yahoo.co.jp/seller/CrW43BeNqpH9Xy5qjVL2RcpLeqcgH')
   })
 
   it('__NEXT_DATA__が無い場合はCSSセレクタのフォールバックにより空でもクラッシュしない', () => {
@@ -60,8 +62,9 @@ describe('YahooAuctionScraper.parse (__NEXT_DATA__経由)', () => {
   })
 })
 
-function fakeCard(id: string, price: number): string {
-  return `<li class="Product"><a class="Product__imageLink" data-auction-id="${id}" data-auction-title="Item ${id}" data-auction-img="https://example.com/img/${id}.jpg?pri=l&amp;w=300&amp;h=300&amp;up=0" data-auction-price="${price}" href="https://auctions.yahoo.co.jp/jp/auction/${id}"></a></li>`
+function fakeCard(id: string, price: number, sellerId?: string): string {
+  const sellerAttr = sellerId ? ` data-auction-auc-seller-id="${sellerId}"` : ''
+  return `<li class="Product"><a class="Product__imageLink" data-auction-id="${id}" data-auction-title="Item ${id}" data-auction-img="https://example.com/img/${id}.jpg?pri=l&amp;w=300&amp;h=300&amp;up=0" data-auction-price="${price}"${sellerAttr} href="https://auctions.yahoo.co.jp/jp/auction/${id}"></a></li>`
 }
 
 function searchPageHtml(cards: string[], totalCountText: string | null): string {
@@ -107,6 +110,26 @@ describe('YahooAuctionScraper.scrape 検索ページの一括抽出', () => {
       // サムネイルのw/hパラメータが大きい値に書き換えられている
       expect(results[0].images[0]).toContain('w=1200')
       expect(results[0].images[0]).toContain('h=1200')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  // 危険セラー除外の個別商品判定用(2026-09-02実データ確認: 検索結果カードの
+  // data-auction-auc-seller-id属性がセラーページURLの識別子と一致する)。
+  it('data-auction-auc-seller-id属性から出品者URLを組み立てる', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async () => new Response(
+      searchPageHtml([fakeCard('t100', 1000, 'CrW43BeNqpH9Xy5qjVL2RcpLeqcgH'), fakeCard('t101', 2000)], '2,000'),
+      { status: 200 },
+    )
+
+    try {
+      const scraper = new YahooAuctionScraper()
+      const results = await scraper.scrape('https://auctions.yahoo.co.jp/search/search?p=nike', { limit: 2 })
+      expect(results[0].sellerUrl).toBe('https://auctions.yahoo.co.jp/seller/CrW43BeNqpH9Xy5qjVL2RcpLeqcgH')
+      // セラーID属性が無いカードはnullのまま(判定対象外)
+      expect(results[1].sellerUrl).toBeNull()
     } finally {
       globalThis.fetch = origFetch
     }
@@ -232,6 +255,9 @@ describe('YahooAuctionScraper.scrape セラーページの一括抽出', () => {
       })
       expect(results[0].images[0]).toContain('w=1200')
       expect(results[0].sourceUpdatedAt).toBe(new Date('2026-09-01T19:31:51+09:00').toISOString())
+      // セラーページを抽出している時点で全商品の出品者は自明なので、
+      // URLから直接組み立てたセラーURLが設定される。
+      expect(results[0].sellerUrl).toBe('https://auctions.yahoo.co.jp/seller/testseller')
     } finally {
       globalThis.fetch = origFetch
     }
