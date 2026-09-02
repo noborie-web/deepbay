@@ -12,6 +12,11 @@ export interface ScrapedProduct {
   shippingDays: number | null       // 発送日数（最短日数）
   sourceUpdatedAt: string | null    // 最終更新日（ISO文字列）
   availability?: 'available' | 'sold_out' | 'unknown'
+  // 出品者のプロフィールURL(危険セラー除外の個別商品判定に使う)。
+  // 取得できないサイト/経路ではundefined/nullのままでよく、その場合は
+  // 個別商品単位の危険セラー除外は行われない(既存の「抽出URL自体が
+  // 危険セラーのページである場合」のチェックのみ有効)。
+  sellerUrl?: string | null
 }
 
 export interface ScraperOptions {

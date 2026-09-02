@@ -117,6 +117,21 @@ describe('toProduct() price handling', () => {
   })
 })
 
+// ユーザー要望: 「危険セラーの除外は必須です」。抽出結果内の個別商品単位で
+// 危険セラー判定できるよう、出品者URLを取得する。実データ確認: entities:search /
+// items/get のレスポンスは出品者IDをitem.sellerIdに直接持つ。
+describe('toProduct() sellerUrl handling', () => {
+  it('item.sellerIdから出品者プロフィールURLを組み立てる', () => {
+    const p = _toProduct({ id: 'm1', name: 'Test', sellerId: '788452260' }, 'https://jp.mercari.com/item/m1')
+    expect(p.sellerUrl).toBe('https://jp.mercari.com/user/profile/788452260')
+  })
+
+  it('sellerIdが存在しない場合はnullになる', () => {
+    const p = _toProduct({ id: 'm1', name: 'Test' }, 'https://jp.mercari.com/item/m1')
+    expect(p.sellerUrl).toBeNull()
+  })
+})
+
 describe('toProduct() availability handling', () => {
   const item = { id: 'x1', name: 'Test', price: 100, description: '', thumbnails: [] }
 
