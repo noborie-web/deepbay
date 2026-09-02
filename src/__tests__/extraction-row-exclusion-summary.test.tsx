@@ -35,6 +35,7 @@ describe('ExtractionRow: 除外詳細', () => {
       exclusion_summary: {
         detail_fetch_count: 357,
         danger_word_excluded: 0,
+        individual_danger_seller_excluded: 0,
         active_duplicate_excluded: 0,
         title_duplicate_excluded: 12,
         translated_duplicate_excluded: 0,

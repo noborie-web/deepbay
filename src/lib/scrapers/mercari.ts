@@ -143,6 +143,12 @@ function toProduct(item: any, url: string): ScrapedProduct {
       ? 'available'
       : 'unknown'
 
+  // 出品者URL(危険セラー除外の個別商品判定用)。実データ確認: entities:search /
+  // items/get のレスポンスは出品者IDをitem.sellerIdに直接持つ(item.seller等の
+  // ネストされたオブジェクトではない)。
+  const sellerId: string | null = item.sellerId ?? item.seller_id ?? null
+  const sellerUrl: string | null = sellerId ? `https://jp.mercari.com/user/profile/${sellerId}` : null
+
   // 評価数: seller情報から複数パスを試みる
   const seller = item.seller ?? item.sellerInfo ?? null
   let sellerRatingCount: number | null = null
@@ -203,6 +209,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
     shippingDays,
     sourceUpdatedAt,
     availability,
+    sellerUrl,
   }
 }
 

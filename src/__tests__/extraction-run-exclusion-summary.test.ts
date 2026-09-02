@@ -41,13 +41,17 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
 
   function makeDatabase(options: {
     dangerWords?: string[]
+    dangerSellerUrls?: string[]
     existingOriginalTitles?: string[]
   } = {}) {
     const extractionUpdates: Array<Record<string, unknown>> = []
     const insertedProducts: Array<Record<string, unknown>> = []
 
     function resultFor(table: string) {
-      if (table === 'danger_sellers' || table === 'replace_words') return { data: [], error: null }
+      if (table === 'danger_sellers') {
+        return { data: (options.dangerSellerUrls ?? []).map((seller_url) => ({ seller_url })), error: null }
+      }
+      if (table === 'replace_words') return { data: [], error: null }
       if (table === 'danger_words') {
         return { data: (options.dangerWords ?? []).map((word) => ({ word })), error: null }
       }
@@ -115,9 +119,61 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 2,
       danger_word_excluded: 1,
+      individual_danger_seller_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
+      completed_count: 1,
+    })
+  })
+
+  // ユーザー要望: 「危険セラーの除外は必須です」。検索結果内に登録済み
+  // 危険セラーの商品が混ざっている場合、その商品だけを除外する
+  // (抽出URL自体が危険セラーのページである場合の既存チェックとは別)。
+  it('検索結果内の個別商品が登録済み危険セラーの場合、その商品だけを除外する', async () => {
+    mocks.scrapeUrl.mockResolvedValue([
+      scrapedProduct({
+        sourceItemId: 'item-1',
+        title: '危険セラーの商品',
+        sellerUrl: 'https://jp.mercari.com/user/profile/999?ref=search',
+      }),
+      scrapedProduct({
+        sourceUrl: 'https://example.com/item/2',
+        sourceItemId: 'item-2',
+        title: '安全な商品',
+        sellerUrl: 'https://jp.mercari.com/user/profile/111',
+      }),
+    ])
+    const { db, extractionUpdates } = makeDatabase({
+      dangerSellerUrls: ['https://jp.mercari.com/user/profile/999'],
+    })
+
+    const result = await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    expect(result.status).toBe('completed')
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toEqual({
+      detail_fetch_count: 2,
+      danger_word_excluded: 0,
+      individual_danger_seller_excluded: 1,
+      active_duplicate_excluded: 0,
+      title_duplicate_excluded: 0,
+      translated_duplicate_excluded: 0,
+      completed_count: 1,
+    })
+  })
+
+  it('sellerUrlを取得できない商品(未対応サイト等)は危険セラー登録があっても判定せず素通りする', async () => {
+    mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ sellerUrl: undefined })])
+    const { db, extractionUpdates } = makeDatabase({
+      dangerSellerUrls: ['https://jp.mercari.com/user/profile/999'],
+    })
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toMatchObject({
+      individual_danger_seller_excluded: 0,
       completed_count: 1,
     })
   })
@@ -135,6 +191,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 2,
       danger_word_excluded: 0,
+      individual_danger_seller_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 1,
       translated_duplicate_excluded: 0,
@@ -152,6 +209,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 1,
       danger_word_excluded: 0,
+      individual_danger_seller_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,

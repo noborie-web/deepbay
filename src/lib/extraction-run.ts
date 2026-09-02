@@ -111,6 +111,19 @@ export async function runScrape(
         })
     const dangerWordExcluded = scrapedList.length - filteredList.length
 
+    // 個別危険Seller除外: 検索結果内に登録済み危険セラーの商品が混ざっている
+    // 場合、その商品だけを除外する(抽出URL自体が危険セラーのページである
+    // 場合は上のチェックで既にスキップ済み)。スクレイパーが出品者URLを
+    // 取得できるサイトのみ対象(sellerUrlが取得できない場合は判定しない)。
+    const sellerFilteredList = sellerUrls.length === 0
+      ? filteredList
+      : filteredList.filter((scraped: { sellerUrl?: string | null }) => {
+          if (!scraped.sellerUrl) return true
+          const normalizedSellerUrl = scraped.sellerUrl.split('?')[0].trim().replace(/\/+$/, '')
+          return !sellerUrls.some((s) => normalizedSellerUrl.startsWith(s))
+        })
+    const individualDangerSellerExcluded = filteredList.length - sellerFilteredList.length
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let setting: any = null
     if (bulkEditSettingId) {
@@ -158,7 +171,7 @@ export async function runScrape(
     // タイトル翻訳
     const titleEngine: string = extractionSettings?.title_engine ?? 'high'
     const titleEnabled: boolean = extractionSettings?.title_enabled ?? true
-    const originalTitles = filteredList.map((s: { title: string }) => s.title)
+    const originalTitles = sellerFilteredList.map((s: { title: string }) => s.title)
     let translatedTitles: string[] = originalTitles
     if (titleEnabled && process.env.OPENAI_API_KEY) {
       try {
@@ -200,7 +213,7 @@ export async function runScrape(
       }
     }
 
-    const rows = filteredList.map((scraped: {
+    const rows = sellerFilteredList.map((scraped: {
       sourceUrl: string; sourceSite: string; sourceItemId: string | null
       title: string; price: number | null; description: string
       images: string[]; condition: string | null
@@ -274,6 +287,7 @@ export async function runScrape(
     const exclusionSummary = {
       detail_fetch_count: detailFetchCount,
       danger_word_excluded: dangerWordExcluded,
+      individual_danger_seller_excluded: individualDangerSellerExcluded,
       active_duplicate_excluded: activeDuplicateExcluded,
       title_duplicate_excluded: titleDuplicateExcluded,
       translated_duplicate_excluded: translatedDuplicateExcluded,
