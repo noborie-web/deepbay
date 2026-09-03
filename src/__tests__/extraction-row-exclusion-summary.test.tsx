@@ -45,6 +45,7 @@ describe('ExtractionRow: 除外詳細', () => {
         slow_shipping_excluded: 0,
         stale_excluded: 0,
         price_range_excluded: 0,
+        translated_title_failed_excluded: 0,
         active_duplicate_excluded: 0,
         title_duplicate_excluded: 12,
         translated_duplicate_excluded: 0,

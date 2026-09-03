@@ -66,6 +66,7 @@ export interface ExtractionExclusionSummary {
   slow_shipping_excluded: number
   stale_excluded: number
   price_range_excluded: number
+  translated_title_failed_excluded: number
   active_duplicate_excluded: number
   title_duplicate_excluded: number
   translated_duplicate_excluded: number

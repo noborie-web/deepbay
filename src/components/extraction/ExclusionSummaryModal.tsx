@@ -8,9 +8,10 @@ interface Props {
 }
 
 // 既存ツール(公式)の「抽出結果確認」に相当する除外詳細モーダル。
-// 抽出パイプラインで実際に実行されている除外を表示する。詳細取得の
-// 2段階化・翻訳失敗の商品単位追跡等、アーキテクチャが異なる項目は
-// この内訳には含まれない(Phase 3で対応予定)。
+// 抽出パイプラインで実際に実行されている除外を表示する。「詳細取得の
+// 2段階化」は、こちらのスクレイパーが検索結果1回のレスポンスで全項目を
+// 取得済みのため実装を見送った(詳細ページへの追加アクセスが元々発生
+// しておらず、常に0件にしかならない見せかけの項目になるため)。
 const ROWS: { key: keyof ExtractionExclusionSummary; label: string }[] = [
   { key: 'detail_fetch_count', label: '詳細取得件数' },
   { key: 'sold_out_excluded', label: '売り切れ除外' },
@@ -24,6 +25,7 @@ const ROWS: { key: keyof ExtractionExclusionSummary; label: string }[] = [
   { key: 'slow_shipping_excluded', label: '発送日数除外' },
   { key: 'stale_excluded', label: '最終更新月除外' },
   { key: 'price_range_excluded', label: '価格範囲除外' },
+  { key: 'translated_title_failed_excluded', label: 'タイトル翻訳失敗除外' },
   { key: 'active_duplicate_excluded', label: 'active重複除外' },
   { key: 'title_duplicate_excluded', label: 'タイトル重複除外' },
   { key: 'translated_duplicate_excluded', label: '翻訳後タイトル重複除外' },

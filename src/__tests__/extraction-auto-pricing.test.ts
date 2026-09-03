@@ -3,12 +3,12 @@ import { calcProfit, DEFAULT_AUTO_PRICING } from '@/lib/pricing'
 
 const mocks = vi.hoisted(() => ({
   scrapeUrl: vi.fn(),
-  translateTitles: vi.fn(),
+  translateTitlesWithFailures: vi.fn(),
   fetchUsdJpyRate: vi.fn(),
 }))
 
 vi.mock('@/lib/scrapers', () => ({ scrapeUrl: mocks.scrapeUrl }))
-vi.mock('@/lib/translate', () => ({ translateTitles: mocks.translateTitles }))
+vi.mock('@/lib/translate', () => ({ translateTitlesWithFailures: mocks.translateTitlesWithFailures }))
 vi.mock('@/lib/exchange-rate', () => ({ fetchUsdJpyRate: mocks.fetchUsdJpyRate }))
 
 import { calculateAutomaticEbayPrice, runScrape } from '@/lib/extraction-run'
@@ -85,7 +85,7 @@ describe('automatic extraction pricing', () => {
       scrapedProduct,
       { ...scrapedProduct, sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2' },
     ])
-    mocks.translateTitles.mockReset()
+    mocks.translateTitlesWithFailures.mockReset()
     mocks.fetchUsdJpyRate.mockReset().mockResolvedValue({ rate: 150, date: '2026-08-25' })
   })
 

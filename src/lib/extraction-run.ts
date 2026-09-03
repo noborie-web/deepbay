@@ -1,5 +1,5 @@
 import { scrapeUrl } from '@/lib/scrapers'
-import { translateTitles } from '@/lib/translate'
+import { translateTitlesWithFailures } from '@/lib/translate'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { calcProfit, DEFAULT_AUTO_PRICING, validateProfitParams } from '@/lib/pricing'
 import { matchesVeroBrandInTitle } from '@/lib/product-exclusion'
@@ -281,18 +281,30 @@ export async function runScrape(
       return result
     }
 
-    // タイトル翻訳
+    // タイトル翻訳: 商品単位でAPI呼び出しをtry/catchし(translateTitlesWithFailures)、
+    // 翻訳に失敗した商品だけを除外する(Phase 3: 公式ツールの「タイトル翻訳
+    // 失敗除外」に相当)。以前は1件の失敗でも全件が元タイトルへフォール
+    // バックし、失敗商品を区別できなかった。
     const titleEngine: string = extractionSettings?.title_engine ?? 'high'
     const titleEnabled: boolean = extractionSettings?.title_enabled ?? true
     const originalTitles = priceRangeFilteredList.map((s: { title: string }) => s.title)
-    let translatedTitles: string[] = originalTitles
+    let translationResults: { title: string; failed: boolean }[] = originalTitles.map((t: string) => ({ title: t, failed: false }))
     if (titleEnabled && process.env.OPENAI_API_KEY) {
       try {
-        translatedTitles = await translateTitles(originalTitles, titleEngine)
+        translationResults = await translateTitlesWithFailures(originalTitles, titleEngine)
       } catch (e) {
-        console.error('Translation failed, using original titles:', e)
+        // 商品単位のtry/catchでも捕捉できないほどの全体エラー(APIキー
+        // 不正等)の場合のみ、既存互換で全件を元タイトルにフォールバック
+        // する(商品を除外しない)。
+        console.error('Translation failed entirely, using original titles:', e)
+        translationResults = originalTitles.map((t: string) => ({ title: t, failed: false }))
       }
     }
+    const translationFilteredList = priceRangeFilteredList.filter(
+      (_: unknown, idx: number) => !translationResults[idx].failed,
+    )
+    const translatedTitles = translationResults.filter((r) => !r.failed).map((r) => r.title)
+    const translatedTitleFailedExcluded = priceRangeFilteredList.length - translationFilteredList.length
 
     // 重複除外チェック用に既存商品を取得
     const excludeActive: boolean = extractionSettings?.exclude_active_duplicate ?? true
@@ -326,7 +338,7 @@ export async function runScrape(
       }
     }
 
-    const rows = priceRangeFilteredList.map((scraped: {
+    const rows = translationFilteredList.map((scraped: {
       sourceUrl: string; sourceSite: string; sourceItemId: string | null
       title: string; price: number | null; description: string
       images: string[]; condition: string | null
@@ -410,6 +422,7 @@ export async function runScrape(
       slow_shipping_excluded: slowShippingExcluded,
       stale_excluded: staleExcluded,
       price_range_excluded: priceRangeExcluded,
+      translated_title_failed_excluded: translatedTitleFailedExcluded,
       active_duplicate_excluded: activeDuplicateExcluded,
       title_duplicate_excluded: titleDuplicateExcluded,
       translated_duplicate_excluded: translatedDuplicateExcluded,
