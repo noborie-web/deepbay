@@ -11,6 +11,7 @@ import {
   findVeroProductIds,
   getProductPriceType,
   matchesVeroBrand,
+  matchesVeroBrandInTitle,
 } from '@/lib/product-exclusion'
 
 function makeProduct(id: string, overrides: Partial<Product> = {}): Product {
@@ -80,6 +81,29 @@ describe('Vero除外判定', () => {
       makeProduct('p2', { ebay_brand: 'Generic' }),
     ]
     expect(findVeroProductIds(products, ['Nintendo'])).toEqual(['p1'])
+  })
+
+  // ユーザー確認: Vero除外は抽出時に自動実行されておらず、除外タブでの
+  // 手動実行のみだった問題を修正(extraction-run.ts)。タイトル翻訳・
+  // ebay_brand付与より前の抽出パイプラインでも使えるよう、タイトル文字列
+  // だけで判定できる版を追加した。判定ロジック自体はmatchesVeroBrandと
+  // 共通(textContainsBrand)なので、既存の照合結果と食い違わない。
+  describe('matchesVeroBrandInTitle(抽出時の自動除外用)', () => {
+    it('タイトルにVeroブランドが含まれれば一致する', () => {
+      expect(matchesVeroBrandInTitle('NIKE スニーカー 新品', ['NIKE'])).toBe(true)
+    })
+
+    it('一致しなければfalseを返す', () => {
+      expect(matchesVeroBrandInTitle('ノーブランド スニーカー', ['NIKE'])).toBe(false)
+    })
+
+    it('英数字ブランドは単語の途中に誤一致しない(matchesVeroBrandと同じ挙動)', () => {
+      expect(matchesVeroBrandInTitle('Space Adventure', ['ACE'])).toBe(false)
+    })
+
+    it('ブランド一覧が空なら何にも一致しない', () => {
+      expect(matchesVeroBrandInTitle('NIKE スニーカー', [])).toBe(false)
+    })
   })
 })
 

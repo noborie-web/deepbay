@@ -2,6 +2,7 @@ import { scrapeUrl } from '@/lib/scrapers'
 import { translateTitles } from '@/lib/translate'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { calcProfit, DEFAULT_AUTO_PRICING, validateProfitParams } from '@/lib/pricing'
+import { matchesVeroBrandInTitle } from '@/lib/product-exclusion'
 
 interface AutoPricingSetting {
   profit_rate?: number | string | null
@@ -56,9 +57,10 @@ export async function runScrape(
     const limit = 600
 
     // 抽出設定を取得
-    const [{ data: dangerSellers }, { data: dangerWords }, { data: replaceWords }, { data: extractionSettings }] = await Promise.all([
+    const [{ data: dangerSellers }, { data: dangerWords }, { data: veroBrandRows }, { data: replaceWords }, { data: extractionSettings }] = await Promise.all([
       supabase.from('danger_sellers').select('seller_url').eq('user_id', userId),
       supabase.from('danger_words').select('word').eq('user_id', userId),
+      supabase.from('vero_brands').select('brand').eq('user_id', userId),
       supabase.from('replace_words').select('before_word, after_word').eq('user_id', userId),
       supabase.from('extraction_settings').select('*').eq('user_id', userId).single(),
     ])
@@ -115,18 +117,33 @@ export async function runScrape(
         })
     const dangerWordExcluded = scrapedList.length - filteredList.length
 
+    // Vero除外: これまで抽出パイプラインには一切含まれておらず、商品編集
+    // 画面の「除外」タブでユーザーが手動で実行した場合しか除外されない
+    // 仕様だった(危険単語と違い自動セーフティネットが無かった)。VeRO
+    // 侵害はeBayアカウントへの影響が大きいため、危険単語と同様に抽出時に
+    // 自動除外する。翻訳前のタイトル(原文)に登録済みブランド名が含まれる
+    // かで判定する(手動除外のmatchesVeroBrandと同じ文字列一致ロジックを
+    // 共有)。
+    const veroBrands: string[] = (veroBrandRows ?? [])
+      .map((v: { brand?: unknown }) => typeof v.brand === 'string' ? v.brand : '')
+      .filter(Boolean)
+    const veroFilteredList = veroBrands.length === 0
+      ? filteredList
+      : filteredList.filter((scraped: { title: string }) => !matchesVeroBrandInTitle(scraped.title, veroBrands))
+    const veroExcluded = filteredList.length - veroFilteredList.length
+
     // 個別危険Seller除外: 検索結果内に登録済み危険セラーの商品が混ざっている
     // 場合、その商品だけを除外する(抽出URL自体が危険セラーのページである
     // 場合は上のチェックで既にスキップ済み)。スクレイパーが出品者URLを
     // 取得できるサイトのみ対象(sellerUrlが取得できない場合は判定しない)。
     const sellerFilteredList = sellerUrls.length === 0
-      ? filteredList
-      : filteredList.filter((scraped: { sellerUrl?: string | null }) => {
+      ? veroFilteredList
+      : veroFilteredList.filter((scraped: { sellerUrl?: string | null }) => {
           if (!scraped.sellerUrl) return true
           const normalizedSellerUrl = scraped.sellerUrl.split('?')[0].trim().replace(/\/+$/, '')
           return !sellerUrls.some((s) => normalizedSellerUrl.startsWith(s))
         })
-    const individualDangerSellerExcluded = filteredList.length - sellerFilteredList.length
+    const individualDangerSellerExcluded = veroFilteredList.length - sellerFilteredList.length
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let setting: any = null
@@ -291,6 +308,7 @@ export async function runScrape(
     const exclusionSummary = {
       detail_fetch_count: detailFetchCount,
       danger_word_excluded: dangerWordExcluded,
+      vero_excluded: veroExcluded,
       individual_danger_seller_excluded: individualDangerSellerExcluded,
       active_duplicate_excluded: activeDuplicateExcluded,
       title_duplicate_excluded: titleDuplicateExcluded,

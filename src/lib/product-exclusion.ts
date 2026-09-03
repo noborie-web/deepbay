@@ -43,6 +43,13 @@ export function matchesVeroBrand(product: Product, brands: string[]): boolean {
   })
 }
 
+// 抽出パイプライン(タイトル翻訳・ebay_brand付与より前)でも使えるよう、
+// タイトル文字列だけでVeroブランド一致を判定する版。matchesVeroBrandと
+// ロジックを共有する(タイトルに含まれるかの判定は同一)。
+export function matchesVeroBrandInTitle(title: string, brands: string[]): boolean {
+  return brands.some((brand) => textContainsBrand(title, brand))
+}
+
 export function findVeroProductIds(products: Product[], brands: string[]): string[] {
   return products.filter((product) => matchesVeroBrand(product, brands)).map((product) => product.id)
 }

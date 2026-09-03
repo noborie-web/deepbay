@@ -42,6 +42,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
   function makeDatabase(options: {
     dangerWords?: string[]
     dangerSellerUrls?: string[]
+    veroBrands?: string[]
     existingOriginalTitles?: string[]
   } = {}) {
     const extractionUpdates: Array<Record<string, unknown>> = []
@@ -54,6 +55,9 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       if (table === 'replace_words') return { data: [], error: null }
       if (table === 'danger_words') {
         return { data: (options.dangerWords ?? []).map((word) => ({ word })), error: null }
+      }
+      if (table === 'vero_brands') {
+        return { data: (options.veroBrands ?? []).map((brand) => ({ brand })), error: null }
       }
       if (table === 'extraction_settings') {
         return {
@@ -119,12 +123,51 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 2,
       danger_word_excluded: 1,
+      vero_excluded: 0,
       individual_danger_seller_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
       completed_count: 1,
     })
+  })
+
+  // ユーザー確認: 「Vero除外は確実に実行されていますか？」→調査の結果、
+  // これまで抽出パイプラインには一切含まれておらず、商品編集画面の
+  // 「除外」タブでユーザーが手動実行しない限り除外されない仕様だった
+  // (危険単語と違い自動セーフティネットが無かった)。危険単語と同様に
+  // 抽出時にも自動除外するようにした。
+  it('登録済みVeroブランドがタイトルに含まれる商品は自動的に除外され、件数が記録される', async () => {
+    mocks.scrapeUrl.mockResolvedValue([
+      scrapedProduct({ sourceItemId: 'item-1', title: 'NIKE スニーカー 新品' }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', title: 'ノーブランド スニーカー' }),
+    ])
+    const { db, extractionUpdates } = makeDatabase({ veroBrands: ['NIKE'] })
+
+    const result = await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    expect(result.status).toBe('completed')
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toEqual({
+      detail_fetch_count: 2,
+      danger_word_excluded: 0,
+      vero_excluded: 1,
+      individual_danger_seller_excluded: 0,
+      active_duplicate_excluded: 0,
+      title_duplicate_excluded: 0,
+      translated_duplicate_excluded: 0,
+      completed_count: 1,
+    })
+  })
+
+  it('Veroブランドが未登録なら何も除外しない(既存挙動を維持)', async () => {
+    mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ title: 'NIKE スニーカー' })])
+    const { db, extractionUpdates } = makeDatabase()
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toMatchObject({ vero_excluded: 0, completed_count: 1 })
   })
 
   // ユーザー要望: 「危険セラーの除外は必須です」。検索結果内に登録済み
@@ -155,6 +198,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 2,
       danger_word_excluded: 0,
+      vero_excluded: 0,
       individual_danger_seller_excluded: 1,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
@@ -218,6 +262,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 2,
       danger_word_excluded: 0,
+      vero_excluded: 0,
       individual_danger_seller_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 1,
@@ -236,6 +281,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 1,
       danger_word_excluded: 0,
+      vero_excluded: 0,
       individual_danger_seller_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
