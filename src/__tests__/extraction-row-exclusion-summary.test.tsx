@@ -34,6 +34,9 @@ describe('ExtractionRow: 除外詳細', () => {
     const extraction = makeExtraction({
       exclusion_summary: {
         detail_fetch_count: 357,
+        sold_out_excluded: 0,
+        no_image_excluded: 0,
+        no_price_excluded: 0,
         danger_word_excluded: 0,
         vero_excluded: 0,
         individual_danger_seller_excluded: 0,

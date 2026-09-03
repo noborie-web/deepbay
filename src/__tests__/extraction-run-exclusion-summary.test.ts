@@ -122,6 +122,9 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 2,
+      sold_out_excluded: 0,
+      no_image_excluded: 0,
+      no_price_excluded: 0,
       danger_word_excluded: 1,
       vero_excluded: 0,
       individual_danger_seller_excluded: 0,
@@ -130,6 +133,47 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       translated_duplicate_excluded: 0,
       completed_count: 1,
     })
+  })
+
+  // ユーザー要望: 公式ツールの「除外詳細」と同等の項目(Phase 1)。
+  // 売り切れ・画像なし・価格取得不可はスクレイパーが既に取得している
+  // データを使って抽出時に自動除外できるため、まずこの3項目を追加した。
+  it('売り切れ・画像なし・価格取得不可の商品を自動的に除外し、件数を記録する', async () => {
+    mocks.scrapeUrl.mockResolvedValue([
+      scrapedProduct({ sourceItemId: 'item-1', availability: 'sold_out' }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', images: [] }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/3', sourceItemId: 'item-3', price: null }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/4', sourceItemId: 'item-4' }),
+    ])
+    const { db, extractionUpdates } = makeDatabase()
+
+    const result = await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    expect(result.status).toBe('completed')
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toEqual({
+      detail_fetch_count: 4,
+      sold_out_excluded: 1,
+      no_image_excluded: 1,
+      no_price_excluded: 1,
+      danger_word_excluded: 0,
+      vero_excluded: 0,
+      individual_danger_seller_excluded: 0,
+      active_duplicate_excluded: 0,
+      title_duplicate_excluded: 0,
+      translated_duplicate_excluded: 0,
+      completed_count: 1,
+    })
+  })
+
+  it('在庫状況(availability)を取得できないサイトの商品は売り切れ判定せず素通りする', async () => {
+    mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ availability: undefined })])
+    const { db, extractionUpdates } = makeDatabase()
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toMatchObject({ sold_out_excluded: 0, completed_count: 1 })
   })
 
   // ユーザー確認: 「Vero除外は確実に実行されていますか？」→調査の結果、
@@ -150,6 +194,9 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 2,
+      sold_out_excluded: 0,
+      no_image_excluded: 0,
+      no_price_excluded: 0,
       danger_word_excluded: 0,
       vero_excluded: 1,
       individual_danger_seller_excluded: 0,
@@ -197,6 +244,9 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 2,
+      sold_out_excluded: 0,
+      no_image_excluded: 0,
+      no_price_excluded: 0,
       danger_word_excluded: 0,
       vero_excluded: 0,
       individual_danger_seller_excluded: 1,
@@ -261,6 +311,9 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 2,
+      sold_out_excluded: 0,
+      no_image_excluded: 0,
+      no_price_excluded: 0,
       danger_word_excluded: 0,
       vero_excluded: 0,
       individual_danger_seller_excluded: 0,
@@ -280,6 +333,9 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
     expect(completedUpdate?.exclusion_summary).toEqual({
       detail_fetch_count: 1,
+      sold_out_excluded: 0,
+      no_image_excluded: 0,
+      no_price_excluded: 0,
       danger_word_excluded: 0,
       vero_excluded: 0,
       individual_danger_seller_excluded: 0,
