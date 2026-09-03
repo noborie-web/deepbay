@@ -8,9 +8,9 @@ interface Props {
 }
 
 // 既存ツール(公式)の「抽出結果確認」に相当する除外詳細モーダル。
-// 抽出パイプラインで実際に実行されている除外を表示する。一括編集設定の
-// 除外条件(発送日数・評価数・最終更新月・価格範囲等)を抽出時に自動適用
-// する機能は未実装のため、この内訳には含まれない(Phase 2で対応予定)。
+// 抽出パイプラインで実際に実行されている除外を表示する。詳細取得の
+// 2段階化・翻訳失敗の商品単位追跡等、アーキテクチャが異なる項目は
+// この内訳には含まれない(Phase 3で対応予定)。
 const ROWS: { key: keyof ExtractionExclusionSummary; label: string }[] = [
   { key: 'detail_fetch_count', label: '詳細取得件数' },
   { key: 'sold_out_excluded', label: '売り切れ除外' },
@@ -19,6 +19,11 @@ const ROWS: { key: keyof ExtractionExclusionSummary; label: string }[] = [
   { key: 'danger_word_excluded', label: '危険単語除外' },
   { key: 'vero_excluded', label: 'Vero除外' },
   { key: 'individual_danger_seller_excluded', label: '個別危険Seller除外' },
+  { key: 'spot_word_excluded', label: 'スポット文字除外' },
+  { key: 'low_rating_excluded', label: '評価数除外' },
+  { key: 'slow_shipping_excluded', label: '発送日数除外' },
+  { key: 'stale_excluded', label: '最終更新月除外' },
+  { key: 'price_range_excluded', label: '価格範囲除外' },
   { key: 'active_duplicate_excluded', label: 'active重複除外' },
   { key: 'title_duplicate_excluded', label: 'タイトル重複除外' },
   { key: 'translated_duplicate_excluded', label: '翻訳後タイトル重複除外' },

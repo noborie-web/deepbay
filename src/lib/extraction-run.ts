@@ -57,12 +57,13 @@ export async function runScrape(
     const limit = 600
 
     // 抽出設定を取得
-    const [{ data: dangerSellers }, { data: dangerWords }, { data: veroBrandRows }, { data: replaceWords }, { data: extractionSettings }] = await Promise.all([
+    const [{ data: dangerSellers }, { data: dangerWords }, { data: veroBrandRows }, { data: replaceWords }, { data: extractionSettings }, { data: spotWordRows }] = await Promise.all([
       supabase.from('danger_sellers').select('seller_url').eq('user_id', userId),
       supabase.from('danger_words').select('word').eq('user_id', userId),
       supabase.from('vero_brands').select('brand').eq('user_id', userId),
       supabase.from('replace_words').select('before_word, after_word').eq('user_id', userId),
       supabase.from('extraction_settings').select('*').eq('user_id', userId).single(),
+      supabase.from('spot_words').select('word').eq('user_id', userId),
     ])
 
     // アクティブHTMLテンプレートを取得
@@ -167,6 +168,75 @@ export async function runScrape(
         })
     const individualDangerSellerExcluded = veroFilteredList.length - sellerFilteredList.length
 
+    // Phase 2: 評価数・発送日数・最終更新月・価格範囲・スポット文字は、
+    // これまで商品編集画面の除外パネルを開くたびに閾値をその場で入力する
+    // 仕様で、抽出時に自動適用する手段が無かった。抽出設定(サーバー側)に
+    // 閾値を保存できるようにし(NULL=無効)、抽出時にも自動適用する。
+
+    // スポット文字除外: 危険単語と同じ一致ロジックだが、独立したリスト
+    // (spot_words)を使う。判定対象はタイトル・商品説明のみ(ブランドは
+    // 翻訳・出品情報生成より前のこの時点ではまだ付与されていないため対象外)。
+    const spotWordList: string[] = (spotWordRows ?? []).map((w: { word: string }) => w.word.toLowerCase())
+    const spotCheckTitle: boolean = extractionSettings?.spot_check_title ?? true
+    const spotCheckDescription: boolean = extractionSettings?.spot_check_description ?? true
+    const spotFilteredList = spotWordList.length === 0
+      ? sellerFilteredList
+      : sellerFilteredList.filter((scraped: { title: string; description: string }) => {
+          const parts: string[] = []
+          if (spotCheckTitle) parts.push(scraped.title)
+          if (spotCheckDescription) parts.push(scraped.description ?? '')
+          const combined = parts.join(' ').toLowerCase()
+          return !spotWordList.some((word) => combined.includes(word))
+        })
+    const spotWordExcluded = sellerFilteredList.length - spotFilteredList.length
+
+    // 評価数除外(下限): セラーの総合評価数が閾値未満なら除外。取得できない
+    // 商品(null)は判定できないため除外しない(安全側)。
+    const ratingMin: number | null = extractionSettings?.rating_min ?? null
+    const ratingFilteredList = ratingMin === null
+      ? spotFilteredList
+      : spotFilteredList.filter((scraped: { sellerRatingCount: number | null }) =>
+          scraped.sellerRatingCount === null || scraped.sellerRatingCount >= ratingMin,
+        )
+    const lowRatingExcluded = spotFilteredList.length - ratingFilteredList.length
+
+    // 発送日数除外(上限)
+    const shippingDaysMax: number | null = extractionSettings?.shipping_days_max ?? null
+    const shippingFilteredList = shippingDaysMax === null
+      ? ratingFilteredList
+      : ratingFilteredList.filter((scraped: { shippingDays: number | null }) =>
+          scraped.shippingDays === null || scraped.shippingDays <= shippingDaysMax,
+        )
+    const slowShippingExcluded = ratingFilteredList.length - shippingFilteredList.length
+
+    // 最終更新月除外: 出品の最終更新日が指定月数より前なら除外
+    const updatedMonthsAgo: number | null = extractionSettings?.updated_months_ago ?? null
+    const staleFilteredList = updatedMonthsAgo === null
+      ? shippingFilteredList
+      : shippingFilteredList.filter((scraped: { sourceUpdatedAt: string | null }) => {
+          if (!scraped.sourceUpdatedAt) return true
+          const cutoff = new Date()
+          cutoff.setMonth(cutoff.getMonth() - updatedMonthsAgo)
+          return new Date(scraped.sourceUpdatedAt) >= cutoff
+        })
+    const staleExcluded = shippingFilteredList.length - staleFilteredList.length
+
+    // 価格範囲除外: 元の販売価格(仕入れ値)を対象とする。eBay出品価格は
+    // 為替レート取得・一括編集設定適用より後の段階で算出されるため、この
+    // 時点では未確定であり対象にできない(price_target='ebay'は商品編集
+    // 画面の手動除外パネルでのみ対応)。
+    const priceMin: number | null = extractionSettings?.price_min ?? null
+    const priceMax: number | null = extractionSettings?.price_max ?? null
+    const priceRangeFilteredList = (priceMin === null && priceMax === null)
+      ? staleFilteredList
+      : staleFilteredList.filter((scraped: { price: number | null }) => {
+          const price = scraped.price ?? 0
+          if (priceMin !== null && price < priceMin) return false
+          if (priceMax !== null && price > priceMax) return false
+          return true
+        })
+    const priceRangeExcluded = staleFilteredList.length - priceRangeFilteredList.length
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let setting: any = null
     if (bulkEditSettingId) {
@@ -214,7 +284,7 @@ export async function runScrape(
     // タイトル翻訳
     const titleEngine: string = extractionSettings?.title_engine ?? 'high'
     const titleEnabled: boolean = extractionSettings?.title_enabled ?? true
-    const originalTitles = sellerFilteredList.map((s: { title: string }) => s.title)
+    const originalTitles = priceRangeFilteredList.map((s: { title: string }) => s.title)
     let translatedTitles: string[] = originalTitles
     if (titleEnabled && process.env.OPENAI_API_KEY) {
       try {
@@ -256,7 +326,7 @@ export async function runScrape(
       }
     }
 
-    const rows = sellerFilteredList.map((scraped: {
+    const rows = priceRangeFilteredList.map((scraped: {
       sourceUrl: string; sourceSite: string; sourceItemId: string | null
       title: string; price: number | null; description: string
       images: string[]; condition: string | null
@@ -335,6 +405,11 @@ export async function runScrape(
       danger_word_excluded: dangerWordExcluded,
       vero_excluded: veroExcluded,
       individual_danger_seller_excluded: individualDangerSellerExcluded,
+      spot_word_excluded: spotWordExcluded,
+      low_rating_excluded: lowRatingExcluded,
+      slow_shipping_excluded: slowShippingExcluded,
+      stale_excluded: staleExcluded,
+      price_range_excluded: priceRangeExcluded,
       active_duplicate_excluded: activeDuplicateExcluded,
       title_duplicate_excluded: titleDuplicateExcluded,
       translated_duplicate_excluded: translatedDuplicateExcluded,

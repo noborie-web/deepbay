@@ -15,13 +15,14 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const db = admin()
-  const [settings, sellers, words, replaces, templates, vero] = await Promise.all([
+  const [settings, sellers, words, replaces, templates, vero, spots] = await Promise.all([
     db.from('extraction_settings').select('*').eq('user_id', user.id).single(),
     db.from('danger_sellers').select('*').eq('user_id', user.id).order('created_at'),
     db.from('danger_words').select('*').eq('user_id', user.id).order('created_at'),
     db.from('replace_words').select('*').eq('user_id', user.id).order('created_at'),
     db.from('html_templates').select('*').eq('user_id', user.id).order('created_at'),
     db.from('vero_brands').select('*').eq('user_id', user.id).order('created_at'),
+    db.from('spot_words').select('*').eq('user_id', user.id).order('created_at'),
   ])
 
   return NextResponse.json({
@@ -31,6 +32,7 @@ export async function GET() {
     replaces: replaces.data ?? [],
     templates: templates.data ?? [],
     vero: vero.data ?? [],
+    spots: spots.data ?? [],
   })
 }
 
@@ -102,6 +104,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   }
 
+  if (type === 'spot') {
+    if (Array.isArray(payload.words)) {
+      const rows = payload.words.map((word: string) => ({ user_id: user.id, word }))
+      const { error } = await db.from('spot_words').insert(rows)
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    } else {
+      const { error } = await db.from('spot_words').insert({ user_id: user.id, word: payload.word })
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+    return NextResponse.json({ ok: true })
+  }
+
   if (type === 'template') {
     const { error } = await db.from('html_templates').insert({ user_id: user.id, name: payload.name, content: payload.content ?? '' })
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -133,6 +147,7 @@ export async function DELETE(req: NextRequest) {
     word: 'danger_words',
     replace: 'replace_words',
     vero: 'vero_brands',
+    spot: 'spot_words',
     template: 'html_templates',
   }
   const table = tableMap[type]
