@@ -1,13 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   scrapeUrl: vi.fn(),
-  translateTitles: vi.fn(),
+  translateTitlesWithFailures: vi.fn(),
   fetchUsdJpyRate: vi.fn(),
 }))
 
 vi.mock('@/lib/scrapers', () => ({ scrapeUrl: mocks.scrapeUrl }))
-vi.mock('@/lib/translate', () => ({ translateTitles: mocks.translateTitles }))
+vi.mock('@/lib/translate', () => ({ translateTitlesWithFailures: mocks.translateTitlesWithFailures }))
 vi.mock('@/lib/exchange-rate', () => ({ fetchUsdJpyRate: mocks.fetchUsdJpyRate }))
 
 import { runScrape } from '@/lib/extraction-run'
@@ -33,10 +33,17 @@ function scrapedProduct(overrides: Record<string, unknown> = {}) {
 // 除外件数を記録・可視化する機能。まず現在実際に実行されている除外
 // (危険単語・active重複・タイトル重複・翻訳後タイトル重複)の件数を記録する。
 describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
+  const originalOpenAiKey = process.env.OPENAI_API_KEY
+
   beforeEach(() => {
     mocks.scrapeUrl.mockReset()
-    mocks.translateTitles.mockReset()
+    mocks.translateTitlesWithFailures.mockReset()
     mocks.fetchUsdJpyRate.mockReset().mockResolvedValue({ rate: 150, date: '2026-08-30' })
+  })
+
+  afterEach(() => {
+    if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY
+    else process.env.OPENAI_API_KEY = originalOpenAiKey
   })
 
   function makeDatabase(options: {
@@ -52,6 +59,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     updatedMonthsAgo?: number | null
     priceMin?: number | null
     priceMax?: number | null
+    titleEnabled?: boolean
   } = {}) {
     const extractionUpdates: Array<Record<string, unknown>> = []
     const insertedProducts: Array<Record<string, unknown>> = []
@@ -73,7 +81,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       if (table === 'extraction_settings') {
         return {
           data: {
-            title_enabled: false,
+            title_enabled: options.titleEnabled ?? false,
             exclude_active_duplicate: false,
             exclude_title_duplicate: (options.existingOriginalTitles ?? []).length > 0,
             exclude_translated_duplicate: false,
@@ -151,6 +159,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
@@ -187,6 +196,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
@@ -233,6 +243,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
@@ -288,6 +299,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
@@ -426,6 +438,52 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     })
   })
 
+  // ユーザー要望: 公式ツールの「除外詳細」と同等の項目(Phase 3)。以前は
+  // タイトル翻訳が一括処理で1件でも失敗すると全件が元タイトルへ
+  // フォールバックし、失敗商品を区別できなかった。商品単位でエラーを
+  // 捕捉し、失敗した商品だけを除外するようにした。
+  it('タイトル翻訳に失敗した商品だけを自動的に除外し、件数を記録する', async () => {
+    process.env.OPENAI_API_KEY = 'test-key'
+    mocks.scrapeUrl.mockResolvedValue([
+      scrapedProduct({ sourceItemId: 'item-1', title: '成功する商品' }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', title: '失敗する商品' }),
+    ])
+    mocks.translateTitlesWithFailures.mockResolvedValue([
+      { title: 'Successful Item', failed: false },
+      { title: '失敗する商品', failed: true },
+    ])
+    const { db, extractionUpdates, insertedProducts } = makeDatabase({ titleEnabled: true })
+
+    const result = await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    expect(result.status).toBe('completed')
+    expect(insertedProducts).toHaveLength(1)
+    expect(insertedProducts[0].original_title).toBe('成功する商品')
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toMatchObject({
+      translated_title_failed_excluded: 1,
+      completed_count: 1,
+    })
+  })
+
+  it('翻訳が全体的に失敗した場合(APIキー不正等)は、既存互換で全件を元タイトルにフォールバックする(商品を除外しない)', async () => {
+    process.env.OPENAI_API_KEY = 'test-key'
+    mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ title: '商品タイトル' })])
+    mocks.translateTitlesWithFailures.mockRejectedValue(new Error('APIキーが不正です'))
+    const { db, extractionUpdates, insertedProducts } = makeDatabase({ titleEnabled: true })
+
+    const result = await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    expect(result.status).toBe('completed')
+    expect(insertedProducts).toHaveLength(1)
+    expect(insertedProducts[0].original_title).toBe('商品タイトル')
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toMatchObject({
+      translated_title_failed_excluded: 0,
+      completed_count: 1,
+    })
+  })
+
   it('タイトル重複で除外された件数を記録する', async () => {
     mocks.scrapeUrl.mockResolvedValue([
       scrapedProduct({ sourceItemId: 'item-1', title: '既存商品と同じタイトル' }),
@@ -449,6 +507,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 1,
       translated_duplicate_excluded: 0,
@@ -476,6 +535,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
