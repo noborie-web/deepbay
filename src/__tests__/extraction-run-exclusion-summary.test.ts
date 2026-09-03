@@ -44,6 +44,14 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     dangerSellerUrls?: string[]
     veroBrands?: string[]
     existingOriginalTitles?: string[]
+    spotWords?: string[]
+    spotCheckTitle?: boolean
+    spotCheckDescription?: boolean
+    ratingMin?: number | null
+    shippingDaysMax?: number | null
+    updatedMonthsAgo?: number | null
+    priceMin?: number | null
+    priceMax?: number | null
   } = {}) {
     const extractionUpdates: Array<Record<string, unknown>> = []
     const insertedProducts: Array<Record<string, unknown>> = []
@@ -59,6 +67,9 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       if (table === 'vero_brands') {
         return { data: (options.veroBrands ?? []).map((brand) => ({ brand })), error: null }
       }
+      if (table === 'spot_words') {
+        return { data: (options.spotWords ?? []).map((word) => ({ word })), error: null }
+      }
       if (table === 'extraction_settings') {
         return {
           data: {
@@ -67,6 +78,13 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
             exclude_title_duplicate: (options.existingOriginalTitles ?? []).length > 0,
             exclude_translated_duplicate: false,
             html_template_id: null,
+            spot_check_title: options.spotCheckTitle ?? true,
+            spot_check_description: options.spotCheckDescription ?? true,
+            rating_min: options.ratingMin ?? null,
+            shipping_days_max: options.shippingDaysMax ?? null,
+            updated_months_ago: options.updatedMonthsAgo ?? null,
+            price_min: options.priceMin ?? null,
+            price_max: options.priceMax ?? null,
           },
           error: null,
         }
@@ -128,6 +146,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       danger_word_excluded: 1,
       vero_excluded: 0,
       individual_danger_seller_excluded: 0,
+      spot_word_excluded: 0,
+      low_rating_excluded: 0,
+      slow_shipping_excluded: 0,
+      stale_excluded: 0,
+      price_range_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
@@ -159,6 +182,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       danger_word_excluded: 0,
       vero_excluded: 0,
       individual_danger_seller_excluded: 0,
+      spot_word_excluded: 0,
+      low_rating_excluded: 0,
+      slow_shipping_excluded: 0,
+      stale_excluded: 0,
+      price_range_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
@@ -200,6 +228,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       danger_word_excluded: 0,
       vero_excluded: 1,
       individual_danger_seller_excluded: 0,
+      spot_word_excluded: 0,
+      low_rating_excluded: 0,
+      slow_shipping_excluded: 0,
+      stale_excluded: 0,
+      price_range_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
@@ -250,6 +283,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       danger_word_excluded: 0,
       vero_excluded: 0,
       individual_danger_seller_excluded: 1,
+      spot_word_excluded: 0,
+      low_rating_excluded: 0,
+      slow_shipping_excluded: 0,
+      stale_excluded: 0,
+      price_range_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
@@ -299,6 +337,95 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     )
   })
 
+  // ユーザー要望: 公式ツールの「除外詳細」と同等の項目(Phase 2)。評価数・
+  // 発送日数・最終更新月・価格範囲・スポット文字の閾値を抽出設定に保存
+  // できるようにし、抽出時にも自動適用する。
+  it('スポット文字がタイトルまたは商品説明に含まれる商品を自動的に除外する', async () => {
+    mocks.scrapeUrl.mockResolvedValue([
+      scrapedProduct({ sourceItemId: 'item-1', title: '難あり ジャケット' }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', description: 'シミあり' }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/3', sourceItemId: 'item-3', title: '美品 ジャケット' }),
+    ])
+    const { db, extractionUpdates } = makeDatabase({ spotWords: ['難あり', 'シミ'] })
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toMatchObject({ spot_word_excluded: 2, completed_count: 1 })
+  })
+
+  it('評価数が閾値未満のセラーの商品を自動的に除外する', async () => {
+    mocks.scrapeUrl.mockResolvedValue([
+      scrapedProduct({ sourceItemId: 'item-1', sellerRatingCount: 5 }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', sellerRatingCount: 50 }),
+    ])
+    const { db, extractionUpdates } = makeDatabase({ ratingMin: 10 })
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toMatchObject({ low_rating_excluded: 1, completed_count: 1 })
+  })
+
+  it('発送日数が閾値を超える商品を自動的に除外する', async () => {
+    mocks.scrapeUrl.mockResolvedValue([
+      scrapedProduct({ sourceItemId: 'item-1', shippingDays: 10 }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', shippingDays: 1 }),
+    ])
+    const { db, extractionUpdates } = makeDatabase({ shippingDaysMax: 3 })
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toMatchObject({ slow_shipping_excluded: 1, completed_count: 1 })
+  })
+
+  it('最終更新日が指定月数より前の商品を自動的に除外する', async () => {
+    const old = new Date()
+    old.setMonth(old.getMonth() - 6)
+    mocks.scrapeUrl.mockResolvedValue([
+      scrapedProduct({ sourceItemId: 'item-1', sourceUpdatedAt: old.toISOString() }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', sourceUpdatedAt: new Date().toISOString() }),
+    ])
+    const { db, extractionUpdates } = makeDatabase({ updatedMonthsAgo: 3 })
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toMatchObject({ stale_excluded: 1, completed_count: 1 })
+  })
+
+  it('価格範囲外の商品を自動的に除外する', async () => {
+    mocks.scrapeUrl.mockResolvedValue([
+      scrapedProduct({ sourceItemId: 'item-1', price: 500 }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', price: 50000 }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/3', sourceItemId: 'item-3', price: 5000 }),
+    ])
+    const { db, extractionUpdates } = makeDatabase({ priceMin: 1000, priceMax: 10000 })
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toMatchObject({ price_range_excluded: 2, completed_count: 1 })
+  })
+
+  it('閾値が未設定(null)ならPhase 2の各フィルタは何も除外しない(既存挙動を維持)', async () => {
+    mocks.scrapeUrl.mockResolvedValue([scrapedProduct()])
+    const { db, extractionUpdates } = makeDatabase()
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+    expect(completedUpdate?.exclusion_summary).toMatchObject({
+      spot_word_excluded: 0,
+      low_rating_excluded: 0,
+      slow_shipping_excluded: 0,
+      stale_excluded: 0,
+      price_range_excluded: 0,
+      completed_count: 1,
+    })
+  })
+
   it('タイトル重複で除外された件数を記録する', async () => {
     mocks.scrapeUrl.mockResolvedValue([
       scrapedProduct({ sourceItemId: 'item-1', title: '既存商品と同じタイトル' }),
@@ -317,6 +444,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       danger_word_excluded: 0,
       vero_excluded: 0,
       individual_danger_seller_excluded: 0,
+      spot_word_excluded: 0,
+      low_rating_excluded: 0,
+      slow_shipping_excluded: 0,
+      stale_excluded: 0,
+      price_range_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 1,
       translated_duplicate_excluded: 0,
@@ -339,6 +471,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       danger_word_excluded: 0,
       vero_excluded: 0,
       individual_danger_seller_excluded: 0,
+      spot_word_excluded: 0,
+      low_rating_excluded: 0,
+      slow_shipping_excluded: 0,
+      stale_excluded: 0,
+      price_range_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,

@@ -61,6 +61,11 @@ export interface ExtractionExclusionSummary {
   danger_word_excluded: number
   vero_excluded: number
   individual_danger_seller_excluded: number
+  spot_word_excluded: number
+  low_rating_excluded: number
+  slow_shipping_excluded: number
+  stale_excluded: number
+  price_range_excluded: number
   active_duplicate_excluded: number
   title_duplicate_excluded: number
   translated_duplicate_excluded: number

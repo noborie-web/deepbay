@@ -12,11 +12,21 @@ interface ExtractionSettings {
   exclude_active_duplicate: boolean
   exclude_title_duplicate: boolean
   exclude_translated_duplicate: boolean
+  // Phase 2: 評価数・発送日数・最終更新月・価格範囲・スポット文字の閾値。
+  // いずれもnull=無効(抽出時に判定しない)。
+  rating_min: number | null
+  shipping_days_max: number | null
+  updated_months_ago: number | null
+  price_min: number | null
+  price_max: number | null
+  spot_check_title: boolean
+  spot_check_description: boolean
 }
 
 interface DangerSeller { id: string; seller_url: string }
 interface DangerWord { id: string; word: string }
 interface VeroBrand { id: string; brand: string }
+interface SpotWord { id: string; word: string }
 interface ReplaceWord { id: string; before_word: string; after_word: string }
 interface HtmlTemplate { id: string; name: string; content: string; is_active: boolean }
 
@@ -28,6 +38,13 @@ const DEFAULT_SETTINGS: ExtractionSettings = {
   exclude_active_duplicate: true,
   exclude_title_duplicate: false,
   exclude_translated_duplicate: false,
+  rating_min: null,
+  shipping_days_max: null,
+  updated_months_ago: null,
+  price_min: null,
+  price_max: null,
+  spot_check_title: true,
+  spot_check_description: true,
 }
 
 function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
@@ -178,6 +195,7 @@ export default function ExtractionSettingsPage() {
   const [sellers, setSellers] = useState<DangerSeller[]>([])
   const [words, setWords] = useState<DangerWord[]>([])
   const [veroBrands, setVeroBrands] = useState<VeroBrand[]>([])
+  const [spotWords, setSpotWords] = useState<SpotWord[]>([])
   const [replaces, setReplaces] = useState<ReplaceWord[]>([])
   const [templates, setTemplates] = useState<HtmlTemplate[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
@@ -197,6 +215,7 @@ export default function ExtractionSettingsPage() {
         setSellers(data.sellers ?? [])
         setWords(data.words ?? [])
         setVeroBrands(data.vero ?? [])
+        setSpotWords(data.spots ?? [])
         setReplaces(data.replaces ?? [])
         setTemplates(data.templates ?? [])
         if (data.settings?.html_template_id) setActiveTemplateId(data.settings.html_template_id)
@@ -297,6 +316,42 @@ export default function ExtractionSettingsPage() {
     const data = await fetch('/api/extraction-settings').then((r) => r.json())
     setVeroBrands(data.vero ?? [])
     flash(`${brandList.length}件のVeroブランドを追加しました`)
+  }
+
+  async function addSpotWord(word: string) {
+    const res = await fetch('/api/extraction-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'spot', word }),
+    })
+    if (res.ok) {
+      const data = await fetch('/api/extraction-settings').then((r) => r.json())
+      setSpotWords(data.spots ?? [])
+    }
+  }
+
+  async function deleteSpotWord(id: string) {
+    await fetch('/api/extraction-settings', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'spot', id }) })
+    setSpotWords((prev) => prev.filter((w) => w.id !== id))
+  }
+
+  async function clearSpotWords() {
+    if (!confirm('スポット文字をすべて削除しますか？')) return
+    for (const w of spotWords) await fetch('/api/extraction-settings', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'spot', id: w.id }) })
+    setSpotWords([])
+  }
+
+  async function uploadSpotWordsCsv(rows: string[][]) {
+    const wordList = rows.map((r) => r[0]).filter(Boolean)
+    if (!wordList.length) return
+    await fetch('/api/extraction-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'spot', words: wordList }),
+    })
+    const data = await fetch('/api/extraction-settings').then((r) => r.json())
+    setSpotWords(data.spots ?? [])
+    flash(`${wordList.length}件のスポット文字を追加しました`)
   }
 
   async function addReplace(before: string, after: string) {
@@ -526,6 +581,112 @@ export default function ExtractionSettingsPage() {
             onCsvUpload={uploadWordsCsv}
             itemLabel="登録単語"
           />
+          <div className="mb-8">
+            <ListSection
+              title="スポット文字"
+              inputPlaceholder="除外文字"
+              items={spotWords.map((w) => ({ id: w.id, label: w.word }))}
+              onAdd={(word) => addSpotWord(word)}
+              onDelete={deleteSpotWord}
+              onClear={clearSpotWords}
+              onCsvDownload={() => downloadCsv('words', spotWords.map((w) => w.word), 'spot_words.csv')}
+              onCsvUpload={uploadSpotWordsCsv}
+              itemLabel="登録文字"
+            />
+            <div className="flex items-center gap-4 -mt-4 mb-2">
+              <span className="text-xs text-gray-500">判定対象:</span>
+              {([
+                ['spot_check_title', 'タイトル'],
+                ['spot_check_description', '商品詳細'],
+              ] as [keyof ExtractionSettings, string][]).map(([key, label]) => (
+                <label key={key} className="flex items-center gap-1 text-xs text-gray-600">
+                  <input
+                    type="checkbox"
+                    checked={settings[key] as boolean}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, [key]: e.target.checked }))}
+                  />
+                  {label}
+                </label>
+              ))}
+              <button
+                onClick={saveBasicSettings}
+                disabled={saving}
+                className="border border-green-500 text-green-600 rounded px-3 py-1 text-xs hover:bg-green-50 disabled:opacity-50"
+              >
+                判定対象を保存
+              </button>
+            </div>
+          </div>
+
+          {/* 評価数・発送日数・最終更新月・価格範囲: 抽出時に自動除外する閾値。
+              ブランド名や単語のようなリストではなく1件の設定値なので、
+              ListSectionではなく専用フォームで入力・保存する。 */}
+          <div className="mb-8 border rounded p-4 bg-gray-50">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-sm font-medium text-gray-700">評価数・発送日数・最終更新月・価格範囲(抽出時に自動除外)</p>
+              <button
+                onClick={saveBasicSettings}
+                disabled={saving}
+                className="border border-green-500 text-green-600 rounded px-3 py-1 text-xs hover:bg-green-50 disabled:opacity-50"
+              >
+                設定保存
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-gray-600">評価数(この件数未満のセラーを除外)</span>
+                <input
+                  type="number"
+                  value={settings.rating_min ?? ''}
+                  onChange={(e) => setSettings((prev) => ({ ...prev, rating_min: e.target.value === '' ? null : Number(e.target.value) }))}
+                  placeholder="未設定"
+                  className="w-28 border rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-gray-600">発送日数(この日数を超えたら除外)</span>
+                <input
+                  type="number"
+                  value={settings.shipping_days_max ?? ''}
+                  onChange={(e) => setSettings((prev) => ({ ...prev, shipping_days_max: e.target.value === '' ? null : Number(e.target.value) }))}
+                  placeholder="未設定"
+                  className="w-28 border rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-gray-600">最終更新月(この月数より前なら除外)</span>
+                <input
+                  type="number"
+                  value={settings.updated_months_ago ?? ''}
+                  onChange={(e) => setSettings((prev) => ({ ...prev, updated_months_ago: e.target.value === '' ? null : Number(e.target.value) }))}
+                  placeholder="未設定"
+                  className="w-28 border rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300"
+                />
+              </label>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-gray-600">価格範囲(元の販売価格)</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    value={settings.price_min ?? ''}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, price_min: e.target.value === '' ? null : Number(e.target.value) }))}
+                    placeholder="下限"
+                    className="w-20 border rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300"
+                  />
+                  <span className="text-gray-400">〜</span>
+                  <input
+                    type="number"
+                    value={settings.price_max ?? ''}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, price_max: e.target.value === '' ? null : Number(e.target.value) }))}
+                    placeholder="上限"
+                    className="w-20 border rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300"
+                  />
+                </div>
+              </div>
+            </div>
+            <p className="text-xs text-gray-400 mt-3">各項目とも空欄のままなら判定しません(除外されません)。</p>
+          </div>
+
           <ListSection
             title="置換単語"
             inputPlaceholder="置換前"
