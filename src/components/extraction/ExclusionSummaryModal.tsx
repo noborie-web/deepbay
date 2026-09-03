@@ -15,6 +15,7 @@ interface Props {
 const ROWS: { key: keyof ExtractionExclusionSummary; label: string }[] = [
   { key: 'detail_fetch_count', label: '詳細取得件数' },
   { key: 'danger_word_excluded', label: '危険単語除外' },
+  { key: 'vero_excluded', label: 'Vero除外' },
   { key: 'individual_danger_seller_excluded', label: '個別危険Seller除外' },
   { key: 'active_duplicate_excluded', label: 'active重複除外' },
   { key: 'title_duplicate_excluded', label: 'タイトル重複除外' },

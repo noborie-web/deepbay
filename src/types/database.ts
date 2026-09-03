@@ -56,6 +56,7 @@ export interface BulkEditSetting {
 export interface ExtractionExclusionSummary {
   detail_fetch_count: number
   danger_word_excluded: number
+  vero_excluded: number
   individual_danger_seller_excluded: number
   active_duplicate_excluded: number
   title_duplicate_excluded: number
