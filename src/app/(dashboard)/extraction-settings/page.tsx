@@ -16,6 +16,7 @@ interface ExtractionSettings {
 
 interface DangerSeller { id: string; seller_url: string }
 interface DangerWord { id: string; word: string }
+interface VeroBrand { id: string; brand: string }
 interface ReplaceWord { id: string; before_word: string; after_word: string }
 interface HtmlTemplate { id: string; name: string; content: string; is_active: boolean }
 
@@ -176,6 +177,7 @@ export default function ExtractionSettingsPage() {
   const [settings, setSettings] = useState<ExtractionSettings>(DEFAULT_SETTINGS)
   const [sellers, setSellers] = useState<DangerSeller[]>([])
   const [words, setWords] = useState<DangerWord[]>([])
+  const [veroBrands, setVeroBrands] = useState<VeroBrand[]>([])
   const [replaces, setReplaces] = useState<ReplaceWord[]>([])
   const [templates, setTemplates] = useState<HtmlTemplate[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
@@ -194,6 +196,7 @@ export default function ExtractionSettingsPage() {
         if (data.settings) setSettings({ ...DEFAULT_SETTINGS, ...data.settings })
         setSellers(data.sellers ?? [])
         setWords(data.words ?? [])
+        setVeroBrands(data.vero ?? [])
         setReplaces(data.replaces ?? [])
         setTemplates(data.templates ?? [])
         if (data.settings?.html_template_id) setActiveTemplateId(data.settings.html_template_id)
@@ -258,6 +261,42 @@ export default function ExtractionSettingsPage() {
     if (!confirm('危険単語をすべて削除しますか？')) return
     for (const w of words) await fetch('/api/extraction-settings', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'word', id: w.id }) })
     setWords([])
+  }
+
+  async function addVeroBrand(brand: string) {
+    const res = await fetch('/api/extraction-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'vero', brand }),
+    })
+    if (res.ok) {
+      const data = await fetch('/api/extraction-settings').then((r) => r.json())
+      setVeroBrands(data.vero ?? [])
+    }
+  }
+
+  async function deleteVeroBrand(id: string) {
+    await fetch('/api/extraction-settings', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'vero', id }) })
+    setVeroBrands((prev) => prev.filter((v) => v.id !== id))
+  }
+
+  async function clearVeroBrands() {
+    if (!confirm('Veroブランドをすべて削除しますか？')) return
+    for (const v of veroBrands) await fetch('/api/extraction-settings', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'vero', id: v.id }) })
+    setVeroBrands([])
+  }
+
+  async function uploadVeroBrandsCsv(rows: string[][]) {
+    const brandList = rows.map((r) => r[0]).filter(Boolean)
+    if (!brandList.length) return
+    await fetch('/api/extraction-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'vero', brands: brandList }),
+    })
+    const data = await fetch('/api/extraction-settings').then((r) => r.json())
+    setVeroBrands(data.vero ?? [])
+    flash(`${brandList.length}件のVeroブランドを追加しました`)
   }
 
   async function addReplace(before: string, after: string) {
@@ -454,6 +493,17 @@ export default function ExtractionSettingsPage() {
       {/* 抽出危険設定 */}
       {tab === 'danger' && (
         <div className="space-y-2">
+          <ListSection
+            title="Vero"
+            inputPlaceholder="除外ブランド名"
+            items={veroBrands.map((v) => ({ id: v.id, label: v.brand }))}
+            onAdd={(brand) => addVeroBrand(brand)}
+            onDelete={deleteVeroBrand}
+            onClear={clearVeroBrands}
+            onCsvDownload={() => downloadCsv('brands', veroBrands.map((v) => v.brand), 'vero_brands.csv')}
+            onCsvUpload={uploadVeroBrandsCsv}
+            itemLabel="登録ブランド"
+          />
           <ListSection
             title="危険セラー"
             inputPlaceholder="除外セラーurl"
