@@ -125,7 +125,56 @@ export class RakumaScraper extends BaseScraper {
       throw new ScraperError('検索結果が0件です', this.siteKey, url)
     }
 
-    return allProducts.slice(0, limit)
+    const limited = allProducts.slice(0, limit)
+
+    // ラクマの検索結果カードには出品者情報が含まれないため(メルカリ・
+    // ヤフオクと異なる)、危険セラー除外に出品者URLが必要な場合のみ、
+    // 商品ごとに個別ページへアクセスして取得する(コストが大きいため
+    // options.fetchSellerInfoが指定された時だけ実行する)。
+    if (options.fetchSellerInfo) {
+      return this.enrichSellerUrls(limited, userAgent, timeoutMs)
+    }
+
+    return limited
+  }
+
+  private async enrichSellerUrls(
+    products: ScrapedProduct[],
+    userAgent: string,
+    timeoutMs: number,
+  ): Promise<ScrapedProduct[]> {
+    const concurrency = 8
+    const enriched: ScrapedProduct[] = []
+
+    for (let i = 0; i < products.length; i += concurrency) {
+      const chunk = products.slice(i, i + concurrency)
+      const results = await Promise.all(chunk.map(async (product) => {
+        try {
+          const controller = new AbortController()
+          const timer = setTimeout(() => controller.abort(), timeoutMs)
+          try {
+            const res = await fetch(product.sourceUrl, {
+              headers: { 'User-Agent': userAgent, 'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3' },
+              signal: controller.signal,
+            })
+            if (!res.ok) return product
+            const html = await res.text()
+            const $ = cheerio.load(html)
+            const sellerUrl = $('a[href*="fril.jp/shop/"]').first().attr('href') ?? null
+            return { ...product, sellerUrl }
+          } finally {
+            clearTimeout(timer)
+          }
+        } catch {
+          // 出品者URL取得の失敗は抽出全体を止めない。sellerUrl未設定のまま返す
+          // (=危険セラー判定の対象外になるだけで、商品自体は取得できる)。
+          return product
+        }
+      }))
+      enriched.push(...results)
+    }
+
+    return enriched
   }
 
   parse($: cheerio.CheerioAPI, url: string): ScrapedProduct {
@@ -196,6 +245,10 @@ export class RakumaScraper extends BaseScraper {
       if (m) sellerRatingCount = parseInt(m[1], 10)
     }
 
+    // 危険セラー除外の個別商品判定用。実データ確認: 商品ページの
+    // ショップ情報リンク(fril.jp/shop/{id})が出品者プロフィールURL。
+    const sellerUrl = $('a[href*="fril.jp/shop/"]').first().attr('href') ?? null
+
     return {
       sourceUrl: url,
       sourceSite: this.siteKey,
@@ -209,6 +262,7 @@ export class RakumaScraper extends BaseScraper {
       sellerRatingCount,
       shippingDays,
       sourceUpdatedAt: null,
+      sellerUrl,
     }
   }
 }

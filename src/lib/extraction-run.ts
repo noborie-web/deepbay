@@ -89,6 +89,10 @@ export async function runScrape(
 
     const scrapedList = await scrapeUrl(url, {
       limit,
+      // 危険セラーが1件も登録されていなければ、出品者URL取得のための
+      // 追加コスト(ラクマ等、検索結果に出品者情報がないサイトでは商品
+      // ごとの個別ページアクセスが必要)を払わない。
+      fetchSellerInfo: sellerUrls.length > 0,
       onPage: async (fetched, total) => {
         const pct = Math.min(Math.round((fetched / total) * 90), 90)
         await supabase
