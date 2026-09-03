@@ -36,6 +36,9 @@ const NEXT_ITEM_HTML = `
   <img src="https://img.fril.jp/img/119621913/l/2938351678.jpg?1788044029">
   <img src="https://img.fril.jp/img/119621913/l/2938351679.jpg?1788044029">
   <img src="https://img.fril.jp/img/119621913/l/2938351680.jpg?1788044029">
+  <div class="row header-shopinfo shopinfo-area">
+    <a class="shopinfo-wrap shop_link clearfix" href="https://fril.jp/shop/7adc49225dc95e2039e789ae60b918e9">ショップへ</a>
+  </div>
 </body></html>
 `
 
@@ -70,6 +73,9 @@ describe('RakumaScraper.parse (単品ページ)', () => {
     expect(product.sellerRatingCount).toBe(234)
     expect(product.images).toHaveLength(3)
     expect(product.images).toContain('https://img.fril.jp/img/119621913/l/2938351680.jpg?1788044029')
+    // 危険セラー除外の個別商品判定用(実データ確認: 商品ページの
+    // ショップ情報リンクfril.jp/shop/{id})
+    expect(product.sellerUrl).toBe('https://fril.jp/shop/7adc49225dc95e2039e789ae60b918e9')
   })
 })
 
@@ -142,6 +148,74 @@ describe('RakumaScraper.scrape 検索ページの一括抽出', () => {
     try {
       const scraper = new RakumaScraper()
       await expect(scraper.scrape('https://fril.jp/s?query=nonexistent')).rejects.toThrow()
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  // ユーザー要望: ラクマの検索結果一括抽出でも危険セラー除外を有効にする。
+  // 検索結果カードには出品者情報が含まれないため、fetchSellerInfoが
+  // 指定された場合のみ商品ごとに個別ページへアクセスして取得する。
+  it('fetchSellerInfoが指定されていない場合、商品ごとの追加アクセスをせずsellerUrlは設定しない', async () => {
+    let itemPageRequests = 0
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      if (urlStr.startsWith('https://item.fril.jp/')) itemPageRequests += 1
+      return new Response(searchPageHtml([fakeCard('a1', 'Item A1', 1000, 1)]), { status: 200 })
+    }
+    try {
+      const scraper = new RakumaScraper()
+      const results = await scraper.scrape('https://fril.jp/s?query=nike', { limit: 1 })
+      expect(results[0].sellerUrl).toBeUndefined()
+      expect(itemPageRequests).toBe(0)
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('fetchSellerInfo:trueの場合、商品ごとに個別ページへアクセスして出品者URLを取得する', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      if (urlStr === 'https://item.fril.jp/a1') {
+        return new Response(
+          '<html><body><a class="shop_link" href="https://fril.jp/shop/seller-a">ショップへ</a></body></html>',
+          { status: 200 },
+        )
+      }
+      if (urlStr === 'https://item.fril.jp/a2') {
+        return new Response('<html><body>出品者リンクなし</body></html>', { status: 200 })
+      }
+      return new Response(
+        searchPageHtml([fakeCard('a1', 'Item A1', 1000, 2), fakeCard('a2', 'Item A2', 2000)]),
+        { status: 200 },
+      )
+    }
+    try {
+      const scraper = new RakumaScraper()
+      const results = await scraper.scrape('https://fril.jp/s?query=nike', { limit: 2, fetchSellerInfo: true })
+      expect(results.find((p) => p.sourceItemId === 'a1')?.sellerUrl).toBe('https://fril.jp/shop/seller-a')
+      expect(results.find((p) => p.sourceItemId === 'a2')?.sellerUrl).toBeNull()
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('個別ページの取得に失敗しても、抽出全体は失敗せずsellerUrl未設定のまま商品を返す', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      if (urlStr === 'https://item.fril.jp/a1') {
+        return new Response('error', { status: 500 })
+      }
+      return new Response(searchPageHtml([fakeCard('a1', 'Item A1', 1000, 1)]), { status: 200 })
+    }
+    try {
+      const scraper = new RakumaScraper()
+      const results = await scraper.scrape('https://fril.jp/s?query=nike', { limit: 1, fetchSellerInfo: true })
+      expect(results).toHaveLength(1)
+      expect(results[0].sellerUrl).toBeUndefined()
     } finally {
       globalThis.fetch = origFetch
     }

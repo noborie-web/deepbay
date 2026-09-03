@@ -178,6 +178,33 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     })
   })
 
+  // ラクマ等、検索結果に出品者情報がなく商品ごとの追加ページアクセスが
+  // 必要なサイトのコストを避けるため、危険セラーが1件も登録されていない
+  // 場合はscrapeUrlにfetchSellerInfo:falseを渡す。
+  it('危険セラーが登録されていなければfetchSellerInfo:falseでscrapeUrlを呼ぶ', async () => {
+    mocks.scrapeUrl.mockResolvedValue([scrapedProduct()])
+    const { db } = makeDatabase()
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    expect(mocks.scrapeUrl).toHaveBeenCalledWith(
+      'https://example.com/search',
+      expect.objectContaining({ fetchSellerInfo: false }),
+    )
+  })
+
+  it('危険セラーが1件でも登録されていればfetchSellerInfo:trueでscrapeUrlを呼ぶ', async () => {
+    mocks.scrapeUrl.mockResolvedValue([scrapedProduct()])
+    const { db } = makeDatabase({ dangerSellerUrls: ['https://jp.mercari.com/user/profile/999'] })
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    expect(mocks.scrapeUrl).toHaveBeenCalledWith(
+      'https://example.com/search',
+      expect.objectContaining({ fetchSellerInfo: true }),
+    )
+  })
+
   it('タイトル重複で除外された件数を記録する', async () => {
     mocks.scrapeUrl.mockResolvedValue([
       scrapedProduct({ sourceItemId: 'item-1', title: '既存商品と同じタイトル' }),

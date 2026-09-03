@@ -24,6 +24,12 @@ export interface ScraperOptions {
   timeoutMs?: number
   limit?: number  // 取得件数上限
   onPage?: (fetched: number, total: number) => void  // ページ取得後コールバック
+  // 危険セラー除外のため、検索結果一覧でも商品ごとの出品者URLを取得する。
+  // サイトによっては検索結果に出品者情報が含まれず、商品ごとに追加の
+  // ページアクセスが必要になる(ラクマ等)。呼び出し側(抽出パイプライン)が
+  // 危険セラーが1件も登録されていない場合はfalseのままにして、不要な
+  // 追加アクセスを避ける。
+  fetchSellerInfo?: boolean
 }
 
 export interface IScraper {
