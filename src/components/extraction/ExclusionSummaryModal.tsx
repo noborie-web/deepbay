@@ -8,12 +8,14 @@ interface Props {
 }
 
 // 既存ツール(公式)の「抽出結果確認」に相当する除外詳細モーダル。
-// 第一段階として、抽出パイプラインで実際に実行されている除外
-// (詳細取得件数・危険単語・active重複・タイトル重複・翻訳後タイトル重複・
-// 取得完了件数)のみを表示する。一括編集設定の除外条件(発送日数・評価数等)
-// を抽出時に自動適用する機能は未実装のため、この内訳には含まれない。
+// 抽出パイプラインで実際に実行されている除外を表示する。一括編集設定の
+// 除外条件(発送日数・評価数・最終更新月・価格範囲等)を抽出時に自動適用
+// する機能は未実装のため、この内訳には含まれない(Phase 2で対応予定)。
 const ROWS: { key: keyof ExtractionExclusionSummary; label: string }[] = [
   { key: 'detail_fetch_count', label: '詳細取得件数' },
+  { key: 'sold_out_excluded', label: '売り切れ除外' },
+  { key: 'no_image_excluded', label: '画像が1枚もない除外' },
+  { key: 'no_price_excluded', label: '販売価格が取得できない除外' },
   { key: 'danger_word_excluded', label: '危険単語除外' },
   { key: 'vero_excluded', label: 'Vero除外' },
   { key: 'individual_danger_seller_excluded', label: '個別危険Seller除外' },

@@ -107,15 +107,37 @@ export async function runScrape(
     // 除外詳細(公式ツールの「抽出結果確認」に相当する内訳)を段階ごとに記録する。
     const detailFetchCount = scrapedList.length
 
+    // 売り切れ除外: スクレイパーが在庫状況を取得できるサイト(現状Mercari)
+    // のみ対象。取得できないサイトはavailabilityが未設定('unknown'扱い)
+    // となり、判定せず素通りする(誤って除外しないための安全側の設計)。
+    const soldOutFilteredList = scrapedList.filter(
+      (scraped: { availability?: string }) => scraped.availability !== 'sold_out',
+    )
+    const soldOutExcluded = scrapedList.length - soldOutFilteredList.length
+
+    // 画像が1枚もない除外: eBay出品時に画像必須のため、画像0枚の商品は
+    // そもそも出品できず抽出結果に残す意味がない。
+    const noImageFilteredList = soldOutFilteredList.filter(
+      (scraped: { images: string[] }) => scraped.images && scraped.images.length > 0,
+    )
+    const noImageExcluded = soldOutFilteredList.length - noImageFilteredList.length
+
+    // 販売価格が取得できない除外: 価格が無いと利益計算・eBay出品価格を
+    // 設定できないため除外する。
+    const noPriceFilteredList = noImageFilteredList.filter(
+      (scraped: { price: number | null }) => scraped.price !== null && scraped.price !== undefined,
+    )
+    const noPriceExcluded = noImageFilteredList.length - noPriceFilteredList.length
+
     // 危険単語フィルタ
     const wordList: string[] = (dangerWords ?? []).map((w: { word: string }) => w.word.toLowerCase())
     const filteredList = wordList.length === 0
-      ? scrapedList
-      : scrapedList.filter((scraped: { title: string }) => {
+      ? noPriceFilteredList
+      : noPriceFilteredList.filter((scraped: { title: string }) => {
           const lower = scraped.title.toLowerCase()
           return !wordList.some((word) => lower.includes(word))
         })
-    const dangerWordExcluded = scrapedList.length - filteredList.length
+    const dangerWordExcluded = noPriceFilteredList.length - filteredList.length
 
     // Vero除外: これまで抽出パイプラインには一切含まれておらず、商品編集
     // 画面の「除外」タブでユーザーが手動で実行した場合しか除外されない
@@ -307,6 +329,9 @@ export async function runScrape(
 
     const exclusionSummary = {
       detail_fetch_count: detailFetchCount,
+      sold_out_excluded: soldOutExcluded,
+      no_image_excluded: noImageExcluded,
+      no_price_excluded: noPriceExcluded,
       danger_word_excluded: dangerWordExcluded,
       vero_excluded: veroExcluded,
       individual_danger_seller_excluded: individualDangerSellerExcluded,
