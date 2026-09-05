@@ -990,7 +990,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           {/* 手動データ取得 */}
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-2">データ取得</h3>
-            <p className="text-xs text-gray-500 mb-3">eBayのactiveリストを最新状態に更新します。自動同期がONの場合は毎朝9時に自動実行されます。</p>
+            <p className="text-xs text-gray-500 mb-3">eBayのactiveリストを最新状態に更新します。自動同期がONの場合は毎日9時台（JST）に自動実行されます。</p>
             <div className="flex items-center gap-3 flex-wrap">
               <button onClick={handleSync} disabled={syncing || !settings.has_token}
                 className={`px-4 py-2 text-sm rounded flex items-center gap-2 ${syncing || !settings.has_token ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
@@ -1143,7 +1143,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               <Toggle checked={settings.ebay_auto_sync} onChange={v => saveSetting({ ebay_auto_sync: v })} disabled={savingSettings || !settings.has_token} />
               <span className="text-sm text-gray-700">自動同期を行う</span>
             </div>
-            <p className="text-xs text-gray-500 mt-2">ONにした場合は9時にeBayのactive商品の情報を自動取得しツールに同期します。</p>
+            <p className="text-xs text-gray-500 mt-2">ONにした場合は毎日9時台（JST）にeBayのactive商品の情報を自動取得しツールに同期します。</p>
             {!settings.has_token && <p className="text-xs text-red-500 mt-1">eBayトークンが設定されていないため自動同期は無効です。</p>}
           </div>
           <hr />
