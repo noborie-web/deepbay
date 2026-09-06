@@ -80,6 +80,42 @@ describe('YahooShoppingScraper.parse', () => {
   })
 })
 
+// 実際のページで確認: 単品ページの<script id="__NEXT_DATA__">JSONの
+// props.pageProps.item.stock.isAvailable が実在庫を示す
+// (abc-martnet/7050940003044.html = true, renovatio/tss-129.html = false)。
+function htmlWithNextData(isAvailable: boolean | undefined): string {
+  const item = isAvailable === undefined ? {} : { stock: { isAvailable } }
+  const nextData = JSON.stringify({ props: { pageProps: { item } } })
+  return `<html><head><script id="__NEXT_DATA__" type="application/json">${nextData}</script></head><body></body></html>`
+}
+
+describe('YahooShoppingScraper.parse availability handling', () => {
+  it('__NEXT_DATA__のitem.stock.isAvailable=trueをavailableにマップする', () => {
+    const $ = cheerio.load(htmlWithNextData(true))
+    const scraper = new YahooShoppingScraper()
+    const product = scraper.parse($, 'https://store.shopping.yahoo.co.jp/abc-martnet/7050940003044.html')
+    expect(product.availability).toBe('available')
+  })
+
+  it('__NEXT_DATA__のitem.stock.isAvailable=falseをsold_outにマップする', () => {
+    const $ = cheerio.load(htmlWithNextData(false))
+    const scraper = new YahooShoppingScraper()
+    const product = scraper.parse($, 'https://store.shopping.yahoo.co.jp/renovatio/tss-129.html')
+    expect(product.availability).toBe('sold_out')
+  })
+
+  it('__NEXT_DATA__が存在しない、または解析できない場合はunknownになる', () => {
+    const $ = cheerio.load('<html><head></head><body></body></html>')
+    const scraper = new YahooShoppingScraper()
+    const product = scraper.parse($, 'https://store.shopping.yahoo.co.jp/store1/item1.html')
+    expect(product.availability).toBe('unknown')
+
+    const $broken = cheerio.load('<html><head><script id="__NEXT_DATA__" type="application/json">not json</script></head><body></body></html>')
+    const productBroken = scraper.parse($broken, 'https://store.shopping.yahoo.co.jp/store1/item1.html')
+    expect(productBroken.availability).toBe('unknown')
+  })
+})
+
 describe('YahooShoppingScraper.matches', () => {
   it('単品ページURLにマッチする', () => {
     const scraper = new YahooShoppingScraper()

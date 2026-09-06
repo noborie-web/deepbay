@@ -6,6 +6,7 @@ import type { ScrapedProduct, ScraperOptions } from './types'
 interface TrefacOffer {
   price?: string | number
   itemCondition?: string
+  availability?: string
 }
 
 interface TrefacProductJsonLd {
@@ -32,6 +33,17 @@ const PAGE_SIZE = 90 // 実データで確認したサイト側の1ページあ�
 // URL形式)を取得する。
 function upsizeImage(src: string): string {
   return src.replace(/\/w\d+\//, '/')
+}
+
+// 実際のページで確認: 単品ページのJSON-LDには
+// offers.availability = "http://schema.org/InStock" (在庫あり) /
+// "http://schema.org/SoldOut" (売り切れ) が正しく出力される
+// (例: SUNSEAの売り切れ商品 c2693687 で確認)。
+const AVAILABILITY_MAP: Record<string, ScrapedProduct['availability']> = {
+  'http://schema.org/InStock': 'available',
+  'https://schema.org/InStock': 'available',
+  'http://schema.org/SoldOut': 'sold_out',
+  'https://schema.org/SoldOut': 'sold_out',
 }
 
 export class TrefacScraper extends BaseScraper {
@@ -119,6 +131,13 @@ export class TrefacScraper extends BaseScraper {
         const price = priceText ? parseInt(priceText.replace(/[^0-9]/g, ''), 10) || null : null
         const imgSrc = link.find('img').attr('src') ?? ''
 
+        // 実際のページで確認: 検索結果一覧では、売り切れ商品のサムネイルに
+        // <span class="p-itemlist_soldout"><i class="p-itemlist_soldout_child">SOLD OUT</i></span>
+        // が重ねて表示される(例: SUNSEAの検索結果一覧)。
+        const availability: ScrapedProduct['availability'] = $el.find('.p-itemlist_soldout').length > 0
+          ? 'sold_out'
+          : 'available'
+
         pageProducts.push({
           sourceUrl: href ? new URL(href, 'https://www.trefac.jp').toString() : url,
           sourceSite: this.siteKey,
@@ -132,6 +151,7 @@ export class TrefacScraper extends BaseScraper {
           sellerRatingCount: null,
           shippingDays: null,
           sourceUpdatedAt: null,
+          availability,
         })
       })
 
@@ -196,6 +216,7 @@ export class TrefacScraper extends BaseScraper {
       sellerRatingCount: null,
       shippingDays: null,
       sourceUpdatedAt: null,
+      availability: (data?.offers?.availability ? AVAILABILITY_MAP[data.offers.availability] : undefined) ?? 'unknown',
     }
   }
 }

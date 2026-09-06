@@ -13,6 +13,18 @@ function upsizeImage(src: string): string {
   return src.replace(/_L\.(jpg|png)$/i, '_LL.$1')
 }
 
+// 実際のページで確認: 単品ページの売り切れ商品には
+// <span class="item__soldOut">SOLD OUT</span> と、カート投入ボタンの
+// 代わりに <p class="c-button c-button__inactive">SOLD OUT</p> を含む
+// <div class="c-button-area--soldout">(または旧テンプレートの
+// product-detail__addcart--sold)が表示される(例: pid=2101219846620)。
+// 検索結果一覧では、売り切れ商品のサムネイルに
+// <p class="product__item--soldout"><span class="product__item--soldout-text">SOLDOUT</span></p>
+// が重ねて表示される。
+function isSoldOutDetail($: cheerio.CheerioAPI): boolean {
+  return $('.item__soldOut, .c-button-area--soldout, .product-detail__addcart--sold').length > 0
+}
+
 export class BrandOffScraper extends BaseScraper {
   name = 'ブランドオフ'
   siteKey = 'brandoff'
@@ -87,6 +99,9 @@ export class BrandOffScraper extends BaseScraper {
         const priceText = $el.find('.product__price--numeric').first().text().trim()
         const price = priceText ? parseInt(priceText.replace(/[^0-9]/g, ''), 10) || null : null
         const imgSrc = $el.find('img').first().attr('src') ?? ''
+        const availability: ScrapedProduct['availability'] = $el.find('.product__item--soldout').length > 0
+          ? 'sold_out'
+          : 'available'
 
         pageProducts.push({
           sourceUrl: href ? new URL(href, 'https://www.brandoff-store.com').toString() : url,
@@ -101,6 +116,7 @@ export class BrandOffScraper extends BaseScraper {
           sellerRatingCount: null,
           shippingDays: null,
           sourceUpdatedAt: null,
+          availability,
         })
       })
 
@@ -168,6 +184,7 @@ export class BrandOffScraper extends BaseScraper {
       sellerRatingCount: null,
       shippingDays: null,
       sourceUpdatedAt: null,
+      availability: isSoldOutDetail($) ? 'sold_out' : 'available',
     }
   }
 }

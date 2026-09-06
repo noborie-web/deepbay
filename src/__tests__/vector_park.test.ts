@@ -77,6 +77,44 @@ describe('VectorParkScraper.parse', () => {
   })
 })
 
+// 実際のページで確認: 売り切れ商品(例: 013-202102130630)は
+// カート投入フォームの代わりに <p class="red mt10 mb10 f16 fb">売り切れました</p>
+// を表示する。JSON-LDのoffers.availabilityは売り切れ後も"InStock"のまま
+// 更新されないため信頼できず、このテキストの有無で判定する。
+describe('VectorParkScraper.parse availability handling', () => {
+  it('価格直下に「売り切れました」がある場合はsold_outになる', () => {
+    const html = `<html><body>
+      <p class="sp">販売価格：<span id="c_sale_price">2,800</span>円（税込）</p>
+      <p class="point">獲得ポイント：140ポイント(5％還元)</p>
+      <p class="red mt10 mb10 f16 fb">売り切れました</p>
+    </body></html>`
+    const $ = cheerio.load(html)
+    const scraper = new VectorParkScraper()
+    const product = scraper.parse($, 'https://vector-park.jp/item/013-202102130630/')
+    expect(product.availability).toBe('sold_out')
+  })
+
+  it('「売り切れました」が無い(カート投入フォームがある)場合はavailableになる', () => {
+    const html = `<html><body>
+      <p class="sp">販売価格：<span id="c_sale_price">5,000</span>円（税込）</p>
+      <div class="cart_form"><input type="hidden" name="job" value="do_put_item"/></div>
+    </body></html>`
+    const $ = cheerio.load(html)
+    const scraper = new VectorParkScraper()
+    const product = scraper.parse($, 'https://vector-park.jp/item/034-902609050036/')
+    expect(product.availability).toBe('available')
+  })
+
+  it('JSON-LDのoffers.availability="InStock"は信頼せず、テキストが無ければavailableとする', () => {
+    // SAMPLE_HTMLのJSON-LDにはavailability:"InStock"が含まれるが、
+    // 実ページでは売り切れ後もこの値が更新されないため参照しない。
+    const $ = cheerio.load(SAMPLE_HTML)
+    const scraper = new VectorParkScraper()
+    const product = scraper.parse($, 'https://vector-park.jp/item/004-202608280393/')
+    expect(product.availability).toBe('available')
+  })
+})
+
 describe('VectorParkScraper.matches', () => {
   it('単品ページURLにマッチする', () => {
     const scraper = new VectorParkScraper()
