@@ -34,12 +34,33 @@ export async function GET(req: NextRequest) {
     const userId = settings.user_id
     const userResult: Record<string, unknown> = { user_id: userId }
     const runSupplierCheck = async () => {
+      const startedAt = new Date().toISOString()
       try {
-        userResult.supplier_check = await checkSupplierListings(db, userId, 50)
+        const supplierCheckResult = await checkSupplierListings(db, userId, 50)
+        userResult.supplier_check = supplierCheckResult
+        // ユーザー要望: 「仕入れ価格の高騰に確実に対応」。この結果を
+        // inventory_runsに記録しないと、cronのJSONレスポンス以外では
+        // 誰も確認できず実質見えない状態になるため、他のアクション
+        // (同期・取り下げ・価格改定・積み上げ)と同様に記録する。
+        await db.from('inventory_runs').insert({
+          user_id: userId,
+          run_type: 'supplier_check',
+          status: supplierCheckResult.failed > 0 ? 'failed' : 'completed',
+          result_summary: supplierCheckResult,
+          started_at: startedAt,
+          finished_at: new Date().toISOString(),
+        })
       } catch (error) {
-        userResult.supplier_check = {
-          error: error instanceof Error ? error.message : String(error),
-        }
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        userResult.supplier_check = { error: errorMessage }
+        await db.from('inventory_runs').insert({
+          user_id: userId,
+          run_type: 'supplier_check',
+          status: 'failed',
+          error_message: errorMessage,
+          started_at: startedAt,
+          finished_at: new Date().toISOString(),
+        })
       }
     }
 
