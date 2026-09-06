@@ -90,6 +90,13 @@ export class RakumaScraper extends BaseScraper {
         const price = priceRaw ? parseInt(priceRaw, 10) || null : null
         const imgSrc = $el.find('img').attr('data-original') ?? $el.find('img').attr('src') ?? ''
 
+        // 実際のページで確認: 検索結果カードは売り切れ商品に
+        // <div class="item-box__soldout_ribbon">SOLD OUT</div> を含む
+        // (通常の在庫あり商品のカードにはこの要素が無い)。
+        const availability: ScrapedProduct['availability'] = $el.find('.item-box__soldout_ribbon').length > 0
+          ? 'sold_out'
+          : 'available'
+
         pageProducts.push({
           sourceUrl: `https://item.fril.jp/${itemId}`,
           sourceSite: this.siteKey,
@@ -103,6 +110,7 @@ export class RakumaScraper extends BaseScraper {
           sellerRatingCount: null,
           shippingDays: null,
           sourceUpdatedAt: null,
+          availability,
         })
       })
 
@@ -249,6 +257,15 @@ export class RakumaScraper extends BaseScraper {
     // ショップ情報リンク(fril.jp/shop/{id})が出品者プロフィールURL。
     const sellerUrl = $('a[href*="fril.jp/shop/"]').first().attr('href') ?? null
 
+    // 実際のページで確認: 商品ページの<meta property="product:availability">が
+    // 在庫あり商品は"in stock"、売り切れ商品は"out of stock"になる
+    // (売り切れ商品にはさらに写真エリアに
+    // <div class="photo-box__soldout_ribbon">SOLD OUT</div>も表示される)。
+    const availabilityMeta = $('meta[property="product:availability"]').attr('content')
+    const availability: ScrapedProduct['availability'] = availabilityMeta === 'out of stock'
+      ? 'sold_out'
+      : (availabilityMeta === 'in stock' ? 'available' : 'unknown')
+
     return {
       sourceUrl: url,
       sourceSite: this.siteKey,
@@ -262,6 +279,7 @@ export class RakumaScraper extends BaseScraper {
       sellerRatingCount,
       shippingDays,
       sourceUpdatedAt: null,
+      availability,
       sellerUrl,
     }
   }

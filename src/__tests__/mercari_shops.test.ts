@@ -103,6 +103,24 @@ describe('MercariShopsScraper.parse', () => {
     expect(scraper.urlPattern.test('https://jp.mercari.com/item/m12345678')).toBe(false)
     expect(scraper.urlPattern.test('https://www.trefac.jp/store/1/c1/')).toBe(false)
   })
+
+  it('extracts availability as available when there is no disabled-purchase-button', () => {
+    const $ = cheerio.load(SAMPLE_HTML)
+    const scraper = new MercariShopsScraper()
+    const product = scraper.parse($, 'https://jp.mercari.com/shops/product/vpw2oNgfkCfiJ5Zuhre93a')
+    expect(product.availability).toBe('available')
+  })
+
+  // 実際のページで確認(2026-09-06): 売り切れ商品はレンダリング後のHTMLで
+  // 購入ボタンが<button disabled data-testid="disabled-purchase-button">に
+  // 置き換わる(未ログイン状態でも表示され、在庫あり商品にはこのdata-testidは無い)。
+  it('extracts availability as sold_out when disabled-purchase-button is present', () => {
+    const html = `${SAMPLE_HTML.replace('</body>', '<button disabled data-testid="disabled-purchase-button">購入手続きへ</button></body>')}`
+    const $ = cheerio.load(html)
+    const scraper = new MercariShopsScraper()
+    const product = scraper.parse($, 'https://jp.mercari.com/shops/product/vpw2oNgfkCfiJ5Zuhre93a')
+    expect(product.availability).toBe('sold_out')
+  })
 })
 
 describe('MercariShopsScraper.matches', () => {

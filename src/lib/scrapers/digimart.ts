@@ -166,6 +166,14 @@ export class DigimartScraper extends BaseScraper {
       if (ogImage) images.push(ogImage)
     }
 
+    // 実際のページで確認: 売り切れ(在庫切れ)商品の詳細ページには
+    // <div class="outOfStockBlock ...">こちらの商品は[在庫切れ]のため
+    // 購入できません。</div>が表示され、購入用の「カートに入れる」ボタンが
+    // 無くなる。在庫あり商品にはこのブロックが存在しない。
+    const availability: ScrapedProduct['availability'] = $('.outOfStockBlock').length > 0
+      ? 'sold_out'
+      : 'available'
+
     return {
       sourceUrl: url,
       sourceSite: this.siteKey,
@@ -179,6 +187,7 @@ export class DigimartScraper extends BaseScraper {
       sellerRatingCount: null,
       shippingDays: null,
       sourceUpdatedAt: null,
+      availability,
     }
   }
 }

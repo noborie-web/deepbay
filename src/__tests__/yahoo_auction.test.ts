@@ -62,6 +62,60 @@ describe('YahooAuctionScraper.parse (__NEXT_DATA__経由)', () => {
   })
 })
 
+// 実際のオークションページを終了直前(status: "open")と終了直後(status: "closed")
+// で取得し比較して確認した売り切れ検知の実データ(2026-09-06)。
+describe('YahooAuctionScraper.parse (売り切れ検知)', () => {
+  function itemHtmlWithStatus(status: string): string {
+    return `
+<html><body><script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+  props: {
+    pageProps: {
+      initialState: {
+        item: {
+          detail: {
+            item: {
+              auctionId: 't1242588488',
+              title: 'テスト商品',
+              price: 900,
+              status,
+            },
+          },
+        },
+      },
+    },
+  },
+})}</script></body></html>
+`
+  }
+
+  it('item.statusが"open"の場合はavailableになる', () => {
+    const $ = cheerio.load(itemHtmlWithStatus('open'))
+    const scraper = new YahooAuctionScraper()
+    const product = scraper.parse($, 'https://auctions.yahoo.co.jp/jp/auction/t1242588488')
+    expect(product.availability).toBe('available')
+  })
+
+  it('item.statusが"closed"の場合はsold_outになる(実データ確認: オークション終了後にstatusがopen→closedへ変化)', () => {
+    const $ = cheerio.load(itemHtmlWithStatus('closed'))
+    const scraper = new YahooAuctionScraper()
+    const product = scraper.parse($, 'https://auctions.yahoo.co.jp/jp/auction/t1242588488')
+    expect(product.availability).toBe('sold_out')
+  })
+
+  it('__NEXT_DATA__が無いフォールバック時もstatusが取得できればavailabilityを設定する', () => {
+    const html = `<html><body>
+<h1 class="ProductTitle__text">フォールバック商品名</h1>
+<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+      props: { pageProps: { item: { status: 'closed' } } },
+    })}</script>
+</body></html>`
+    const $ = cheerio.load(html)
+    const scraper = new YahooAuctionScraper()
+    const product = scraper.parse($, 'https://auctions.yahoo.co.jp/jp/auction/t999')
+    expect(product.availability).toBe('sold_out')
+  })
+})
+
 function fakeCard(id: string, price: number, sellerId?: string): string {
   const sellerAttr = sellerId ? ` data-auction-auc-seller-id="${sellerId}"` : ''
   return `<li class="Product"><a class="Product__imageLink" data-auction-id="${id}" data-auction-title="Item ${id}" data-auction-img="https://example.com/img/${id}.jpg?pri=l&amp;w=300&amp;h=300&amp;up=0" data-auction-price="${price}"${sellerAttr} href="https://auctions.yahoo.co.jp/jp/auction/${id}"></a></li>`
