@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest'
 import * as cheerio from 'cheerio'
 import { RakumaScraper } from '../lib/scrapers/rakuma'
 
-function fakeCard(id: string, name: string, price: number, totalResults?: number): string {
+function fakeCard(id: string, name: string, price: number, totalResults?: number, soldOut = false): string {
   const totalAttr = totalResults !== undefined ? ` data-rat-cp-totalresults="${totalResults}"` : ''
-  return `<a href="https://item.fril.jp/${id}" data-rat-item_name="${name}" data-rat-price="${price}"${totalAttr}><img data-original="https://img.fril.jp/img/999/m/${id}.jpg"></a>`
+  // 実際のページで確認: 売り切れ商品の検索結果カードには
+  // <div class="item-box__soldout_ribbon">SOLD OUT</div>が含まれる。
+  const ribbon = soldOut ? '<div class="item-box__soldout_ribbon">SOLD OUT</div>' : ''
+  return `<a href="https://item.fril.jp/${id}" data-rat-item_name="${name}" data-rat-price="${price}"${totalAttr}><img data-original="https://img.fril.jp/img/999/m/${id}.jpg">${ribbon}</a>`
 }
 
 function searchPageHtml(cards: string[]): string {
@@ -18,6 +21,7 @@ const NEXT_ITEM_HTML = `
   <meta property="og:image" content="https://img.fril.jp/img/119621913/l/2938351680.jpg?1788044029" />
   <meta property="product:price:amount" content="1900" />
   <meta property="product:retailer_item_id" content="119621913" />
+  <meta property="product:availability" content="in stock" />
 </head>
 <body>
   <p class="item__value_area"><span class="item__price"><span class="item__currency-symbol">¥</span>1,900</span></p>
@@ -76,6 +80,39 @@ describe('RakumaScraper.parse (単品ページ)', () => {
     // 危険セラー除外の個別商品判定用(実データ確認: 商品ページの
     // ショップ情報リンクfril.jp/shop/{id})
     expect(product.sellerUrl).toBe('https://fril.jp/shop/7adc49225dc95e2039e789ae60b918e9')
+    // 実データ確認: 在庫あり商品は<meta property="product:availability" content="in stock">
+    expect(product.availability).toBe('available')
+  })
+})
+
+// 実際の商品ページを比較して確認した売り切れ検知の実データ(2026-09-06):
+// 在庫あり商品は<meta property="product:availability" content="in stock">、
+// 売り切れ商品は同content="out of stock"になる。
+describe('RakumaScraper.parse (売り切れ検知)', () => {
+  function itemHtmlWithAvailability(content: string): string {
+    return `
+<html><head>
+  <meta property="og:title" content="売り切れテスト商品 | フリマアプリ ラクマ" />
+  <meta property="product:price:amount" content="1900" />
+  <meta property="product:availability" content="${content}" />
+</head>
+<body>
+  <div class="photo-box__soldout_ribbon">SOLD OUT</div>
+</body></html>`
+  }
+
+  it('product:availabilityが"in stock"の場合はavailableになる', () => {
+    const $ = cheerio.load(itemHtmlWithAvailability('in stock'))
+    const scraper = new RakumaScraper()
+    const product = scraper.parse($, 'https://item.fril.jp/soldouttest')
+    expect(product.availability).toBe('available')
+  })
+
+  it('product:availabilityが"out of stock"の場合はsold_outになる', () => {
+    const $ = cheerio.load(itemHtmlWithAvailability('out of stock'))
+    const scraper = new RakumaScraper()
+    const product = scraper.parse($, 'https://item.fril.jp/soldouttest')
+    expect(product.availability).toBe('sold_out')
   })
 })
 
@@ -92,6 +129,25 @@ describe('RakumaScraper.scrape 検索ページの一括抽出', () => {
       expect(results).toHaveLength(2)
       expect(results[0]).toMatchObject({ sourceItemId: 'a1', price: 1000, title: 'Item A1' })
       expect(results[0].images[0]).toContain('/l/')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('検索結果カードのSOLD OUTリボンから売り切れ商品を判定する', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async () => new Response(
+      searchPageHtml([
+        fakeCard('a1', 'Item A1', 1000, 2, true),
+        fakeCard('a2', 'Item A2', 2000, undefined, false),
+      ]),
+      { status: 200 },
+    )
+    try {
+      const scraper = new RakumaScraper()
+      const results = await scraper.scrape('https://fril.jp/s?query=nike', { limit: 2 })
+      expect(results.find((p) => p.sourceItemId === 'a1')?.availability).toBe('sold_out')
+      expect(results.find((p) => p.sourceItemId === 'a2')?.availability).toBe('available')
     } finally {
       globalThis.fetch = origFetch
     }

@@ -224,6 +224,13 @@ export class MercariShopsScraper implements IScraper {
 
     const fallbackImage = $('meta[property="og:image"]').attr('content')
 
+    // 実際のページで確認: 売り切れ商品はレンダリング後のHTMLで購入ボタンが
+    // <button disabled data-testid="disabled-purchase-button">に置き換わる
+    // (未ログイン状態でも表示され、在庫あり商品にはこのdata-testidは無い)。
+    const availability: ScrapedProduct['availability'] = $('[data-testid="disabled-purchase-button"]').length > 0
+      ? 'sold_out'
+      : 'available'
+
     return {
       sourceUrl: url,
       sourceSite: this.siteKey,
@@ -237,6 +244,7 @@ export class MercariShopsScraper implements IScraper {
       sellerRatingCount: null,
       shippingDays: null,
       sourceUpdatedAt: null,
+      availability,
     }
   }
 }

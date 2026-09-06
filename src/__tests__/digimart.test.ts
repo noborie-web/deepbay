@@ -113,6 +113,30 @@ describe('DigimartScraper.parse', () => {
       'https://img.digimart.net/prdimg/m/bb.jpg',
     ])
   })
+
+  it('extracts availability as available when there is no outOfStockBlock', () => {
+    const $ = cheerio.load(SAMPLE_HTML)
+    const scraper = new DigimartScraper()
+    const product = scraper.parse($, 'https://www.digimart.net/cat1/shop1484/DS10704096/')
+    expect(product.availability).toBe('available')
+  })
+
+  it('extracts availability as sold_out when outOfStockBlock is present(実際のページで確認: 在庫切れ商品には<div class="outOfStockBlock">こちらの商品は[在庫切れ]のため購入できません。</div>が表示され、カートに入れるボタンが無くなる)', () => {
+    const html = `
+      <html><head>
+        <meta property="og:title" content="ブランド／型番／中古／&yen;10000／状態：A"/>
+      </head><body>
+        <p class="price">&yen;10000</p>
+        <div class="outOfStockBlock outOfStockBlockUpper">
+          <p>こちらの商品は<span>[在庫切れ]</span>のため購入できません。</p>
+        </div>
+      </body></html>
+    `
+    const $ = cheerio.load(html)
+    const scraper = new DigimartScraper()
+    const product = scraper.parse($, 'https://www.digimart.net/cat01/shop1/DS1/')
+    expect(product.availability).toBe('sold_out')
+  })
 })
 
 function fakeSearchCard(id: string, title: string, price: number, condition: string): string {

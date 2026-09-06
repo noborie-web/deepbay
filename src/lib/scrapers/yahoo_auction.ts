@@ -316,6 +316,14 @@ export class YahooAuctionScraper extends BaseScraper {
         if (isFinite(d.getTime())) sourceUpdatedAt = d.toISOString()
       }
 
+      // 実際のページで確認: __NEXT_DATA__のitem.statusは進行中は"open"、
+      // 終了後(落札成立/不成立を問わず、いずれにせよ購入不可)は"closed"になる
+      // (実データ: 出品を終了直前まで監視し、終了後に再取得してstatusが
+      // "open"→"closed"に変わることを確認済み)。
+      const availability: ScrapedProduct['availability'] = nextItem.status === 'open'
+        ? 'available'
+        : (nextItem.status === 'closed' ? 'sold_out' : 'unknown')
+
       return {
         sourceUrl: url,
         sourceSite: this.siteKey,
@@ -329,6 +337,7 @@ export class YahooAuctionScraper extends BaseScraper {
         sellerRatingCount,
         shippingDays,
         sourceUpdatedAt,
+        availability,
         sellerUrl,
       }
     }
@@ -381,6 +390,11 @@ export class YahooAuctionScraper extends BaseScraper {
 
     // 最終更新日: __NEXT_DATA__ から取得を試みる
     let sourceUpdatedAt: string | null = null
+    // 実際のページで確認: item.statusが"open"/"closed"で入札可否を表す
+    // (上のNext.jsデータ経路と同じフィールド。フォールバック経路でも
+    // __NEXT_DATA__自体は解析できるがitem構造の位置が異なる場合があるため
+    // ここで別途取得する)。
+    let availability: ScrapedProduct['availability'] = 'unknown'
     const nextDataText = $('#__NEXT_DATA__').text()
     if (nextDataText) {
       try {
@@ -391,6 +405,8 @@ export class YahooAuctionScraper extends BaseScraper {
           ?? null
         const raw = item?.end_time ?? item?.endTime ?? item?.updated ?? item?.updatedAt ?? null
         if (raw) sourceUpdatedAt = new Date(typeof raw === 'number' ? raw * 1000 : raw).toISOString()
+        if (item?.status === 'open') availability = 'available'
+        else if (item?.status === 'closed') availability = 'sold_out'
       } catch { /* ignore */ }
     }
 
@@ -407,6 +423,7 @@ export class YahooAuctionScraper extends BaseScraper {
       sellerRatingCount,
       shippingDays,
       sourceUpdatedAt,
+      availability,
     }
   }
 }
