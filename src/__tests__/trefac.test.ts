@@ -77,6 +77,35 @@ describe('TrefacScraper.parse', () => {
   })
 })
 
+// 実際のページで確認: 単品ページのJSON-LDには
+// offers.availability = "http://schema.org/InStock"(在庫あり) /
+// "http://schema.org/SoldOut"(売り切れ)が正しく出力される
+// (例: SUNSEAの売り切れ商品 c2693687)。
+describe('TrefacScraper.parse availability handling', () => {
+  it('offers.availability="http://schema.org/InStock"をavailableにマップする', () => {
+    const $ = cheerio.load(SAMPLE_HTML)
+    const scraper = new TrefacScraper()
+    const product = scraper.parse($, 'https://www.trefac.jp/store/1003007257179003/c4330114/')
+    expect(product.availability).toBe('available')
+  })
+
+  it('offers.availability="http://schema.org/SoldOut"をsold_outにマップする', () => {
+    const html = SAMPLE_HTML.replace('http://schema.org/InStock', 'http://schema.org/SoldOut')
+    const $ = cheerio.load(html)
+    const scraper = new TrefacScraper()
+    const product = scraper.parse($, 'https://www.trefac.jp/store/3090050695421360/c2693687/')
+    expect(product.availability).toBe('sold_out')
+  })
+
+  it('offers.availabilityが存在しない場合はunknownになる', () => {
+    const html = `<html><head><meta property="og:title" content="フォールバック商品名"/></head><body></body></html>`
+    const $ = cheerio.load(html)
+    const scraper = new TrefacScraper()
+    const product = scraper.parse($, 'https://www.trefac.jp/store/999/c1/')
+    expect(product.availability).toBe('unknown')
+  })
+})
+
 describe('TrefacScraper.matches', () => {
   it('単品ページURLにマッチする', () => {
     const scraper = new TrefacScraper()
@@ -94,10 +123,16 @@ describe('TrefacScraper.matches', () => {
   })
 })
 
-function fakeSearchItem(id: string, brand: string, name: string, priceClass: string, price: number): string {
+function fakeSearchItem(id: string, brand: string, name: string, priceClass: string, price: number, soldOut = false): string {
+  // 実際のページで確認: 売り切れ商品には
+  // <span class="p-itemlist_soldout"><i class="p-itemlist_soldout_child">SOLD OUT</i></span>
+  // がサムネイルに重ねて表示される(例: SUNSEAの検索結果一覧)。
+  const soldOutBadge = soldOut
+    ? '<span class="p-itemlist_soldout"><i class="p-itemlist_soldout_child">SOLD OUT</i></span>'
+    : ''
   return `<li class="p-itemlist_item">
     <a href="/store/x/${id}/" class="p-itemlist_btn">
-      <p class="p-itemlist_img"><img src="https://www.trefac.jp/image/item/x/w144/x_01_abcd.jpeg" alt="${brand}）の古着「${name}」｜色"></p>
+      <p class="p-itemlist_img"><img src="https://www.trefac.jp/image/item/x/w144/x_01_abcd.jpeg" alt="${brand}）の古着「${name}」｜色">${soldOutBadge}</p>
       <p class="p-itemlist_brand">${brand}</p>
       <p class="${priceClass}">&yen;${price} <span class="p-typo_caption1">税込</span></p>
     </a>
@@ -126,6 +161,26 @@ describe('TrefacScraper.scrape 検索ページの一括抽出', () => {
       expect(results[0]).toMatchObject({ sourceItemId: 'c1', price: 1000, title: 'NIKE Item One' })
       expect(results[1]).toMatchObject({ sourceItemId: 'c2', price: 2000, title: 'NIKE Item Two' })
       expect(results[0].images[0]).not.toContain('/w144/')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('検索結果一覧のp-itemlist_soldoutバッジからavailabilityを判定する', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async () => new Response(
+      searchPageHtml([
+        fakeSearchItem('c301', 'SUNSEA', 'Sold Item', 'p-price2_a', 38000, true),
+        fakeSearchItem('c302', 'SUNSEA', 'Available Item', 'p-price2_a', 12000, false),
+      ], '2'),
+      { status: 200 },
+    )
+    try {
+      const scraper = new TrefacScraper()
+      const results = await scraper.scrape('https://www.trefac.jp/store/search_result.html?srchword=sunsea', { limit: 2 })
+      expect(results).toHaveLength(2)
+      expect(results[0].availability).toBe('sold_out')
+      expect(results[1].availability).toBe('available')
     } finally {
       globalThis.fetch = origFetch
     }

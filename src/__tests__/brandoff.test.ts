@@ -91,6 +91,37 @@ describe('BrandOffScraper.parse', () => {
   })
 })
 
+// 実際のページで確認: 売り切れ商品の単品ページには
+// <span class="item__soldOut">SOLD OUT</span> と、カート投入ボタンの代わりに
+// <div class="c-button-area--soldout"><p class="c-button c-button__inactive">SOLD OUT</p></div>
+// が表示される(例: pid=2101219846620)。
+describe('BrandOffScraper.parse availability handling', () => {
+  it('c-button-area--soldoutがある場合はsold_outになる', () => {
+    const html = `${SAMPLE_HTML}
+      <div class="c-button-area--soldout"><p class="c-button c-button__inactive">SOLD OUT</p></div>
+    `
+    const $ = cheerio.load(html)
+    const scraper = new BrandOffScraper()
+    const product = scraper.parse($, 'https://www.brandoff-store.com/Form/Product/ProductDetail.aspx?shop=0&pid=2101219846620&cat=110103')
+    expect(product.availability).toBe('sold_out')
+  })
+
+  it('item__soldOutがある場合もsold_outになる', () => {
+    const html = `${SAMPLE_HTML}<span class="item__soldOut">SOLD OUT</span>`
+    const $ = cheerio.load(html)
+    const scraper = new BrandOffScraper()
+    const product = scraper.parse($, 'https://www.brandoff-store.com/Form/Product/ProductDetail.aspx?shop=0&pid=2101219846620&cat=110103')
+    expect(product.availability).toBe('sold_out')
+  })
+
+  it('売り切れマークが無い場合はavailableになる', () => {
+    const $ = cheerio.load(SAMPLE_HTML)
+    const scraper = new BrandOffScraper()
+    const product = scraper.parse($, 'https://www.brandoff-store.com/Form/Product/ProductDetail.aspx?shop=0&pid=2101220102241&cat=115')
+    expect(product.availability).toBe('available')
+  })
+})
+
 describe('BrandOffScraper.matches', () => {
   it('単品ページURLにマッチする', () => {
     const scraper = new BrandOffScraper()
@@ -108,11 +139,18 @@ describe('BrandOffScraper.matches', () => {
   })
 })
 
-function fakeSearchItem(pid: string, title: string, price: number): string {
+function fakeSearchItem(pid: string, title: string, price: number, soldOut = false): string {
+  // 実際のページで確認: 売り切れ商品のサムネイルには
+  // <p class="product__item--soldout"><span class="product__item--soldout-text">SOLDOUT</span></p>
+  // が重ねて表示される(例: pid=2101219846620)。
+  const soldOutBadge = soldOut
+    ? '<p class="product__item--soldout"><span class="product__item--soldout-text">SOLDOUT</span></p>'
+    : ''
   return `<div class="product__item">
     <a href="/Form/Product/ProductDetail.aspx?shop=0&amp;pid=${pid}&amp;cat=1">
       <img src="/Contents/ProductImages/0/${pid}_L.jpg" alt="${title}">
     </a>
+    ${soldOutBadge}
     <div class="product__item--name">${title}</div>
     <div class="product__price"><span class="product__price--numeric">&yen;${price}</span></div>
   </div>`
@@ -136,6 +174,26 @@ describe('BrandOffScraper.scrape 検索ページの一括抽出', () => {
       expect(results).toHaveLength(1)
       expect(results[0]).toMatchObject({ sourceItemId: '1001', title: 'Item One', price: 1000 })
       expect(results[0].images[0]).toContain('_LL.jpg')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('検索結果一覧のproduct__item--soldoutバッジからavailabilityを判定する', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async () => new Response(
+      searchPageHtml([
+        fakeSearchItem('4001', 'Sold Item', 70000, true),
+        fakeSearchItem('4002', 'Available Item', 30000, false),
+      ], '2'),
+      { status: 200 },
+    )
+    try {
+      const scraper = new BrandOffScraper()
+      const results = await scraper.scrape('https://www.brandoff-store.com/Form/Product/ProductList.aspx?swd=test', { limit: 2 })
+      expect(results).toHaveLength(2)
+      expect(results[0].availability).toBe('sold_out')
+      expect(results[1].availability).toBe('available')
     } finally {
       globalThis.fetch = origFetch
     }

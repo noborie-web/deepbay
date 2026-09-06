@@ -6,7 +6,6 @@ import type { ScrapedProduct, ScraperOptions } from './types'
 interface VectorParkOffer {
   price?: string | number
   itemCondition?: string[] | string
-  availability?: string
 }
 
 interface VectorParkProductJsonLd {
@@ -27,6 +26,16 @@ function upsizeImage(src: string): string {
   return src
     .replace(/\/\/image\d*\.vector-park\.jp\//, '//image.vector-park.jp/')
     .replace(/\/images\/item\/thumb\/\d+x\d+\//, '/images/item/original2/')
+}
+
+// 実際のページで確認: JSON-LDのoffers.availabilityは売り切れ後も
+// "InStock"のまま更新されず信頼できない(例: 013-202102130630は
+// 2021年発売のレコードで、JSON-LDはInStockだが実際は売り切れ済み)。
+// 実際の売り切れ状態は、価格直下に出る
+// <p class="red ... fb">売り切れました</p> の有無で判定するのが正しい
+// (在庫あり商品ではこの要素の代わりにカート投入フォームが表示される)。
+function isSoldOut($: cheerio.CheerioAPI): boolean {
+  return $('p.red').toArray().some((el) => $(el).text().trim() === '売り切れました')
 }
 
 export class VectorParkScraper extends BaseScraper {
@@ -188,6 +197,7 @@ export class VectorParkScraper extends BaseScraper {
       sellerRatingCount: null,
       shippingDays: null,
       sourceUpdatedAt: null,
+      availability: isSoldOut($) ? 'sold_out' : 'available',
     }
   }
 }

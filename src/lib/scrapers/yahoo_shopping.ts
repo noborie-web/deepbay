@@ -17,6 +17,28 @@ function parseBeacon(str: string): Record<string, string> {
   return obj
 }
 
+// 実際のページで確認: 単品ページの<script id="__NEXT_DATA__">に埋め込まれた
+// JSONの props.pageProps.item.stock.isAvailable が実際の在庫状態を示す
+// (true=在庫あり、false=売り切れ)。カラー/サイズ違いなどの選択肢がある
+// 商品でも、このitem直下のstockは「いずれかの選択肢が購入可能か」を表す
+// 商品全体のフラグになっている(実データで確認済み: 一部カラーのみ売り切れの
+// 商品ではtrueのまま、全選択肢が売り切れの商品(例: 郡山うねめ通り店の
+// SUNSEA古着)ではfalseになる)。JSON-LDのofferにはavailability自体が
+// 出力されないケースがあり信頼できないため、こちらを正とする。
+function parseAvailability($: cheerio.CheerioAPI): ScrapedProduct['availability'] {
+  const raw = $('script#__NEXT_DATA__').first().text()
+  if (!raw) return 'unknown'
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data: any = JSON.parse(raw)
+    const isAvailable = data?.props?.pageProps?.item?.stock?.isAvailable
+    if (typeof isAvailable === 'boolean') return isAvailable ? 'available' : 'sold_out'
+  } catch {
+    // JSON解析に失敗した場合はunknownのまま
+  }
+  return 'unknown'
+}
+
 // 検索URLは /search/{keyword}/{sortCode}(/{page})?/ というパス構造。
 // 既存のページ番号セグメントがあれば正規化して除去し、指定ページのURLを組み立てる。
 function buildPageUrl(baseUrl: URL, page: number): string {
@@ -187,6 +209,7 @@ export class YahooShoppingScraper extends BaseScraper {
       sellerRatingCount: null,
       shippingDays: null,
       sourceUpdatedAt: null,
+      availability: parseAvailability($),
     }
   }
 }
