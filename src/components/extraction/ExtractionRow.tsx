@@ -20,6 +20,44 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
   const [exclusionSummaryOpen, setExclusionSummaryOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
+  // メモ欄インライン編集
+  const [memo, setMemo] = useState(extraction.memo ?? '')
+  const [editingMemo, setEditingMemo] = useState(false)
+  const [memoDraft, setMemoDraft] = useState(memo)
+  const [savingMemo, setSavingMemo] = useState(false)
+  const memoInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (editingMemo) memoInputRef.current?.focus()
+  }, [editingMemo])
+
+  function startEditingMemo() {
+    setMemoDraft(memo)
+    setEditingMemo(true)
+  }
+
+  async function saveMemo() {
+    const next = memoDraft.trim()
+    setEditingMemo(false)
+    if (next === memo) return
+    setSavingMemo(true)
+    const prev = memo
+    setMemo(next)
+    try {
+      const res = await fetch(`/api/extractions/${extraction.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memo: next }),
+      })
+      if (!res.ok) throw new Error()
+    } catch {
+      setMemo(prev)
+      alert('メモの保存に失敗しました')
+    } finally {
+      setSavingMemo(false)
+    }
+  }
+
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -108,7 +146,31 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
         </div>
         <div className="flex items-center gap-1">
           <span className="text-gray-400">メモ:</span>
-          <button className="hover:text-gray-900"><Pencil size={11} /></button>
+          {editingMemo ? (
+            <input
+              ref={memoInputRef}
+              value={memoDraft}
+              onChange={(e) => setMemoDraft(e.target.value)}
+              onBlur={saveMemo}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); saveMemo() }
+                if (e.key === 'Escape') { e.preventDefault(); setEditingMemo(false) }
+              }}
+              className="border rounded px-1 py-0.5 text-xs w-24 focus:outline-none focus:ring-1 focus:ring-blue-300"
+            />
+          ) : (
+            <>
+              {memo && <span className="truncate max-w-[100px]" title={memo}>{memo}</span>}
+              <button
+                aria-label="メモを編集"
+                onClick={startEditingMemo}
+                disabled={savingMemo}
+                className="hover:text-gray-900 disabled:opacity-50"
+              >
+                <Pencil size={11} />
+              </button>
+            </>
+          )}
         </div>
       </div>
 

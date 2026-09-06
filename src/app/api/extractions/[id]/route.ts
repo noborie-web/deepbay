@@ -3,6 +3,34 @@ import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { findBlockedProductDeletions, LISTED_PRODUCT_DELETE_ERROR } from '@/lib/product-deletion'
 
+// ユーザー要望: 既存ツール(公式)の抽出一覧と同様、行の「メモ」欄を
+// 鉛筆アイコンから直接編集・保存できるようにする。
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const body = await req.json().catch(() => ({})) as { memo?: unknown }
+  if (typeof body.memo !== 'string') {
+    return NextResponse.json({ error: 'memoは文字列で指定してください' }, { status: 400 })
+  }
+
+  const admin = createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+
+  const { error } = await admin
+    .from('extractions')
+    .update({ memo: body.memo, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('user_id', user.id)
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ ok: true, memo: body.memo })
+}
+
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const supabase = await createClient()
