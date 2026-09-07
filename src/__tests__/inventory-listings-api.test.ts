@@ -6,6 +6,7 @@ let mockUser: { id: string } | null = { id: 'user-1' }
 const {
   mockSelect,
   mockEq,
+  mockGt,
   mockOr,
   mockOrder,
   mockRange,
@@ -13,6 +14,7 @@ const {
 } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockEq: vi.fn(),
+  mockGt: vi.fn(),
   mockOr: vi.fn(),
   mockOrder: vi.fn(),
   mockRange: vi.fn(),
@@ -32,6 +34,7 @@ vi.mock('@supabase/supabase-js', () => ({
     from: vi.fn(() => ({
       select: mockSelect.mockReturnThis(),
       eq: mockEq.mockReturnThis(),
+      gt: mockGt.mockReturnThis(),
       or: mockOr.mockReturnThis(),
       order: mockOrder.mockReturnThis(),
       range: mockRange,
@@ -45,6 +48,7 @@ describe('GET /api/inventory/listings', () => {
     mockUser = { id: 'user-1' }
     mockSelect.mockClear()
     mockEq.mockClear()
+    mockGt.mockClear()
     mockOr.mockClear()
     mockOrder.mockClear()
     mockRange.mockReset().mockResolvedValue({
@@ -121,6 +125,32 @@ describe('GET /api/inventory/listings', () => {
       'custom_label.ilike.%camera  test%',
     ].join(','))
     expect(mockRange).toHaveBeenCalledWith(100, 149)
+  })
+
+  // ユーザー要望: 在庫管理画面上部の集計カード(出品中・売却済み)クリック
+  // で、この一覧も同じ条件に絞り込みたい。
+  it('status=listedのとき在庫数(quantity)が1以上の商品だけに絞り込む', async () => {
+    const { GET } = await import('@/app/api/inventory/listings/route')
+    await GET(request('?status=listed'))
+
+    expect(mockGt).toHaveBeenCalledWith('quantity', 0)
+    expect(mockEq).not.toHaveBeenCalledWith('quantity', 0)
+  })
+
+  it('status=soldのとき在庫数(quantity)が0の商品だけに絞り込む', async () => {
+    const { GET } = await import('@/app/api/inventory/listings/route')
+    await GET(request('?status=sold'))
+
+    expect(mockEq).toHaveBeenCalledWith('quantity', 0)
+    expect(mockGt).not.toHaveBeenCalled()
+  })
+
+  it('statusが未指定/totalなら在庫数での絞り込みをしない', async () => {
+    const { GET } = await import('@/app/api/inventory/listings/route')
+    await GET(request())
+
+    expect(mockGt).not.toHaveBeenCalled()
+    expect(mockEq).not.toHaveBeenCalledWith('quantity', 0)
   })
 
   it('falls back to page one and returns database errors', async () => {

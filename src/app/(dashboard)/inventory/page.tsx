@@ -39,11 +39,14 @@ export default async function InventoryPage() {
           間に挟まるeBay在庫管理パネルはchildrenとして渡し、元のレイアウト
           順序(カード→パネル→テーブル)を保つ。 */}
       <InventoryProductsSection items={items}>
-        <InventoryPanel
-          listings={activeListings}
-          listingCount={listingsResult.count ?? activeListings.length}
-          hasToken={hasToken}
-        />
+        {(filter) => (
+          <InventoryPanel
+            listings={activeListings}
+            listingCount={listingsResult.count ?? activeListings.length}
+            hasToken={hasToken}
+            statusFilter={filter}
+          />
+        )}
       </InventoryProductsSection>
     </div>
   )

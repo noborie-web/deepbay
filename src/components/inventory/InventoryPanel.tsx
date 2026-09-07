@@ -32,10 +32,15 @@ interface DupCheckConfig {
   created_at: string
 }
 
+export type InventoryStatusFilter = 'total' | 'draft' | 'listed' | 'sold'
+
 interface Props {
   listings: InventoryActiveListing[]
   listingCount: number
   hasToken: boolean
+  // ユーザー要望: 在庫管理画面上部の集計カードをクリックしたら、この
+  // 「eBay商品一覧」タブも同じ条件で絞り込みたい。
+  statusFilter?: InventoryStatusFilter
 }
 
 interface MatchingProduct {
@@ -152,7 +157,7 @@ function downloadCsvBlob(csv: string, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-export default function InventoryPanel({ listings: initialListings, listingCount: initialListingCount, hasToken: initialHasToken }: Props) {
+export default function InventoryPanel({ listings: initialListings, listingCount: initialListingCount, hasToken: initialHasToken, statusFilter = 'total' }: Props) {
   const [tab, setTab] = useState<Tab>('暗号化復元')
   const [listings, setListings] = useState<InventoryActiveListing[]>(initialListings)
 
@@ -291,12 +296,20 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     setDupLoaded(true)
   }, [dupLoaded])
 
-  const loadEbayListings = useCallback(async (pageNumber: number, searchValue: string) => {
+  const loadEbayListings = useCallback(async (pageNumber: number, searchValue: string, status: InventoryStatusFilter = 'total') => {
+    // 「下書き」はeBayに出品済みのActiveリストという性質上、
+    // このタブには該当が存在しないためAPIを呼ばず空表示にする。
+    if (status === 'draft') {
+      setListings([]); setEbayListingTotal(0); setUnmatchedTotal(0)
+      setEbayListingPage(1); setEbayListingTotalPages(1); setEbayAppliedSearch(searchValue)
+      return
+    }
     setEbayListingsLoading(true)
     setEbayListingsError(null)
     try {
       const params = new URLSearchParams({ page: String(pageNumber) })
       if (searchValue) params.set('q', searchValue)
+      if (status === 'listed' || status === 'sold') params.set('status', status)
       const res = await fetch(`/api/inventory/listings?${params.toString()}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'eBay商品一覧の取得に失敗しました')
@@ -415,7 +428,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
 
   const handleTabChange = (t: Tab) => {
     setTab(t)
-    if (t === 'eBay商品一覧') loadEbayListings(1, ebayAppliedSearch)
+    if (t === 'eBay商品一覧') loadEbayListings(1, ebayAppliedSearch, statusFilter)
     if (t === '稼働状況') { loadRuns(); loadActionSummary() }
     if (t === '設定') loadSettings()
     if (t === '積み上げ設定') loadStacking()
@@ -424,6 +437,18 @@ export default function InventoryPanel({ listings: initialListings, listingCount
 
   // クリックで初回ロードが走るようにする
   useEffect(() => { /* initial tab: no preload */ }, [])
+
+  // ユーザー要望: 在庫管理画面上部の集計カードをクリックしたら、既に
+  // 「eBay商品一覧」タブを開いている場合もその場で絞り込みが反映される
+  // ようにする(タブ切り替え時の再読み込みはhandleTabChangeが担う)。
+  const isInitialStatusFilter = useRef(true)
+  useEffect(() => {
+    if (isInitialStatusFilter.current) { isInitialStatusFilter.current = false; return }
+    // effect本体で直接setStateすると連鎖レンダリングを招くため、既存の
+    // openMatchingQueue等と同様にタスクをずらして呼び出す。
+    if (tab === 'eBay商品一覧') window.setTimeout(() => loadEbayListings(1, ebayAppliedSearch, statusFilter), 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter])
 
   // 暗号化復元
   const handleLookup = async () => {
@@ -761,6 +786,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               <p className="mt-1 text-xs text-gray-500">
                 eBayから取得した商品を表示しています。閲覧専用のため、出品内容は変更されません。
               </p>
+              {statusFilter !== 'total' && (
+                <p className="mt-1 text-xs text-blue-600">
+                  絞り込み中: {statusFilter === 'draft' ? '下書き(eBay出品済みリストには該当がありません)' : statusFilter === 'listed' ? '出品中(在庫数1以上)' : '売却済み(在庫数0)'}
+                </p>
+              )}
             </div>
             <p className="text-sm text-gray-600">
               全 <strong className="text-gray-900">{ebayListingTotal.toLocaleString()}</strong> 件
@@ -789,7 +819,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             className="flex gap-2"
             onSubmit={(event) => {
               event.preventDefault()
-              loadEbayListings(1, ebayListingSearch.trim())
+              loadEbayListings(1, ebayListingSearch.trim(), statusFilter)
             }}
           >
             <input
@@ -812,7 +842,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 disabled={ebayListingsLoading}
                 onClick={() => {
                   setEbayListingSearch('')
-                  loadEbayListings(1, '')
+                  loadEbayListings(1, '', statusFilter)
                 }}
                 className="px-3 py-2 border text-gray-600 text-sm rounded hover:bg-gray-50 disabled:opacity-50"
               >
@@ -919,7 +949,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               <button
                 type="button"
                 disabled={ebayListingsLoading || ebayListingPage <= 1}
-                onClick={() => loadEbayListings(ebayListingPage - 1, ebayAppliedSearch)}
+                onClick={() => loadEbayListings(ebayListingPage - 1, ebayAppliedSearch, statusFilter)}
                 className="px-3 py-1.5 border rounded text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-40"
               >
                 前へ
@@ -927,7 +957,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               <button
                 type="button"
                 disabled={ebayListingsLoading || ebayListingPage >= ebayListingTotalPages}
-                onClick={() => loadEbayListings(ebayListingPage + 1, ebayAppliedSearch)}
+                onClick={() => loadEbayListings(ebayListingPage + 1, ebayAppliedSearch, statusFilter)}
                 className="px-3 py-1.5 border rounded text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-40"
               >
                 次へ
