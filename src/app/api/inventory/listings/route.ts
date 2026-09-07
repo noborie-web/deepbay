@@ -25,10 +25,22 @@ export async function GET(request: NextRequest) {
   const search = rawSearch.replace(/[(),]/g, ' ').trim()
   const from = (page - 1) * PAGE_SIZE
 
+  // ユーザー要望: 在庫管理画面上部の集計カード(出品中・売却済み)を
+  // クリックしたら、このeBay商品一覧タブも同じ条件で絞り込みたい。
+  // 同期対象は既にeBayの「Active」出品のみなので、在庫数(quantity)の
+  // 有無で判定する: 残数が1以上あれば出品中、0なら売り切れとみなす
+  // (checkSupplierListingsが仕入れ元売り切れ時にquantityを0にする挙動
+  // と同じ基準)。「下書き」はeBayに出品済みのActiveリストという性質上
+  // 該当が存在しないため、呼び出し元(フロント)でAPIを呼ばず空表示にする。
+  const status = request.nextUrl.searchParams.get('status')
+
   let query = admin()
     .from('inventory_active_listings')
     .select('*', { count: 'exact' })
     .eq('user_id', user.id)
+
+  if (status === 'listed') query = query.gt('quantity', 0)
+  if (status === 'sold') query = query.eq('quantity', 0)
 
   if (search) {
     const pattern = `%${search}%`
