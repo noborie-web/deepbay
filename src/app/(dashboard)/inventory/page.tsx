@@ -2,7 +2,6 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import type { Product, InventoryActiveListing } from '@/types/database'
-import InventoryPanel from '@/components/inventory/InventoryPanel'
 import InventoryProductsSection from '@/components/inventory/InventoryProductsSection'
 import { hasInventoryAuthentication } from '@/lib/inventory-auth'
 
@@ -34,20 +33,17 @@ export default async function InventoryPage() {
       <h1 className="text-lg font-semibold mb-6 text-gray-800">在庫管理</h1>
 
       {/* 集計カード(クリックで絞り込み) + eBay在庫管理パネル + 商品テーブル
-          (総商品数・下書きは選択削除可)。カードとテーブルは絞り込み・選択
-          状態を共有するため1つのクライアントコンポーネントにまとめ、
-          間に挟まるeBay在庫管理パネルはchildrenとして渡し、元のレイアウト
-          順序(カード→パネル→テーブル)を保つ。 */}
-      <InventoryProductsSection items={items}>
-        {(filter) => (
-          <InventoryPanel
-            listings={activeListings}
-            listingCount={listingsResult.count ?? activeListings.length}
-            hasToken={hasToken}
-            statusFilter={filter}
-          />
-        )}
-      </InventoryProductsSection>
+          (総商品数・下書きは選択削除可)。カード・パネル・テーブルは絞り込み
+          状態を共有するため、サーバーコンポーネントのこのページから
+          データだけを渡し、実際の描画は1つのクライアントコンポーネント
+          (InventoryProductsSection)にまとめている(childrenに関数を渡すと
+          サーバー/クライアント境界を越えられずクラッシュするため)。 */}
+      <InventoryProductsSection
+        items={items}
+        listings={activeListings}
+        listingCount={listingsResult.count ?? activeListings.length}
+        hasToken={hasToken}
+      />
     </div>
   )
 }
