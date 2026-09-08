@@ -6,6 +6,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import InventoryProductsSection from '@/components/inventory/InventoryProductsSection'
 import type { Product } from '@/types/database'
 
+vi.mock('@/lib/supabase/client', () => ({
+  createClient: () => ({}),
+}))
+
+// InventoryProductsSectionはInventoryPanel(eBay商品一覧タブ等)を内部で
+// 描画するため、その分のpropsも渡す。このテストファイルでは商品テーブル側
+// の挙動のみを検証する。
+const panelProps = { listings: [], listingCount: 0, hasToken: false }
+
 function makeProduct(overrides: Partial<Product> = {}): Product {
   return {
     id: 'p1',
@@ -59,7 +68,7 @@ describe('InventoryProductsSection: 集計カードの絞り込みと選択削�
       makeProduct({ id: 'p2', listing_status: 'listed', original_title: '出品中商品' }),
       makeProduct({ id: 'p3', listing_status: 'sold', original_title: '売却済み商品' }),
     ]
-    render(<InventoryProductsSection items={items} />)
+    render(<InventoryProductsSection items={items} {...panelProps} />)
 
     expect(screen.getByText('下書き商品')).toBeInTheDocument()
     expect(screen.getByText('出品中商品')).toBeInTheDocument()
@@ -74,7 +83,7 @@ describe('InventoryProductsSection: 集計カードの絞り込みと選択削�
 
   it('総商品数・下書きの絞り込みでは選択チェックボックスと削除ボタンが表示される', async () => {
     const items = [makeProduct({ id: 'p1', listing_status: 'draft' })]
-    render(<InventoryProductsSection items={items} />)
+    render(<InventoryProductsSection items={items} {...panelProps} />)
 
     expect(screen.getByText(/このページの総商品数を全選択/)).toBeInTheDocument()
 
@@ -84,7 +93,7 @@ describe('InventoryProductsSection: 集計カードの絞り込みと選択削�
 
   it('出品中・売却済みの絞り込みでは選択チェックボックスが表示されない', async () => {
     const items = [makeProduct({ id: 'p1', listing_status: 'listed' })]
-    render(<InventoryProductsSection items={items} />)
+    render(<InventoryProductsSection items={items} {...panelProps} />)
 
     await userEvent.click(screen.getByRole('button', { name: /出品中/ }))
     expect(screen.queryByText(/を全選択/)).not.toBeInTheDocument()
@@ -94,7 +103,7 @@ describe('InventoryProductsSection: 集計カードの絞り込みと選択削�
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const items = [makeProduct({ id: 'p1', extraction_id: 'ext-1', original_title: '削除対象商品' })]
-    render(<InventoryProductsSection items={items} />)
+    render(<InventoryProductsSection items={items} {...panelProps} />)
 
     const checkboxes = screen.getAllByRole('checkbox')
     // 先頭は「全選択」チェックボックス、2番目が商品行のチェックボックス
@@ -114,7 +123,7 @@ describe('InventoryProductsSection: 集計カードの絞り込みと選択削�
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
     const items = [makeProduct({ id: 'p1', extraction_id: 'ext-1', original_title: 'ブロック対象商品' })]
-    render(<InventoryProductsSection items={items} />)
+    render(<InventoryProductsSection items={items} {...panelProps} />)
 
     const checkboxes = screen.getAllByRole('checkbox')
     await userEvent.click(checkboxes[1])
@@ -129,7 +138,7 @@ describe('InventoryProductsSection: 集計カードの絞り込みと選択削�
       makeProduct({ id: 'p1' }),
       makeProduct({ id: 'p2' }),
     ]
-    render(<InventoryProductsSection items={items} />)
+    render(<InventoryProductsSection items={items} {...panelProps} />)
 
     await userEvent.click(screen.getByLabelText(/このページの総商品数を全選択/))
     expect(screen.getByRole('button', { name: '選択した2件を削除' })).toBeInTheDocument()

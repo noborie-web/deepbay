@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, type ReactNode } from 'react'
-import type { Product } from '@/types/database'
+import { useState } from 'react'
+import type { Product, InventoryActiveListing } from '@/types/database'
+import InventoryPanel from './InventoryPanel'
 
 export type FilterKey = 'total' | 'draft' | 'listed' | 'sold'
 
@@ -17,13 +18,16 @@ const FILTERS: { key: FilterKey; label: string; color: string; match?: (p: Produ
 // 「下書き」の2つは、表示中の商品をチェックして一括削除できるように
 // してほしい(出品中・売却済みは、既存の削除APIが出品済み商品の削除を
 // ブロックする仕様のため、選択削除の対象外とする)。
-export default function InventoryProductsSection({ items, children }: {
+export default function InventoryProductsSection({ items, listings, listingCount, hasToken }: {
   items: Product[]
   // eBay在庫管理パネル(InventoryPanel)は絞り込み条件(filter)を
-  // statusFilterとして受け取り、「eBay商品一覧」タブも同じ条件で
-  // 絞り込む。render propとして渡すことで、page.tsx側は他のprops
-  // (listings等)を持ったままInventoryPanelの配置を担える。
-  children?: (filter: FilterKey) => ReactNode
+  // statusFilterとして受け取り、「eBay商品一覧」タブも同じ条件で絞り込む。
+  // page.tsx(サーバーコンポーネント)からInventoryPanelを関数として
+  // childrenで渡すとRSC境界を越えられずクラッシュするため、この
+  // クライアントコンポーネント側でInventoryPanelを直接描画する。
+  listings: InventoryActiveListing[]
+  listingCount: number
+  hasToken: boolean
 }) {
   const [productList, setProductList] = useState(items)
   const [filter, setFilter] = useState<FilterKey>('total')
@@ -124,7 +128,7 @@ export default function InventoryProductsSection({ items, children }: {
         ))}
       </div>
 
-      {children?.(filter)}
+      <InventoryPanel listings={listings} listingCount={listingCount} hasToken={hasToken} statusFilter={filter} />
 
       {/* 商品テーブル */}
       <div className="bg-white border rounded-md overflow-hidden">
