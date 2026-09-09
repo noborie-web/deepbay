@@ -11,29 +11,38 @@ let concurrentCount = 0
 let maxConcurrentCount = 0
 let mockSelectDelay = 0  // ms (0 = 即時)
 
+// createClient()はルート内で毎リクエスト新しく呼ばれるため、from呼び出しを
+// テストから検査できるよう、mockFromをモジュールスコープで安定させる。
+const { mockFrom } = vi.hoisted(() => ({ mockFrom: vi.fn() }))
+
 vi.mock('@supabase/supabase-js', () => ({
   createClient: vi.fn(() => ({
-    from: vi.fn(() => {
-      const state = { productId: '' }
-      const builder = {
-        update: vi.fn(() => builder),
-        eq: vi.fn((col: string, val: string) => {
-          if (col === 'id') state.productId = val
-          return builder
-        }),
-        select: vi.fn(async () => {
-          concurrentCount++
-          if (concurrentCount > maxConcurrentCount) maxConcurrentCount = concurrentCount
-          if (mockSelectDelay > 0) await new Promise((r) => setTimeout(r, mockSelectDelay))
-          const result = mockResultsByProductId[state.productId] ?? mockDefaultResult
-          concurrentCount--
-          return result
-        }),
-      }
-      return builder
-    }),
+    from: mockFrom,
   })),
 }))
+
+mockFrom.mockImplementation(() => {
+  const state = { productId: '' }
+  const builder = {
+    update: vi.fn(() => builder),
+    eq: vi.fn((col: string, val: string) => {
+      if (col === 'id') state.productId = val
+      return builder
+    }),
+    select: vi.fn(async () => {
+      concurrentCount++
+      if (concurrentCount > maxConcurrentCount) maxConcurrentCount = concurrentCount
+      if (mockSelectDelay > 0) await new Promise((r) => setTimeout(r, mockSelectDelay))
+      const result = mockResultsByProductId[state.productId] ?? mockDefaultResult
+      concurrentCount--
+      return result
+    }),
+    // extractions.edited_at の更新(1件でも保存成功したら記録する)の
+    // クエリ終端。商品更新の成否とは無関係に常に成功させる。
+    is: vi.fn(async () => ({ error: null })),
+  }
+  return builder
+})
 
 vi.mock('@/lib/supabase/server', () => ({
   createClient: vi.fn(async () => ({
@@ -338,6 +347,36 @@ describe('Bulk API: ホワイトリスト', () => {
     const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', purchase_price_jpy: 3000 }] })
     expect(res.status).toBe(200)
     expect((await res.json()).succeeded).toContain('p1')
+  })
+})
+
+// ユーザー要望: 既存ツール(公式)の抽出一覧と同様、商品編集画面で保存
+// した抽出には「編集済み」バッジを表示したい。
+describe('Bulk API: extractions.edited_at の記録', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.clearAllMocks()
+    mockResultsByProductId = { p1: { data: [{ id: 'p1' }], error: null } }
+    mockDefaultResult = { data: [], error: null }
+    concurrentCount = 0
+    maxConcurrentCount = 0
+    mockSelectDelay = 0
+  })
+
+  it('1件でも保存に成功したら、extractionsのedited_atを更新するクエリを呼ぶ', async () => {
+    const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_title: 'Valid' }] })
+
+    expect(res.status).toBe(200)
+    expect(mockFrom).toHaveBeenCalledWith('extractions')
+  })
+
+  it('1件も保存に成功しなければ、extractionsは更新しない', async () => {
+    mockResultsByProductId = { p1: { data: [], error: null } }
+
+    const res = await callBulkPatch('ext-1', { updates: [{ productId: 'p1', ebay_title: 'Valid' }] })
+
+    expect(res.status).toBe(422)
+    expect(mockFrom).not.toHaveBeenCalledWith('extractions')
   })
 })
 

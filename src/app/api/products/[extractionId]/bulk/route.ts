@@ -98,6 +98,18 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ex
     )
   }
 
+  // ユーザー要望: 既存ツール(公式)の抽出一覧と同様、商品編集画面で保存した
+  // 抽出には「編集済み」バッジを表示する。1件でも保存に成功した時点で
+  // 記録する(以降の保存では上書きせず、最初に編集した日時のまま残す)。
+  if (succeeded.length > 0) {
+    await admin
+      .from('extractions')
+      .update({ edited_at: now })
+      .eq('id', extractionId)
+      .eq('user_id', user.id)
+      .is('edited_at', null)
+  }
+
   if (failed.length > 0) {
     return NextResponse.json({ ok: false, succeeded, failed }, { status: 422 })
   }
