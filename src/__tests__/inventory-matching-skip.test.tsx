@@ -70,7 +70,7 @@ describe('InventoryPanel matching skip', () => {
     expect(await screen.findByText('eBay商品ID: ebay-1')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '候補なし・スキップ' }))
     expect(await screen.findByText('eBay商品ID: ebay-2')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'DeepBay商品を選択' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Kakehashi商品を選択' })).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: '候補なし・スキップ' }))
     expect(await screen.findByText('eBay商品ID: ebay-3')).toBeInTheDocument()
@@ -85,7 +85,7 @@ describe('InventoryPanel matching skip', () => {
     await screen.findByText('eBay商品ID: ebay-last')
     await userEvent.click(screen.getByRole('button', { name: '候補なし・スキップ' }))
 
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'DeepBay商品を選択' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Kakehashi商品を選択' })).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: '選択した商品を順番に紐付け（0件）' })).toBeDisabled()
     expect(screen.getByText('未一致')).toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)

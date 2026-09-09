@@ -112,7 +112,7 @@ export function specificsInFilename(
 }
 
 export function productCustomLabel(product: Pick<Product, 'id'>): string {
-  return `deepbay_${product.id.replace(/-/g, '_')}`
+  return `kakehashi_${product.id.replace(/-/g, '_')}`
 }
 
 export function productSpecifics(product: Product): Record<string, string[]> {

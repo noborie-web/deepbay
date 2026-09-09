@@ -100,10 +100,32 @@ describe('GET /api/inventory/lookup', () => {
   })
 
   // ユーザー報告: 現行の出品エクスポーター(listing-export.ts)が発行する
-  // CustomLabel「deepbay_<商品UUID>」を貼り付けても、旧形式(ele_...)専用の
+  // CustomLabel「kakehashi_<商品UUID>」を貼り付けても、旧形式(ele_...)専用の
   // 照合ロジックしかなく常に「該当する商品が見つかりませんでした」になって
   // いた。現行形式は商品IDを直接復元し、products.idで照合する。
-  it('resolves the current "deepbay_<uuid>" CustomLabel format by product id, not source_item_id', async () => {
+  it('resolves the current "kakehashi_<uuid>" CustomLabel format by product id, not source_item_id', async () => {
+    mockLookupData = {
+      id: '21522c98-fe39-46b7-aa89-f0b71be24718',
+      source_url: 'https://jp.mercari.com/item/m123456789',
+      original_title: 'Example item',
+    }
+    const { GET } = await import('@/app/api/inventory/lookup/route')
+    const res = await GET(request('kakehashi_21522c98_fe39_46b7_aa89_f0b71be24718'))
+    const json = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(json).toEqual({
+      found: true,
+      source_url: 'https://jp.mercari.com/item/m123456789',
+      title: 'Example item',
+      product_id: '21522c98-fe39-46b7-aa89-f0b71be24718',
+    })
+    expect(mockEq).toHaveBeenCalledWith('id', '21522c98-fe39-46b7-aa89-f0b71be24718')
+  })
+
+  // ツール名変更前に出品された商品は、CustomLabelが旧接頭辞"deepbay_"の
+  // ままなので、引き続き商品idで直接解決できる必要がある。
+  it('still resolves the legacy "deepbay_<uuid>" CustomLabel format by product id', async () => {
     mockLookupData = {
       id: '21522c98-fe39-46b7-aa89-f0b71be24718',
       source_url: 'https://jp.mercari.com/item/m123456789',

@@ -36,7 +36,14 @@ describe('extractSourceLookupCode', () => {
 })
 
 describe('extractProductIdFromCustomLabel', () => {
-  it('extracts a product UUID from the current DeepBay label', () => {
+  it('extracts a product UUID from the current Kakehashi label', () => {
+    expect(extractProductIdFromCustomLabel('kakehashi_01234567_89ab_cdef_0123_456789abcdef'))
+      .toBe('01234567-89ab-cdef-0123-456789abcdef')
+  })
+
+  // ツール名をDeepBayからKakehashiに変更する前に出品された商品は、CustomLabel
+  // が旧接頭辞"deepbay_"のままなので、引き続き認識できる必要がある。
+  it('extracts a product UUID from the legacy DeepBay label', () => {
     expect(extractProductIdFromCustomLabel('deepbay_01234567_89ab_cdef_0123_456789abcdef'))
       .toBe('01234567-89ab-cdef-0123-456789abcdef')
   })

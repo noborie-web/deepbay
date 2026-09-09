@@ -57,7 +57,7 @@ export default function Sidebar() {
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-4 border-b border-[#2e2e2e]">
         <Menu size={18} className="text-[#888]" />
-        <span className="text-xl font-bold tracking-wide text-[#c9b97a]">DeepBay</span>
+        <span className="text-xl font-bold tracking-wide text-[#c9b97a]">Kakehashi</span>
         <Bell size={16} className="ml-auto text-[#888]" />
       </div>
 

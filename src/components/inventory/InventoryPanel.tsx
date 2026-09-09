@@ -332,10 +332,10 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     try {
       const res = await fetch(`/api/inventory/matching?q=${encodeURIComponent(query)}`)
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? 'DeepBay商品の検索に失敗しました')
+      if (!res.ok) throw new Error(data.error ?? 'Kakehashi商品の検索に失敗しました')
       setMatchingProducts(data.products ?? [])
     } catch (error) {
-      setMatchingError(error instanceof Error ? error.message : 'DeepBay商品の検索に失敗しました')
+      setMatchingError(error instanceof Error ? error.message : 'Kakehashi商品の検索に失敗しました')
     } finally { setMatchingLoading(false) }
   }
 
@@ -741,11 +741,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       {/* ==================== 暗号化復元 ==================== */}
       {tab === '暗号化復元' && (
         <div className="p-6">
-          <p className="text-sm text-gray-600 mb-4">DeepBayで抽出時に発行される管理番号 DBK-ID をもとに、元の仕入れ先URLへ復元します。</p>
+          <p className="text-sm text-gray-600 mb-4">Kakehashiで抽出時に発行される管理番号 DBK-ID をもとに、元の仕入れ先URLへ復元します。</p>
           <div className="flex gap-2 max-w-lg">
             <input type="text" value={dbkId} onChange={e => setDbkId(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleLookup()}
-              placeholder="DBK-IDを入力してください（例: deepbay_...）"
+              placeholder="DBK-IDを入力してください（例: kakehashi_...）"
               className="flex-1 border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
             <button onClick={handleLookup} disabled={looking || !dbkId.trim()}
               className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50">
@@ -930,7 +930,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                       {!listing.product_id && (
                         <button type="button" onClick={() => openMatching(listing)}
                           className="px-2 py-1 border border-blue-500 text-blue-600 text-xs rounded hover:bg-blue-50">
-                          DeepBay商品を選択
+                          Kakehashi商品を選択
                         </button>
                       )}
                     </td>
@@ -1561,7 +1561,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           <div className="w-full max-w-2xl rounded-lg bg-white p-6 shadow-xl">
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-base font-semibold text-gray-800">DeepBay商品を選択</h3>
+                <h3 className="text-base font-semibold text-gray-800">Kakehashi商品を選択</h3>
                 <p className="mt-1 text-xs text-gray-500">eBay商品ID: {matchingListing.ebay_item_id}</p>
                 <p className="text-xs text-gray-500">{matchingListing.title}</p>
               </div>
@@ -1569,7 +1569,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             </div>
             <form className="mb-4 flex gap-2" onSubmit={event => { event.preventDefault(); searchMatchingProducts(matchingQuery) }}>
               <input type="search" value={matchingQuery} onChange={event => setMatchingQuery(event.target.value)}
-                placeholder="DeepBay商品名・仕入れ先ID・URLで検索" className="min-w-0 flex-1 rounded border px-3 py-2 text-sm" />
+                placeholder="Kakehashi商品名・仕入れ先ID・URLで検索" className="min-w-0 flex-1 rounded border px-3 py-2 text-sm" />
               <button type="submit" disabled={matchingLoading || !matchingQuery.trim()} className="rounded bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-50">検索</button>
             </form>
             {matchingError && <p className="mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700">{matchingError}</p>}

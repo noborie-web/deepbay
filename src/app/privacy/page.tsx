@@ -1,14 +1,14 @@
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'プライバシーポリシー | DeepBay',
-  description: 'DeepBayのプライバシーポリシー',
+  title: 'プライバシーポリシー | Kakehashi',
+  description: 'Kakehashiのプライバシーポリシー',
 }
 
 const sections = [
   {
     title: '1. 取得する情報',
-    body: 'DeepBayは、サービスの提供に必要な範囲で、ログイン情報、出品者アカウント情報、商品・出品情報、サービスの利用履歴、および外部サービスとの連携に必要な認証情報を取得します。',
+    body: 'Kakehashiは、サービスの提供に必要な範囲で、ログイン情報、出品者アカウント情報、商品・出品情報、サービスの利用履歴、および外部サービスとの連携に必要な認証情報を取得します。',
   },
   {
     title: '2. 利用目的',
@@ -16,7 +16,7 @@ const sections = [
   },
   {
     title: '3. eBay連携情報',
-    body: 'eBayとの連携で取得した認証情報は暗号化して保存し、利用者が許可した機能を提供する目的にのみ使用します。DeepBayがeBayのパスワードを取得または保存することはありません。',
+    body: 'eBayとの連携で取得した認証情報は暗号化して保存し、利用者が許可した機能を提供する目的にのみ使用します。KakehashiがeBayのパスワードを取得または保存することはありません。',
   },
   {
     title: '4. 第三者提供',
@@ -28,7 +28,7 @@ const sections = [
   },
   {
     title: '6. 情報の確認・削除',
-    body: '利用者は、DeepBayに保存された自身の情報について、確認、訂正、連携解除または削除を求めることができます。サービス内の運営者への連絡手段からお申し出ください。',
+    body: '利用者は、Kakehashiに保存された自身の情報について、確認、訂正、連携解除または削除を求めることができます。サービス内の運営者への連絡手段からお申し出ください。',
   },
   {
     title: '7. ポリシーの変更',
@@ -43,7 +43,7 @@ export default function PrivacyPage() {
         <h1 className="text-3xl font-bold">プライバシーポリシー</h1>
         <p className="mt-3 text-sm text-gray-500">最終更新日: 2026年7月26日</p>
         <p className="mt-8 leading-7 text-gray-700">
-          DeepBayは、利用者の情報を適切に取り扱い、安全に管理するため、以下のとおりプライバシーポリシーを定めます。
+          Kakehashiは、利用者の情報を適切に取り扱い、安全に管理するため、以下のとおりプライバシーポリシーを定めます。
         </p>
 
         <div className="mt-10 space-y-8">

@@ -2,7 +2,10 @@
 // e.g. ele_20260802_abc123de_f456_7890_abcd_ef1234567890
 // Format: ele_YYYYMMDD_xxxxxxxx_xxxx_xxxx_xxxx_xxxxxxxxxxxx (UUID with _ instead of -)
 const MANAGEMENT_CODE_RE = /ele_\d{8}_[0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12}/i
-const PRODUCT_LABEL_RE = /deepbay_([0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12})/i
+// ツール名をDeepBayからKakehashiに変更した際、新規出品分は"kakehashi_"接頭辞に
+// 切り替えたが、既に実際のeBayに出品済みの商品のCustomLabelは"deepbay_"接頭辞の
+// ままなので、在庫管理の自動紐付けが壊れないよう両方の接頭辞を引き続き認識する。
+const PRODUCT_LABEL_RE = /(?:kakehashi|deepbay)_([0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12})/i
 
 export interface InventoryListingInput {
   ebayItemId: string
@@ -53,7 +56,7 @@ export function resolveInventoryProductId(
   return uniqueSourceProductIds.length === 1 ? uniqueSourceProductIds[0] : null
 }
 
-/** Extract the product UUID encoded by the current DeepBay listing exporter. */
+/** Extract the product UUID encoded by the current Kakehashi listing exporter (or the legacy DeepBay format). */
 export function extractProductIdFromCustomLabel(customLabel: string | null): string | null {
   if (!customLabel) return null
   const match = customLabel.match(PRODUCT_LABEL_RE)
