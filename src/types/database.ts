@@ -88,6 +88,7 @@ export interface Extraction {
   extracted_at: string | null
   error_message: string | null
   exclusion_summary: ExtractionExclusionSummary | null
+  edited_at: string | null
   created_at: string
   updated_at: string
   // joins

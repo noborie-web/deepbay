@@ -18,6 +18,7 @@ function makeExtraction(overrides: Partial<Extraction> = {}): Extraction {
     status: 'completed',
     progress: 100,
     memo: '',
+    edited_at: null,
     is_bulk: true,
     extracted_at: '2026-08-30T00:00:00.000Z',
     error_message: null,

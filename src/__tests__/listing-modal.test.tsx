@@ -38,6 +38,7 @@ const extraction: Extraction = {
   status: 'completed',
   progress: 100,
   memo: '',
+  edited_at: null,
   is_bulk: true,
   extracted_at: null,
   error_message: null,

@@ -108,10 +108,15 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
   return (
     <div className="grid grid-cols-[160px_1fr_1fr_180px_140px_1fr] gap-4 items-center px-4 py-3 border-b last:border-0 hover:bg-gray-50 text-sm">
       {/* 種別 */}
-      <div>
+      <div className="space-y-1">
         <Badge variant="default">
           {isManual ? '手動' : '自動'}/一括/通常
         </Badge>
+        {extraction.edited_at && (
+          <div>
+            <Badge variant="success">編集済み</Badge>
+          </div>
+        )}
       </div>
 
       {/* 抽出ID・セラー・カテゴリ */}
