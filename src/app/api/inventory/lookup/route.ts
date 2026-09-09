@@ -21,7 +21,8 @@ export async function GET(req: NextRequest) {
   const db = admin()
 
   // 現在の出品エクスポーター(listing-export.ts の productCustomLabel)が発行する
-  // CustomLabelは "deepbay_<商品UUID(-を_に置換)>" 形式で、商品IDそのものを直接
+  // CustomLabelは "kakehashi_<商品UUID(-を_に置換)>" 形式(ツール名変更前に
+  // 出品された商品は "deepbay_..." 形式のまま)で、商品IDそのものを直接
   // 復元できる。以前は "ele_YYYYMMDD_<UUID>" 形式(source_item_idと照合)のみに
   // 対応しており、現行形式のDBK-IDを貼り付けても常に「見つかりませんでした」に
   // なっていた。まず現行形式で商品IDを直接引き当て、見つからなければ旧形式

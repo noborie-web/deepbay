@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
   if (productError) return NextResponse.json({ error: productError.message }, { status: 500 })
   if (!product) return NextResponse.json({ error: 'Product not found' }, { status: 404 })
   if (product.ebay_item_id && product.ebay_item_id !== listing.ebay_item_id) {
-    return NextResponse.json({ error: 'このDeepBay商品には別のeBay商品IDが登録されています' }, { status: 409 })
+    return NextResponse.json({ error: 'このKakehashi商品には別のeBay商品IDが登録されています' }, { status: 409 })
   }
 
   const { data: duplicate } = await db

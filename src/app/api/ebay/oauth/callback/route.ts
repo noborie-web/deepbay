@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) {
-    return redirectWithMessage(request, '/login', 'ebayError', 'DeepBayへ再ログインしてください')
+    return redirectWithMessage(request, '/login', 'ebayError', 'Kakehashiへ再ログインしてください')
   }
 
   try {

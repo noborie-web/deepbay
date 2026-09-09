@@ -34,7 +34,7 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="bg-white border rounded-xl shadow-sm px-8 py-10 w-full max-w-sm">
-        <h1 className="text-2xl font-bold text-[#c9b97a] mb-2 text-center">DeepBay</h1>
+        <h1 className="text-2xl font-bold text-[#c9b97a] mb-2 text-center">Kakehashi</h1>
         <p className="text-center text-sm text-gray-500 mb-8">ログイン</p>
 
         <form onSubmit={handleLogin} className="space-y-4">

@@ -92,7 +92,7 @@ production domain as documented below and apply all Supabase migrations.
 
 ## eBay account and business-policy sync
 
-The listing flow can connect an existing DeepBay seller to eBay OAuth and load
+The listing flow can connect an existing Kakehashi seller to eBay OAuth and load
 the seller's fulfillment, payment, and return business policies from the eBay
 Account API.
 
