@@ -21,6 +21,7 @@ const existingSetting: BulkEditSetting = {
   fixed_cost_usd: 1,
   memo: '',
   is_default: false,
+  is_enabled: true,
   vero_exclude_enabled: true,
   danger_seller_exclude_enabled: true,
   danger_word_exclude_enabled: true,
@@ -112,6 +113,25 @@ describe('BulkEditSettingModal', () => {
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
     expect(body.vero_exclude_enabled).toBe(false)
+  })
+
+  it('ヘッダーの「この設定」トグルで一括編集設定全体を無効にでき、保存時に送信される', async () => {
+    const saved = { ...existingSetting }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input
+      void init
+      return { ok: true, json: async () => ({ setting: saved }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<BulkEditSettingModal setting={existingSetting} onSaved={vi.fn()} onClose={vi.fn()} />)
+
+    expect(screen.getByRole('button', { name: 'この設定有効' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'この設定有効' }))
+    expect(screen.getByRole('button', { name: 'この設定無効' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body.is_enabled).toBe(false)
   })
 
   it('コピー(id無し)で渡された場合はPOSTで新規作成される', async () => {

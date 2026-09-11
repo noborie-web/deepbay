@@ -51,6 +51,7 @@ export interface BulkEditSetting {
   fixed_cost_usd: number | null
   memo: string
   is_default: boolean
+  is_enabled: boolean
   vero_exclude_enabled: boolean
   danger_seller_exclude_enabled: boolean
   danger_word_exclude_enabled: boolean

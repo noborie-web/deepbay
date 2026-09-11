@@ -617,6 +617,31 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       expect(completedUpdate?.exclusion_summary).toMatchObject({ price_range_excluded: 0, completed_count: 1 })
     })
 
+    it('一括編集設定全体が無効(is_enabled:false)の場合、プロファイルが選択されていても一切適用しない', async () => {
+      mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ title: 'NIKE スニーカー' })])
+      const { db, extractionUpdates } = makeDatabase({
+        veroBrands: ['NIKE'],
+        priceMin: 100,
+        bulkEditSetting: {
+          id: 'bulk-1',
+          is_enabled: false,
+          vero_exclude_enabled: true,
+          price_range_enabled: true,
+          price_min: 1,
+          price_max: 2,
+        },
+      })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
+
+      const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+      // is_enabled:falseなので、プロファイル自身のVero除外(有効指定)は使われず、
+      // 未選択時と同じくグローバル抽出設定(veroBrands指定なし→veroは常時有効)
+      // にフォールバックし、NIKEは除外される。price_range_excludedはグローバル
+      // priceMin=100を使うため0件(price=5000は範囲内)。
+      expect(completedUpdate?.exclusion_summary).toMatchObject({ vero_excluded: 1, price_range_excluded: 0, completed_count: 0 })
+    })
+
     it('一括編集設定の評価数除外を有効にすると、その閾値で除外する', async () => {
       mocks.scrapeUrl.mockResolvedValue([
         scrapedProduct({ sourceItemId: 'item-1', sellerRatingCount: 5 }),

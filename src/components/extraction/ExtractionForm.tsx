@@ -109,7 +109,7 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
         >
           <option value="">指定なし（既定値）</option>
           {availableBulkSettings.map((b) => (
-            <option key={b.id} value={b.id}>{b.name}</option>
+            <option key={b.id} value={b.id}>{b.name}{b.is_enabled === false ? '（無効）' : ''}</option>
           ))}
         </select>
       </div>
