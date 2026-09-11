@@ -57,7 +57,7 @@ export async function runScrape(
     const limit = 600
 
     // 抽出設定を取得
-    const [{ data: dangerSellers }, { data: dangerWords }, { data: veroBrandRows }, { data: replaceWords }, { data: extractionSettings }, { data: spotWordRows }, { data: bulkEditSetting }] = await Promise.all([
+    const [{ data: dangerSellers }, { data: dangerWords }, { data: veroBrandRows }, { data: replaceWords }, { data: extractionSettings }, { data: spotWordRows }, { data: rawBulkEditSetting }] = await Promise.all([
       supabase.from('danger_sellers').select('seller_url').eq('user_id', userId),
       supabase.from('danger_words').select('word').eq('user_id', userId),
       supabase.from('vero_brands').select('brand').eq('user_id', userId),
@@ -68,6 +68,12 @@ export async function runScrape(
         ? supabase.from('bulk_edit_settings').select('*').eq('id', bulkEditSettingId).single()
         : Promise.resolve({ data: null }),
     ])
+
+    // ユーザー要望: 一括編集設定「全体」のON/OFFを切り替えられるように
+    // したい(個々の除外項目とは別のマスタースイッチ)。無効化された
+    // プロファイルが選択されていても、選択されていない場合と同じ挙動
+    // (デフォルト値・グローバル抽出設定)にフォールバックする。
+    const bulkEditSetting = rawBulkEditSetting?.is_enabled === false ? null : rawBulkEditSetting
 
     // ユーザー要望: 除外条件(Vero/危険セラー/危険単語/価格範囲/評価数/
     // 最終更新/発送日数)は、公式ツールのように一括編集設定(プロファイル)

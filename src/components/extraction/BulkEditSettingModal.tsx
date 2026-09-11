@@ -20,6 +20,7 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
   const [name, setName] = useState(setting?.name ?? '')
   const [memo, setMemo] = useState(setting?.memo ?? '')
   const [isDefault, setIsDefault] = useState(setting?.is_default ?? false)
+  const [isEnabled, setIsEnabled] = useState(setting?.is_enabled ?? true)
   const [titlePrefix, setTitlePrefix] = useState(setting?.title_prefix ?? '')
   const [titleSuffix, setTitleSuffix] = useState(setting?.title_suffix ?? '')
   const [profitRate, setProfitRate] = useState(initialValue(setting?.profit_rate))
@@ -71,6 +72,7 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
           name,
           memo,
           is_default: isDefault,
+          is_enabled: isEnabled,
           title_prefix: titlePrefix,
           title_suffix: titleSuffix,
           profit_rate: optionalNumber(profitRate),
@@ -125,7 +127,17 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
       <form onSubmit={save} className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-lg bg-white shadow-xl">
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 className="font-semibold text-gray-900">一括編集設定{setting?.id ? '編集' : '作成'}</h2>
-          <button type="button" aria-label="閉じる" onClick={onClose} className="text-xl text-gray-400 hover:text-gray-700">&times;</button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setIsEnabled((current) => !current)}
+              className={`rounded px-3 py-1 text-xs font-medium ${isEnabled ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}
+              title="この設定全体を使用するかどうかを切り替えます"
+            >
+              この設定{isEnabled ? '有効' : '無効'}
+            </button>
+            <button type="button" aria-label="閉じる" onClick={onClose} className="text-xl text-gray-400 hover:text-gray-700">&times;</button>
+          </div>
         </div>
 
         <div className="flex gap-4 border-b px-5 text-sm">
