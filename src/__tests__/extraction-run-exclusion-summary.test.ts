@@ -642,6 +642,24 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       expect(completedUpdate?.exclusion_summary).toMatchObject({ vero_excluded: 1, price_range_excluded: 0, completed_count: 0 })
     })
 
+    it('一括編集設定の「抽出時の価格自動計算」を無効にすると、他の除外設定は有効なままebay_priceだけ自動計算しない', async () => {
+      mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ title: 'NIKE スニーカー', price: 5000 })])
+      const { db, insertedProducts } = makeDatabase({
+        veroBrands: ['NIKE'],
+        bulkEditSetting: {
+          id: 'bulk-1',
+          is_enabled: true,
+          auto_pricing_enabled: false,
+          vero_exclude_enabled: false,
+        },
+      })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
+
+      expect(insertedProducts).toHaveLength(1)
+      expect(insertedProducts[0].ebay_price).toBeNull()
+    })
+
     it('一括編集設定の評価数除外を有効にすると、その閾値で除外する', async () => {
       mocks.scrapeUrl.mockResolvedValue([
         scrapedProduct({ sourceItemId: 'item-1', sellerRatingCount: 5 }),

@@ -372,7 +372,13 @@ export async function runScrape(
       if (setting) {
         ebayTitle = `${setting.title_prefix}${ebayTitle}${setting.title_suffix}`.slice(0, 80)
       }
-      const ebayPrice = calculateAutomaticEbayPrice(scraped.price, jpyPerUsd, setting)
+      // ユーザー要望: 一括編集設定全体のON/OFFとは別に、「抽出時の価格
+      // 自動計算」だけを個別にON/OFFしたい(他の項目は有効のまま)。
+      // 無効時はeBay出品価格を自動計算せず未設定のままにする。
+      const autoPricingEnabled = setting?.auto_pricing_enabled ?? true
+      const ebayPrice = autoPricingEnabled
+        ? calculateAutomaticEbayPrice(scraped.price, jpyPerUsd, setting)
+        : null
       return {
         user_id: userId,
         extraction_id: extractionId,

@@ -22,6 +22,7 @@ const existingSetting: BulkEditSetting = {
   memo: '',
   is_default: false,
   is_enabled: true,
+  auto_pricing_enabled: true,
   vero_exclude_enabled: true,
   danger_seller_exclude_enabled: true,
   danger_word_exclude_enabled: true,
@@ -132,6 +133,26 @@ describe('BulkEditSettingModal', () => {
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
     expect(body.is_enabled).toBe(false)
+  })
+
+  it('「抽出時の価格自動計算」を個別に無効にでき、保存時にauto_pricing_enabledが送信される(他の項目には影響しない)', async () => {
+    const saved = { ...existingSetting }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input
+      void init
+      return { ok: true, json: async () => ({ setting: saved }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<BulkEditSettingModal setting={existingSetting} onSaved={vi.fn()} onClose={vi.fn()} />)
+
+    // 価格自動計算ボックス内の「有効」ボタン(ヘッダーの全体トグルとは別)
+    await userEvent.click(screen.getByRole('button', { name: '有効' }))
+    expect(screen.queryByLabelText('目標利益率')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body.auto_pricing_enabled).toBe(false)
+    expect(body.is_enabled).toBe(true)
   })
 
   it('コピー(id無し)で渡された場合はPOSTで新規作成される', async () => {
