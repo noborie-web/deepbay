@@ -57,14 +57,28 @@ export async function runScrape(
     const limit = 600
 
     // 抽出設定を取得
-    const [{ data: dangerSellers }, { data: dangerWords }, { data: veroBrandRows }, { data: replaceWords }, { data: extractionSettings }, { data: spotWordRows }] = await Promise.all([
+    const [{ data: dangerSellers }, { data: dangerWords }, { data: veroBrandRows }, { data: replaceWords }, { data: extractionSettings }, { data: spotWordRows }, { data: bulkEditSetting }] = await Promise.all([
       supabase.from('danger_sellers').select('seller_url').eq('user_id', userId),
       supabase.from('danger_words').select('word').eq('user_id', userId),
       supabase.from('vero_brands').select('brand').eq('user_id', userId),
       supabase.from('replace_words').select('before_word, after_word').eq('user_id', userId),
       supabase.from('extraction_settings').select('*').eq('user_id', userId).single(),
       supabase.from('spot_words').select('word').eq('user_id', userId),
+      bulkEditSettingId
+        ? supabase.from('bulk_edit_settings').select('*').eq('id', bulkEditSettingId).single()
+        : Promise.resolve({ data: null }),
     ])
+
+    // ユーザー要望: 除外条件(Vero/危険セラー/危険単語/価格範囲/評価数/
+    // 最終更新/発送日数)は、公式ツールのように一括編集設定(プロファイル)
+    // ごとに個別に有効・無効を切り替えられるようにしたい。一括編集設定が
+    // 指定されている場合はプロファイル側の有効・無効/閾値を使い、指定が
+    // 無い抽出(bulkEditSettingIdがnull)では従来通りグローバルな抽出設定
+    // (extraction_settings)を使う(常時有効だったVero/危険セラー/危険単語
+    // の挙動を変えないため)。
+    const veroEnabled: boolean = bulkEditSetting?.vero_exclude_enabled ?? true
+    const dangerSellerEnabled: boolean = bulkEditSetting?.danger_seller_exclude_enabled ?? true
+    const dangerWordEnabled: boolean = bulkEditSetting?.danger_word_exclude_enabled ?? true
 
     // アクティブHTMLテンプレートを取得
     let activeTemplate: string | null = null
@@ -132,7 +146,7 @@ export async function runScrape(
 
     // 危険単語フィルタ
     const wordList: string[] = (dangerWords ?? []).map((w: { word: string }) => w.word.toLowerCase())
-    const filteredList = wordList.length === 0
+    const filteredList = (!dangerWordEnabled || wordList.length === 0)
       ? noPriceFilteredList
       : noPriceFilteredList.filter((scraped: { title: string }) => {
           const lower = scraped.title.toLowerCase()
@@ -150,7 +164,7 @@ export async function runScrape(
     const veroBrands: string[] = (veroBrandRows ?? [])
       .map((v: { brand?: unknown }) => typeof v.brand === 'string' ? v.brand : '')
       .filter(Boolean)
-    const veroFilteredList = veroBrands.length === 0
+    const veroFilteredList = (!veroEnabled || veroBrands.length === 0)
       ? filteredList
       : filteredList.filter((scraped: { title: string }) => !matchesVeroBrandInTitle(scraped.title, veroBrands))
     const veroExcluded = filteredList.length - veroFilteredList.length
@@ -159,7 +173,7 @@ export async function runScrape(
     // 場合、その商品だけを除外する(抽出URL自体が危険セラーのページである
     // 場合は上のチェックで既にスキップ済み)。スクレイパーが出品者URLを
     // 取得できるサイトのみ対象(sellerUrlが取得できない場合は判定しない)。
-    const sellerFilteredList = sellerUrls.length === 0
+    const sellerFilteredList = (!dangerSellerEnabled || sellerUrls.length === 0)
       ? veroFilteredList
       : veroFilteredList.filter((scraped: { sellerUrl?: string | null }) => {
           if (!scraped.sellerUrl) return true
@@ -191,8 +205,12 @@ export async function runScrape(
     const spotWordExcluded = sellerFilteredList.length - spotFilteredList.length
 
     // 評価数除外(下限): セラーの総合評価数が閾値未満なら除外。取得できない
-    // 商品(null)は判定できないため除外しない(安全側)。
-    const ratingMin: number | null = extractionSettings?.rating_min ?? null
+    // 商品(null)は判定できないため除外しない(安全側)。一括編集設定が
+    // 指定されていればプロファイル側の有効/無効・閾値を使い、無ければ
+    // 従来通りグローバルな抽出設定を使う。
+    const ratingMin: number | null = bulkEditSetting
+      ? (bulkEditSetting.rating_exclude_enabled ? bulkEditSetting.rating_min : null)
+      : (extractionSettings?.rating_min ?? null)
     const ratingFilteredList = ratingMin === null
       ? spotFilteredList
       : spotFilteredList.filter((scraped: { sellerRatingCount: number | null }) =>
@@ -201,7 +219,9 @@ export async function runScrape(
     const lowRatingExcluded = spotFilteredList.length - ratingFilteredList.length
 
     // 発送日数除外(上限)
-    const shippingDaysMax: number | null = extractionSettings?.shipping_days_max ?? null
+    const shippingDaysMax: number | null = bulkEditSetting
+      ? (bulkEditSetting.shipping_days_exclude_enabled ? bulkEditSetting.shipping_days_max : null)
+      : (extractionSettings?.shipping_days_max ?? null)
     const shippingFilteredList = shippingDaysMax === null
       ? ratingFilteredList
       : ratingFilteredList.filter((scraped: { shippingDays: number | null }) =>
@@ -210,7 +230,9 @@ export async function runScrape(
     const slowShippingExcluded = ratingFilteredList.length - shippingFilteredList.length
 
     // 最終更新月除外: 出品の最終更新日が指定月数より前なら除外
-    const updatedMonthsAgo: number | null = extractionSettings?.updated_months_ago ?? null
+    const updatedMonthsAgo: number | null = bulkEditSetting
+      ? (bulkEditSetting.updated_months_exclude_enabled ? bulkEditSetting.updated_months_ago : null)
+      : (extractionSettings?.updated_months_ago ?? null)
     const staleFilteredList = updatedMonthsAgo === null
       ? shippingFilteredList
       : shippingFilteredList.filter((scraped: { sourceUpdatedAt: string | null }) => {
@@ -225,8 +247,12 @@ export async function runScrape(
     // 為替レート取得・一括編集設定適用より後の段階で算出されるため、この
     // 時点では未確定であり対象にできない(price_target='ebay'は商品編集
     // 画面の手動除外パネルでのみ対応)。
-    const priceMin: number | null = extractionSettings?.price_min ?? null
-    const priceMax: number | null = extractionSettings?.price_max ?? null
+    const priceMin: number | null = bulkEditSetting
+      ? (bulkEditSetting.price_range_enabled ? bulkEditSetting.price_min : null)
+      : (extractionSettings?.price_min ?? null)
+    const priceMax: number | null = bulkEditSetting
+      ? (bulkEditSetting.price_range_enabled ? bulkEditSetting.price_max : null)
+      : (extractionSettings?.price_max ?? null)
     const priceRangeFilteredList = (priceMin === null && priceMax === null)
       ? staleFilteredList
       : staleFilteredList.filter((scraped: { price: number | null }) => {
@@ -238,15 +264,7 @@ export async function runScrape(
     const priceRangeExcluded = staleFilteredList.length - priceRangeFilteredList.length
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let setting: any = null
-    if (bulkEditSettingId) {
-      const { data } = await supabase
-        .from('bulk_edit_settings')
-        .select('*')
-        .eq('id', bulkEditSettingId)
-        .single()
-      setting = data
-    }
+    const setting: any = bulkEditSetting
 
     // 為替レートは抽出1回につき1度だけ取得する。失敗時は価格未設定で抽出を継続する。
     let jpyPerUsd: number | null = null

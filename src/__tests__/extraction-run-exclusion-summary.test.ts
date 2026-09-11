@@ -60,6 +60,8 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     priceMin?: number | null
     priceMax?: number | null
     titleEnabled?: boolean
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    bulkEditSetting?: Record<string, any> | null
   } = {}) {
     const extractionUpdates: Array<Record<string, unknown>> = []
     const insertedProducts: Array<Record<string, unknown>> = []
@@ -103,7 +105,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
           error: null,
         }
       }
-      if (table === 'bulk_edit_settings') return { data: null, error: null }
+      if (table === 'bulk_edit_settings') return { data: options.bulkEditSetting ?? null, error: null }
       return { data: null, error: null }
     }
 
@@ -540,6 +542,94 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
       completed_count: 1,
+    })
+  })
+
+  // ユーザー要望: 公式ツールのように、一括編集設定(プロファイル)ごとに
+  // 除外条件を個別に有効・無効切り替えできるようにしたい。
+  describe('一括編集設定(プロファイル)ごとの除外条件切り替え', () => {
+    it('一括編集設定でVero除外が無効の場合、Veroブランドが一致しても除外しない', async () => {
+      mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ title: 'NIKE スニーカー' })])
+      const { db, extractionUpdates } = makeDatabase({
+        veroBrands: ['NIKE'],
+        bulkEditSetting: { id: 'bulk-1', vero_exclude_enabled: false },
+      })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
+
+      const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+      expect(completedUpdate?.exclusion_summary).toMatchObject({ vero_excluded: 0, completed_count: 1 })
+    })
+
+    it('一括編集設定で危険単語除外が無効の場合、危険単語が一致しても除外しない', async () => {
+      mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ title: 'ジャンク品 フィギュア' })])
+      const { db, extractionUpdates } = makeDatabase({
+        dangerWords: ['ジャンク'],
+        bulkEditSetting: { id: 'bulk-1', danger_word_exclude_enabled: false },
+      })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
+
+      const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+      expect(completedUpdate?.exclusion_summary).toMatchObject({ danger_word_excluded: 0, completed_count: 1 })
+    })
+
+    it('一括編集設定で危険セラー除外が無効の場合、登録済み危険セラーの商品でも除外しない', async () => {
+      mocks.scrapeUrl.mockResolvedValue([
+        scrapedProduct({ sellerUrl: 'https://jp.mercari.com/user/profile/999' }),
+      ])
+      const { db, extractionUpdates } = makeDatabase({
+        dangerSellerUrls: ['https://jp.mercari.com/user/profile/999'],
+        bulkEditSetting: { id: 'bulk-1', danger_seller_exclude_enabled: false },
+      })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
+
+      const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+      expect(completedUpdate?.exclusion_summary).toMatchObject({ individual_danger_seller_excluded: 0, completed_count: 1 })
+    })
+
+    it('一括編集設定の価格範囲を有効にすると、グローバル抽出設定より優先してその閾値を使う', async () => {
+      mocks.scrapeUrl.mockResolvedValue([
+        scrapedProduct({ sourceItemId: 'item-1', price: 500 }),
+        scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', price: 5000 }),
+      ])
+      const { db, extractionUpdates } = makeDatabase({
+        priceMin: 100, // グローバル設定(無視されるはず)
+        bulkEditSetting: { id: 'bulk-1', price_range_enabled: true, price_min: 1000, price_max: 10000 },
+      })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
+
+      const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+      expect(completedUpdate?.exclusion_summary).toMatchObject({ price_range_excluded: 1, completed_count: 1 })
+    })
+
+    it('一括編集設定の価格範囲が無効(有効チェックが入っていない)の場合、閾値が入力されていても適用しない', async () => {
+      mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ price: 500 })])
+      const { db, extractionUpdates } = makeDatabase({
+        bulkEditSetting: { id: 'bulk-1', price_range_enabled: false, price_min: 1000, price_max: 10000 },
+      })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
+
+      const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+      expect(completedUpdate?.exclusion_summary).toMatchObject({ price_range_excluded: 0, completed_count: 1 })
+    })
+
+    it('一括編集設定の評価数除外を有効にすると、その閾値で除外する', async () => {
+      mocks.scrapeUrl.mockResolvedValue([
+        scrapedProduct({ sourceItemId: 'item-1', sellerRatingCount: 5 }),
+        scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', sellerRatingCount: 50 }),
+      ])
+      const { db, extractionUpdates } = makeDatabase({
+        bulkEditSetting: { id: 'bulk-1', rating_exclude_enabled: true, rating_min: 10 },
+      })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
+
+      const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+      expect(completedUpdate?.exclusion_summary).toMatchObject({ low_rating_excluded: 1, completed_count: 1 })
     })
   })
 })
