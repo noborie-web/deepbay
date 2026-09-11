@@ -263,21 +263,17 @@ export class MercariScraper {
     const sortKey = srcParams.get('sort') ?? 'created_time'
     const { sort: sortValue, order: orderValue } = sortMap[sortKey] ?? { sort: 'SORT_CREATED_TIME', order: 'ORDER_DESC' }
 
-    // status マッピング（新API: STATUS_ON_SALE / STATUS_SOLD_OUT）
-    const statusMap: Record<string, string> = {
-      on_sale:  'STATUS_ON_SALE',
-      sold_out: 'STATUS_SOLD_OUT',
-    }
     // ユーザー要望: 既存ツール(公式)は「販売中+売り切れ」を両方取得した上で
     // 売り切れ分を除外詳細に計上している。こちらは従来「販売中のみ」を
     // 検索APIのリクエスト時点で絞っていたため、売り切れ商品がそもそも
-    // パイプラインに入らず「売り切れ除外」が常に0件になっていた(実出品
-    // 結果は同じだが、除外詳細の数字が公式と揃わなかった)。URLでstatusが
-    // 明示指定されていない場合は、公式と同様に両方のステータスを取得する。
-    const statusParam = srcParams.get('status')
-    const statusValues = statusParam
-      ? [statusMap[statusParam] ?? 'STATUS_ON_SALE']
-      : ['STATUS_ON_SALE', 'STATUS_SOLD_OUT']
+    // パイプラインに入らず「売り切れ除外」が常に0件になっていた。
+    // 実データで検証したところ、URLは「status=on_sale」(Mercariの検索
+    // 画面で「販売中」フィルタがオンの状態)を含んでいることが多く、
+    // この値の有無で切り替える実装では従来と同じ結果になってしまう
+    // ことが判明した。公式ツールはURLのstatus指定に関わらず常に両方の
+    // ステータスを取得し、後段のパイプラインで除外する設計のため、
+    // それに合わせてURLのstatusパラメータは無視し、常に両方取得する。
+    const statusValues = ['STATUS_ON_SALE', 'STATUS_SOLD_OUT']
 
     // searchCondition を構築
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
