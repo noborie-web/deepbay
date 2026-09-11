@@ -24,9 +24,28 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
     sellers.find((s) => s.is_default)?.id ?? sellers[0]?.id ?? ''
   )
   const [availableBulkSettings, setAvailableBulkSettings] = useState(bulkSettings)
-  const [bulkEditSettingId, setBulkEditSettingId] = useState('')
+  const [bulkEditSettingId, setBulkEditSettingId] = useState(
+    bulkSettings.find((b) => b.is_default)?.id ?? ''
+  )
   const [editingBulkSetting, setEditingBulkSetting] = useState<BulkEditSetting | null | undefined>(undefined)
   const [loading, setLoading] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  const selectedBulkSetting = availableBulkSettings.find((b) => b.id === bulkEditSettingId) ?? null
+
+  async function handleDelete() {
+    if (!selectedBulkSetting) return
+    if (!window.confirm(`一括編集設定「${selectedBulkSetting.name}」を削除しますか？`)) return
+    setDeleting(true)
+    try {
+      const response = await fetch(`/api/bulk-edit-settings?id=${selectedBulkSetting.id}`, { method: 'DELETE' })
+      if (!response.ok) return
+      setAvailableBulkSettings((current) => current.filter((b) => b.id !== selectedBulkSetting.id))
+      setBulkEditSettingId('')
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   async function handleSubmit() {
     if (!url.trim()) return
@@ -112,6 +131,32 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
         className="border border-gray-300 rounded px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
       >
         一括編集設定作成
+      </button>
+
+      <button
+        type="button"
+        disabled={!selectedBulkSetting}
+        onClick={() => {
+          if (!selectedBulkSetting) return
+          setEditingBulkSetting({
+            ...selectedBulkSetting,
+            id: '',
+            name: `${selectedBulkSetting.name} のコピー`,
+            is_default: false,
+          })
+        }}
+        className="border border-gray-300 rounded px-3 py-2 text-sm hover:bg-gray-50 transition-colors disabled:opacity-40"
+      >
+        コピーして新規作成
+      </button>
+
+      <button
+        type="button"
+        disabled={!selectedBulkSetting || deleting}
+        onClick={handleDelete}
+        className="border border-red-200 text-red-600 rounded px-3 py-2 text-sm hover:bg-red-50 transition-colors disabled:opacity-40"
+      >
+        設定削除
       </button>
 
       <button

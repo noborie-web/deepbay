@@ -19,6 +19,20 @@ const existingSetting: BulkEditSetting = {
   ebay_fee_rate: 0.18,
   shipping_cost_jpy: 2500,
   fixed_cost_usd: 1,
+  memo: '',
+  is_default: false,
+  vero_exclude_enabled: true,
+  danger_seller_exclude_enabled: true,
+  danger_word_exclude_enabled: true,
+  price_range_enabled: false,
+  price_min: null,
+  price_max: null,
+  rating_exclude_enabled: false,
+  rating_min: null,
+  shipping_days_exclude_enabled: false,
+  shipping_days_max: null,
+  updated_months_exclude_enabled: false,
+  updated_months_ago: null,
   created_at: '2026-08-25T00:00:00.000Z',
   updated_at: '2026-08-25T00:00:00.000Z',
 }
@@ -77,5 +91,45 @@ describe('BulkEditSettingModal', () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
     expect(fetchMock).toHaveBeenCalledWith('/api/bulk-edit-settings', expect.objectContaining({ method: 'PATCH' }))
     expect(body.id).toBe('bulk-1')
+  })
+
+  // ユーザー要望: 公式ツールのように、一括編集設定ごとに除外条件を
+  // 個別に有効/無効切り替えできるようにしたい。
+  it('除外設定タブでVero除外を無効にでき、保存時にその状態が送信される', async () => {
+    const saved = { ...existingSetting }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input
+      void init
+      return { ok: true, json: async () => ({ setting: saved }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<BulkEditSettingModal setting={existingSetting} onSaved={vi.fn()} onClose={vi.fn()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '除外設定' }))
+    // Veroワード除外の有効/無効トグルは除外設定タブの先頭に表示される
+    await userEvent.click(screen.getAllByRole('button', { name: '有効' })[0])
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body.vero_exclude_enabled).toBe(false)
+  })
+
+  it('コピー(id無し)で渡された場合はPOSTで新規作成される', async () => {
+    const copySource = { ...existingSetting, id: '', name: '既存設定 のコピー' }
+    const saved = { ...copySource, id: 'bulk-2' }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input
+      void init
+      return { ok: true, json: async () => ({ setting: saved }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<BulkEditSettingModal setting={copySource} onSaved={vi.fn()} onClose={vi.fn()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/bulk-edit-settings', expect.objectContaining({ method: 'POST' }))
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body.id).toBeFalsy()
+    expect(body.name).toBe('既存設定 のコピー')
   })
 })

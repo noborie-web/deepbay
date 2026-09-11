@@ -49,6 +49,20 @@ export interface BulkEditSetting {
   ebay_fee_rate: number | null
   shipping_cost_jpy: number | null
   fixed_cost_usd: number | null
+  memo: string
+  is_default: boolean
+  vero_exclude_enabled: boolean
+  danger_seller_exclude_enabled: boolean
+  danger_word_exclude_enabled: boolean
+  price_range_enabled: boolean
+  price_min: number | null
+  price_max: number | null
+  rating_exclude_enabled: boolean
+  rating_min: number | null
+  shipping_days_exclude_enabled: boolean
+  shipping_days_max: number | null
+  updated_months_exclude_enabled: boolean
+  updated_months_ago: number | null
   created_at: string
   updated_at: string
 }
