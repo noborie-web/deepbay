@@ -268,8 +268,16 @@ export class MercariScraper {
       on_sale:  'STATUS_ON_SALE',
       sold_out: 'STATUS_SOLD_OUT',
     }
-    const statusParam = srcParams.get('status') ?? 'on_sale'
-    const statusValue = statusMap[statusParam] ?? 'STATUS_ON_SALE'
+    // ユーザー要望: 既存ツール(公式)は「販売中+売り切れ」を両方取得した上で
+    // 売り切れ分を除外詳細に計上している。こちらは従来「販売中のみ」を
+    // 検索APIのリクエスト時点で絞っていたため、売り切れ商品がそもそも
+    // パイプラインに入らず「売り切れ除外」が常に0件になっていた(実出品
+    // 結果は同じだが、除外詳細の数字が公式と揃わなかった)。URLでstatusが
+    // 明示指定されていない場合は、公式と同様に両方のステータスを取得する。
+    const statusParam = srcParams.get('status')
+    const statusValues = statusParam
+      ? [statusMap[statusParam] ?? 'STATUS_ON_SALE']
+      : ['STATUS_ON_SALE', 'STATUS_SOLD_OUT']
 
     // searchCondition を構築
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -278,7 +286,7 @@ export class MercariScraper {
       excludeKeyword: srcParams.get('exclude_keyword') ?? '',
       sort:           sortValue,
       order:          orderValue,
-      status:         [statusValue],
+      status:         statusValues,
       sizeId:         [],
       categoryId:     [],
       brandId:        [],

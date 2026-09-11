@@ -403,6 +403,48 @@ describe('scrapeSearch excludeKeyword', () => {
   })
 })
 
+// ユーザー要望: 既存ツール(公式)は「販売中+売り切れ」を両方取得した上で
+// 売り切れ分を除外詳細に計上する。以前は検索APIリクエスト時点で「販売中
+// のみ」に絞っていたため、売り切れ商品がパイプラインに入らず「売り切れ
+// 除外」が常に0件になっていた(公式との除外詳細比較検証中に判明)。
+describe('scrapeSearch status', () => {
+  async function captureSearchBody(url: string): Promise<{ status: string[] }> {
+    const calls: string[] = []
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (typeof input === 'string' && input.includes('entities:search')) {
+        calls.push(init?.body as string ?? '')
+        return new Response(JSON.stringify({ items: [] }), { status: 200 })
+      }
+      return origFetch(input, init)
+    }
+    try {
+      const { MercariScraper } = await import('../lib/scrapers/mercari')
+      const scraper = new MercariScraper()
+      await scraper.scrape(url).catch(() => {})
+    } finally {
+      globalThis.fetch = origFetch
+    }
+    expect(calls.length).toBeGreaterThan(0)
+    return JSON.parse(calls[0]).searchCondition
+  }
+
+  it('statusがURLで指定されていない場合、販売中と売り切れの両方を取得する', async () => {
+    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike')
+    expect(searchCondition.status).toEqual(['STATUS_ON_SALE', 'STATUS_SOLD_OUT'])
+  })
+
+  it('status=sold_outがURLで明示指定されていれば、売り切れのみに絞る', async () => {
+    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=sold_out')
+    expect(searchCondition.status).toEqual(['STATUS_SOLD_OUT'])
+  })
+
+  it('status=on_saleがURLで明示指定されていれば、販売中のみに絞る', async () => {
+    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=on_sale')
+    expect(searchCondition.status).toEqual(['STATUS_ON_SALE'])
+  })
+})
+
 describe('scrapeSearch pagination', () => {
   it('メルカリAPIがpageSizeより少ない件数を返してもnextPageTokenがあれば次ページを取得し続ける', async () => {
     // 実際のMercari検索APIの挙動を再現: pageSize=120でも1ページ目は90件しか
