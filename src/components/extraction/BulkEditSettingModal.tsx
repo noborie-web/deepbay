@@ -23,6 +23,7 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
   const [isEnabled, setIsEnabled] = useState(setting?.is_enabled ?? true)
   const [titlePrefix, setTitlePrefix] = useState(setting?.title_prefix ?? '')
   const [titleSuffix, setTitleSuffix] = useState(setting?.title_suffix ?? '')
+  const [autoPricingEnabled, setAutoPricingEnabled] = useState(setting?.auto_pricing_enabled ?? true)
   const [profitRate, setProfitRate] = useState(initialValue(setting?.profit_rate))
   const [ebayFeeRate, setEbayFeeRate] = useState(initialValue(setting?.ebay_fee_rate))
   const [shippingCostJpy, setShippingCostJpy] = useState(initialValue(setting?.shipping_cost_jpy))
@@ -75,6 +76,7 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
           is_enabled: isEnabled,
           title_prefix: titlePrefix,
           title_suffix: titleSuffix,
+          auto_pricing_enabled: autoPricingEnabled,
           profit_rate: optionalNumber(profitRate),
           ebay_fee_rate: optionalNumber(ebayFeeRate),
           shipping_cost_jpy: optionalNumber(shippingCostJpy),
@@ -182,22 +184,37 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
                 </label>
               </div>
               <div className="rounded border border-blue-100 bg-blue-50 p-4">
-                <p className="mb-3 text-sm font-medium text-blue-900">抽出時の価格自動計算</p>
-                <p className="mb-4 text-xs text-blue-700">空欄の場合は、利益率0.23・送料3,000円・eBay手数料率0.20・固定費0 USDで計算します。</p>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <label className="block text-sm text-gray-700">目標利益率
-                    <input type="number" min="0" max="0.99" step="0.01" placeholder="0.23" value={profitRate} onChange={event => setProfitRate(event.target.value)} className={inputClassName} />
-                  </label>
-                  <label className="block text-sm text-gray-700">eBay手数料率
-                    <input type="number" min="0" max="0.99" step="0.01" placeholder="0.20" value={ebayFeeRate} onChange={event => setEbayFeeRate(event.target.value)} className={inputClassName} />
-                  </label>
-                  <label className="block text-sm text-gray-700">送料（円）
-                    <input type="number" min="0" step="1" placeholder="3000" value={shippingCostJpy} onChange={event => setShippingCostJpy(event.target.value)} className={inputClassName} />
-                  </label>
-                  <label className="block text-sm text-gray-700">固定費（USD）
-                    <input type="number" min="0" step="0.01" placeholder="0" value={fixedCostUsd} onChange={event => setFixedCostUsd(event.target.value)} className={inputClassName} />
-                  </label>
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-sm font-medium text-blue-900">抽出時の価格自動計算</p>
+                  <button
+                    type="button"
+                    onClick={() => setAutoPricingEnabled((current) => !current)}
+                    className={`rounded px-3 py-1 text-xs font-medium ${autoPricingEnabled ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-500'}`}
+                  >
+                    {autoPricingEnabled ? '有効' : '無効'}
+                  </button>
                 </div>
+                {autoPricingEnabled ? (
+                  <>
+                    <p className="mb-4 text-xs text-blue-700">空欄の場合は、利益率0.23・送料3,000円・eBay手数料率0.20・固定費0 USDで計算します。</p>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <label className="block text-sm text-gray-700">目標利益率
+                        <input type="number" min="0" max="0.99" step="0.01" placeholder="0.23" value={profitRate} onChange={event => setProfitRate(event.target.value)} className={inputClassName} />
+                      </label>
+                      <label className="block text-sm text-gray-700">eBay手数料率
+                        <input type="number" min="0" max="0.99" step="0.01" placeholder="0.20" value={ebayFeeRate} onChange={event => setEbayFeeRate(event.target.value)} className={inputClassName} />
+                      </label>
+                      <label className="block text-sm text-gray-700">送料（円）
+                        <input type="number" min="0" step="1" placeholder="3000" value={shippingCostJpy} onChange={event => setShippingCostJpy(event.target.value)} className={inputClassName} />
+                      </label>
+                      <label className="block text-sm text-gray-700">固定費（USD）
+                        <input type="number" min="0" step="0.01" placeholder="0" value={fixedCostUsd} onChange={event => setFixedCostUsd(event.target.value)} className={inputClassName} />
+                      </label>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-gray-600">無効にすると、抽出時にeBay出品価格を自動計算せず未設定のままにします（他の除外設定・タイトル設定はこのまま有効です）。</p>
+                )}
               </div>
             </>
           )}
