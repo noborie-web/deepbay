@@ -434,14 +434,14 @@ describe('scrapeSearch status', () => {
     expect(searchCondition.status).toEqual(['STATUS_ON_SALE', 'STATUS_SOLD_OUT'])
   })
 
-  it('status=sold_outがURLで明示指定されていれば、売り切れのみに絞る', async () => {
-    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=sold_out')
-    expect(searchCondition.status).toEqual(['STATUS_SOLD_OUT'])
+  it('status=on_saleがURLで明示指定されていても、両方取得する(公式ツールに合わせて除外は後段のパイプラインで行う)', async () => {
+    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=on_sale')
+    expect(searchCondition.status).toEqual(['STATUS_ON_SALE', 'STATUS_SOLD_OUT'])
   })
 
-  it('status=on_saleがURLで明示指定されていれば、販売中のみに絞る', async () => {
-    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=on_sale')
-    expect(searchCondition.status).toEqual(['STATUS_ON_SALE'])
+  it('status=sold_outがURLで明示指定されていても、両方取得する', async () => {
+    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=sold_out')
+    expect(searchCondition.status).toEqual(['STATUS_ON_SALE', 'STATUS_SOLD_OUT'])
   })
 })
 
