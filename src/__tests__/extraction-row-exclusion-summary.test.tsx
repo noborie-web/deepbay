@@ -46,6 +46,13 @@ describe('ExtractionRow: 除外詳細', () => {
         slow_shipping_excluded: 0,
         stale_excluded: 0,
         price_range_excluded: 0,
+        bulk_edit_sold_out_excluded: 0,
+        bulk_edit_danger_seller_excluded: 0,
+        bulk_edit_rating_excluded: 0,
+        bulk_edit_shipping_days_excluded: 0,
+        bulk_edit_updated_months_excluded: 0,
+        bulk_edit_price_range_excluded: 0,
+        bulk_edit_bad_rating_excluded: 0,
         translated_title_failed_excluded: 0,
         active_duplicate_excluded: 0,
         title_duplicate_excluded: 12,
@@ -68,6 +75,43 @@ describe('ExtractionRow: 除外詳細', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'とじる' }))
     expect(screen.queryByText('タイトル重複除外')).not.toBeInTheDocument()
+  })
+
+  // ユーザー要望による「(一括編集)」二段階項目の追加より前に保存された
+  // 古いexclusion_summary(新フィールドを持たない)を表示しても、
+  // クラッシュせず0として表示することを確認する。
+  it('新フィールド追加前の古いexclusion_summaryでもクラッシュせず表示できる', async () => {
+    const oldSummary = {
+      detail_fetch_count: 100,
+      sold_out_excluded: 0,
+      no_image_excluded: 0,
+      no_price_excluded: 0,
+      danger_word_excluded: 0,
+      vero_excluded: 0,
+      individual_danger_seller_excluded: 0,
+      spot_word_excluded: 0,
+      low_rating_excluded: 0,
+      slow_shipping_excluded: 0,
+      stale_excluded: 0,
+      price_range_excluded: 0,
+      translated_title_failed_excluded: 0,
+      active_duplicate_excluded: 0,
+      title_duplicate_excluded: 0,
+      translated_duplicate_excluded: 0,
+      completed_count: 100,
+    }
+    const extraction = makeExtraction({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      exclusion_summary: oldSummary as any,
+    })
+
+    render(<ExtractionRow extraction={extraction} onViewResult={vi.fn()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'その他の操作' }))
+    await userEvent.click(screen.getByRole('button', { name: '除外詳細' }))
+
+    expect(screen.getByText('(一括編集)発送日数除外')).toBeInTheDocument()
+    expect(screen.getByText('取得完了件数')).toBeInTheDocument()
   })
 
   it('exclusion_summaryがない場合、メニュー項目は無効化される', async () => {

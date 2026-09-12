@@ -97,12 +97,19 @@ export function findKeywordProductIds(
     .map((product) => product.id)
 }
 
+// バグ修正: 以前はproduct.source_url(商品ページURL)を登録済み危険セラー
+// URL(出品者プロフィールURL)と比較していたが、この2つは形の異なるURL
+// のため一致判定が構造的に成立しなかった。抽出時にsellerUrlが保存される
+// ようになった(products.seller_url)ため、そちらと比較する。抽出時点で
+// seller_urlを取得できなかった/保存前の古い商品は判定できないため
+// 対象外とする(安全側)。
 export function findDangerSellerProductIds(products: Product[], sellerUrls: string[]): string[] {
   if (sellerUrls.length === 0) return []
   const normalizedSellerUrls = sellerUrls.map((s) => s.split('?')[0].trim().replace(/\/+$/, ''))
   return products
     .filter((product) => {
-      const norm = product.source_url.split('?')[0].trim().replace(/\/+$/, '')
+      if (!product.seller_url) return false
+      const norm = product.seller_url.split('?')[0].trim().replace(/\/+$/, '')
       return normalizedSellerUrls.some((s) => norm.startsWith(s))
     })
     .map((product) => product.id)

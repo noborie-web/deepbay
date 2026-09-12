@@ -22,6 +22,7 @@ const existingSetting: BulkEditSetting = {
   memo: '',
   is_default: false,
   is_enabled: true,
+  sold_out_exclude_enabled: true,
   auto_pricing_enabled: true,
   vero_exclude_enabled: true,
   danger_seller_exclude_enabled: true,
@@ -35,6 +36,8 @@ const existingSetting: BulkEditSetting = {
   shipping_days_max: null,
   updated_months_exclude_enabled: false,
   updated_months_ago: null,
+  low_rating_exclude_enabled: false,
+  low_rating_max: null,
   created_at: '2026-08-25T00:00:00.000Z',
   updated_at: '2026-08-25T00:00:00.000Z',
 }
@@ -108,12 +111,31 @@ describe('BulkEditSettingModal', () => {
     render(<BulkEditSettingModal setting={existingSetting} onSaved={vi.fn()} onClose={vi.fn()} />)
 
     await userEvent.click(screen.getByRole('button', { name: '除外設定' }))
-    // Veroワード除外の有効/無効トグルは除外設定タブの先頭に表示される
-    await userEvent.click(screen.getAllByRole('button', { name: '有効' })[0])
+    const veroLabel = screen.getByText('Veroワード除外')
+    await userEvent.click(veroLabel.parentElement!.querySelector('button')!)
     await userEvent.click(screen.getByRole('button', { name: '保存' }))
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
     expect(body.vero_exclude_enabled).toBe(false)
+  })
+
+  it('除外設定タブで売り切れ除外を無効にでき、保存時にその状態が送信される', async () => {
+    const saved = { ...existingSetting }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input
+      void init
+      return { ok: true, json: async () => ({ setting: saved }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<BulkEditSettingModal setting={existingSetting} onSaved={vi.fn()} onClose={vi.fn()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '除外設定' }))
+    const soldOutLabel = screen.getByText('売り切れ除外')
+    await userEvent.click(soldOutLabel.parentElement!.querySelector('button')!)
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body.sold_out_exclude_enabled).toBe(false)
   })
 
   it('ヘッダーの「この設定」トグルで一括編集設定全体を無効にでき、保存時に送信される', async () => {
@@ -153,6 +175,28 @@ describe('BulkEditSettingModal', () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
     expect(body.auto_pricing_enabled).toBe(false)
     expect(body.is_enabled).toBe(true)
+  })
+
+  it('除外設定タブで低評価数除外を有効にでき、閾値とともに保存される', async () => {
+    const saved = { ...existingSetting }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input
+      void init
+      return { ok: true, json: async () => ({ setting: saved }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<BulkEditSettingModal setting={existingSetting} onSaved={vi.fn()} onClose={vi.fn()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '除外設定' }))
+    const lowRatingLabel = screen.getByText('低評価数除外')
+    const toggleButton = lowRatingLabel.parentElement!.querySelector('button')!
+    await userEvent.click(toggleButton)
+    await userEvent.type(screen.getByLabelText(/許容低評価数/), '1')
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body.low_rating_exclude_enabled).toBe(true)
+    expect(body.low_rating_max).toBe(1)
   })
 
   it('コピー(id無し)で渡された場合はPOSTで新規作成される', async () => {

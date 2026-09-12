@@ -8,10 +8,10 @@ interface Props {
 }
 
 // 既存ツール(公式)の「抽出結果確認」に相当する除外詳細モーダル。
-// 抽出パイプラインで実際に実行されている除外を表示する。「詳細取得の
-// 2段階化」は、こちらのスクレイパーが検索結果1回のレスポンスで全項目を
-// 取得済みのため実装を見送った(詳細ページへの追加アクセスが元々発生
-// しておらず、常に0件にしかならない見せかけの項目になるため)。
+// 抽出パイプラインで実際に実行されている除外を表示する。評価数・発送
+// 日数・最終更新月・価格範囲は、公式と同様に「グローバル抽出設定による
+// 除外(無印)」と「一括編集設定プロファイルによる追加除外
+// (「(一括編集)」接頭辞)」の2段階で集計する。
 const ROWS: { key: keyof ExtractionExclusionSummary; label: string }[] = [
   { key: 'detail_fetch_count', label: '詳細取得件数' },
   { key: 'sold_out_excluded', label: '売り切れ除外' },
@@ -25,6 +25,13 @@ const ROWS: { key: keyof ExtractionExclusionSummary; label: string }[] = [
   { key: 'slow_shipping_excluded', label: '発送日数除外' },
   { key: 'stale_excluded', label: '最終更新月除外' },
   { key: 'price_range_excluded', label: '価格範囲除外' },
+  { key: 'bulk_edit_sold_out_excluded', label: '(一括編集)売り切れ除外' },
+  { key: 'bulk_edit_danger_seller_excluded', label: '(一括編集)危険Seller除外' },
+  { key: 'bulk_edit_rating_excluded', label: '(一括編集)評価数除外' },
+  { key: 'bulk_edit_bad_rating_excluded', label: '(一括編集)低評価数除外' },
+  { key: 'bulk_edit_shipping_days_excluded', label: '(一括編集)発送日数除外' },
+  { key: 'bulk_edit_updated_months_excluded', label: '(一括編集)最終更新月除外' },
+  { key: 'bulk_edit_price_range_excluded', label: '(一括編集)価格範囲除外' },
   { key: 'translated_title_failed_excluded', label: 'タイトル翻訳失敗除外' },
   { key: 'active_duplicate_excluded', label: 'active重複除外' },
   { key: 'title_duplicate_excluded', label: 'タイトル重複除外' },
@@ -46,7 +53,9 @@ export default function ExclusionSummaryModal({ summary, onClose }: Props) {
           {ROWS.map(({ key, label }) => (
             <div key={key} className="flex items-center justify-between">
               <span className="text-gray-700">{label}</span>
-              <span className="font-medium text-gray-900">{summary[key].toLocaleString()}</span>
+              {/* 新しい集計項目追加前に保存された古いexclusion_summaryには
+                  キーが存在しない場合があるため、未定義は0として表示する */}
+              <span className="font-medium text-gray-900">{(summary[key] ?? 0).toLocaleString()}</span>
             </div>
           ))}
         </div>

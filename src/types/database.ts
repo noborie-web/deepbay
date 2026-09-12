@@ -53,6 +53,7 @@ export interface BulkEditSetting {
   is_default: boolean
   is_enabled: boolean
   auto_pricing_enabled: boolean
+  sold_out_exclude_enabled: boolean
   vero_exclude_enabled: boolean
   danger_seller_exclude_enabled: boolean
   danger_word_exclude_enabled: boolean
@@ -65,6 +66,8 @@ export interface BulkEditSetting {
   shipping_days_max: number | null
   updated_months_exclude_enabled: boolean
   updated_months_ago: number | null
+  low_rating_exclude_enabled: boolean
+  low_rating_max: number | null
   created_at: string
   updated_at: string
 }
@@ -82,6 +85,13 @@ export interface ExtractionExclusionSummary {
   slow_shipping_excluded: number
   stale_excluded: number
   price_range_excluded: number
+  bulk_edit_sold_out_excluded: number
+  bulk_edit_danger_seller_excluded: number
+  bulk_edit_rating_excluded: number
+  bulk_edit_shipping_days_excluded: number
+  bulk_edit_updated_months_excluded: number
+  bulk_edit_price_range_excluded: number
+  bulk_edit_bad_rating_excluded: number
   translated_title_failed_excluded: number
   active_duplicate_excluded: number
   title_duplicate_excluded: number
@@ -139,6 +149,7 @@ export interface Product {
   listed_at: string | null
   sold_at: string | null
   seller_rating_count: number | null
+  seller_url: string | null
   shipping_days: number | null
   source_updated_at: string | null
   purchase_price_jpy: number | null

@@ -29,6 +29,7 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
   const [shippingCostJpy, setShippingCostJpy] = useState(initialValue(setting?.shipping_cost_jpy))
   const [fixedCostUsd, setFixedCostUsd] = useState(initialValue(setting?.fixed_cost_usd))
 
+  const [soldOutEnabled, setSoldOutEnabled] = useState(setting?.sold_out_exclude_enabled ?? true)
   const [veroEnabled, setVeroEnabled] = useState(setting?.vero_exclude_enabled ?? true)
   const [dangerSellerEnabled, setDangerSellerEnabled] = useState(setting?.danger_seller_exclude_enabled ?? true)
   const [dangerWordEnabled, setDangerWordEnabled] = useState(setting?.danger_word_exclude_enabled ?? true)
@@ -37,6 +38,8 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
   const [priceMax, setPriceMax] = useState(initialValue(setting?.price_max))
   const [ratingEnabled, setRatingEnabled] = useState(setting?.rating_exclude_enabled ?? false)
   const [ratingMin, setRatingMin] = useState(initialValue(setting?.rating_min))
+  const [lowRatingEnabled, setLowRatingEnabled] = useState(setting?.low_rating_exclude_enabled ?? false)
+  const [lowRatingMax, setLowRatingMax] = useState(initialValue(setting?.low_rating_max))
   const [shippingDaysEnabled, setShippingDaysEnabled] = useState(setting?.shipping_days_exclude_enabled ?? false)
   const [shippingDaysMax, setShippingDaysMax] = useState(initialValue(setting?.shipping_days_max))
   const [updatedMonthsEnabled, setUpdatedMonthsEnabled] = useState(setting?.updated_months_exclude_enabled ?? false)
@@ -81,6 +84,7 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
           ebay_fee_rate: optionalNumber(ebayFeeRate),
           shipping_cost_jpy: optionalNumber(shippingCostJpy),
           fixed_cost_usd: optionalNumber(fixedCostUsd),
+          sold_out_exclude_enabled: soldOutEnabled,
           vero_exclude_enabled: veroEnabled,
           danger_seller_exclude_enabled: dangerSellerEnabled,
           danger_word_exclude_enabled: dangerWordEnabled,
@@ -89,6 +93,8 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
           price_max: optionalNumber(priceMax),
           rating_exclude_enabled: ratingEnabled,
           rating_min: optionalNumber(ratingMin),
+          low_rating_exclude_enabled: lowRatingEnabled,
+          low_rating_max: optionalNumber(lowRatingMax),
           shipping_days_exclude_enabled: shippingDaysEnabled,
           shipping_days_max: optionalNumber(shippingDaysMax),
           updated_months_exclude_enabled: updatedMonthsEnabled,
@@ -222,7 +228,8 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
           {tab === 'exclusion' && (
             <>
               <p className="text-xs font-medium text-red-600">セキュリティ除外設定</p>
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                {toggleRow('売り切れ除外', soldOutEnabled, setSoldOutEnabled)}
                 {toggleRow('Veroワード除外', veroEnabled, setVeroEnabled)}
                 {toggleRow('危険セラー除外', dangerSellerEnabled, setDangerSellerEnabled)}
                 {toggleRow('危険単語除外', dangerWordEnabled, setDangerWordEnabled)}
@@ -243,6 +250,11 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
                 {toggleRow('合計評価数除外', ratingEnabled, setRatingEnabled, (
                   <label className="block text-xs text-gray-600">許容合計評価数（件未満で除外）
                     <input type="number" min="0" value={ratingMin} onChange={event => setRatingMin(event.target.value)} className={inputClassName} />
+                  </label>
+                ))}
+                {toggleRow('低評価数除外', lowRatingEnabled, setLowRatingEnabled, (
+                  <label className="block text-xs text-gray-600">許容低評価数（件以下、超えたら除外）
+                    <input type="number" min="0" value={lowRatingMax} onChange={event => setLowRatingMax(event.target.value)} className={inputClassName} />
                   </label>
                 ))}
               </div>
