@@ -1,7 +1,12 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { BulkEditSetting } from '@/types/database'
+
+interface BulkDangerSeller {
+  id: string
+  seller_url: string
+}
 
 interface Props {
   setting: BulkEditSetting | null
@@ -48,6 +53,48 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
+
+  // ユーザー要望: 危険Seller除外の段階②(一括編集設定による追加除外)を
+  // 実際に機能させたい。プロファイルごとに専用の危険セラーURLリストを
+  // 管理できるようにする(グローバルの抽出設定とは別のリスト)。
+  const [bulkSellers, setBulkSellers] = useState<BulkDangerSeller[]>([])
+  const [newSellerUrl, setNewSellerUrl] = useState('')
+  const [sellerListError, setSellerListError] = useState('')
+
+  useEffect(() => {
+    if (!setting?.id) return
+    fetch(`/api/bulk-edit-danger-sellers?bulk_edit_setting_id=${setting.id}`)
+      .then((res) => res.json())
+      .then((data) => setBulkSellers(data.sellers ?? []))
+      .catch(() => {})
+  }, [setting?.id])
+
+  async function addBulkSeller() {
+    if (!setting?.id || !newSellerUrl.trim()) return
+    setSellerListError('')
+    try {
+      const response = await fetch('/api/bulk-edit-danger-sellers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bulk_edit_setting_id: setting.id, seller_url: newSellerUrl.trim() }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error ?? '追加に失敗しました')
+      setBulkSellers((current) => [...current, data.seller])
+      setNewSellerUrl('')
+    } catch (e) {
+      setSellerListError(e instanceof Error ? e.message : '追加に失敗しました')
+    }
+  }
+
+  async function removeBulkSeller(id: string) {
+    try {
+      await fetch(`/api/bulk-edit-danger-sellers?id=${id}`, { method: 'DELETE' })
+      setBulkSellers((current) => current.filter((s) => s.id !== id))
+    } catch {
+      // 一覧の再取得で整合性は取れるため、失敗時は静かに無視する
+    }
+  }
 
   const inputClassName = 'mt-1 w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300'
   const optionalNumber = (value: string) => value === '' ? null : Number(value)
@@ -231,7 +278,35 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
               <div className="grid gap-3 sm:grid-cols-2">
                 {toggleRow('売り切れ除外', soldOutEnabled, setSoldOutEnabled)}
                 {toggleRow('Veroワード除外', veroEnabled, setVeroEnabled)}
-                {toggleRow('危険セラー除外', dangerSellerEnabled, setDangerSellerEnabled)}
+                {toggleRow('危険セラー除外', dangerSellerEnabled, setDangerSellerEnabled, (
+                  <div>
+                    {!setting?.id ? (
+                      <p className="text-xs text-gray-500">この設定を保存すると、専用の危険セラーリストを登録できます。</p>
+                    ) : (
+                      <>
+                        <p className="mb-2 text-xs text-gray-500">この一括編集設定専用の危険セラーリスト（グローバル設定とは別）</p>
+                        {sellerListError && <p className="mb-2 text-xs text-red-600">{sellerListError}</p>}
+                        <div className="flex gap-2">
+                          <input
+                            value={newSellerUrl}
+                            onChange={event => setNewSellerUrl(event.target.value)}
+                            placeholder="除外セラーURL"
+                            className={inputClassName}
+                          />
+                          <button type="button" onClick={addBulkSeller} className="mt-1 rounded border px-3 py-2 text-xs hover:bg-gray-50">追加</button>
+                        </div>
+                        <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto text-xs">
+                          {bulkSellers.map((s) => (
+                            <li key={s.id} className="flex items-center justify-between rounded border border-gray-200 px-2 py-1">
+                              <span className="truncate">{s.seller_url}</span>
+                              <button type="button" onClick={() => removeBulkSeller(s.id)} className="ml-2 text-red-600 hover:underline">削除</button>
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                  </div>
+                ))}
                 {toggleRow('危険単語除外', dangerWordEnabled, setDangerWordEnabled)}
               </div>
 

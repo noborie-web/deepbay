@@ -62,6 +62,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     titleEnabled?: boolean
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     bulkEditSetting?: Record<string, any> | null
+    bulkDangerSellerUrls?: string[]
   } = {}) {
     const extractionUpdates: Array<Record<string, unknown>> = []
     const insertedProducts: Array<Record<string, unknown>> = []
@@ -106,6 +107,9 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
         }
       }
       if (table === 'bulk_edit_settings') return { data: options.bulkEditSetting ?? null, error: null }
+      if (table === 'bulk_edit_danger_sellers') {
+        return { data: (options.bulkDangerSellerUrls ?? []).map((seller_url) => ({ seller_url })), error: null }
+      }
       return { data: null, error: null }
     }
 
@@ -604,18 +608,17 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       expect(completedUpdate?.exclusion_summary).toMatchObject({ bulk_edit_sold_out_excluded: 0, completed_count: 1 })
     })
 
-    // 注意: 危険セラーリストはグローバル1つのみで、一括編集設定は独自の
-    // リストを持たない。そのため段階②は段階①と同じリストで再チェックする
-    // 形になり、段階①で除外し切れなかった商品が残ることはなく、常に0件
-    // になる(公式ツールの表示も0だった)。追加除外が実際に機能するには、
-    // プロファイルごとに独立した危険セラーリストを持たせる必要がある
-    // (今回のスコープ外)。
-    it('一括編集設定の危険セラー除外(段階②)は、段階①と同じグローバルリストを使うため常に0件になる', async () => {
+    // ユーザー要望: 危険Seller除外の段階②を実際に機能させたい。一括編集
+    // 設定プロファイルごとに独立した危険セラーリスト
+    // (bulk_edit_danger_sellers)を持てるようにし、グローバルリストとは
+    // 別に追加除外できるようにした。
+    it('一括編集設定専用の危険セラーリストに登録されていれば、グローバルリストに無くても段階②で追加除外する', async () => {
       mocks.scrapeUrl.mockResolvedValue([
         scrapedProduct({ sellerUrl: 'https://jp.mercari.com/user/profile/111' }),
       ])
       const { db, extractionUpdates } = makeDatabase({
-        dangerSellerUrls: [],
+        dangerSellerUrls: [], // グローバルリストには無い
+        bulkDangerSellerUrls: ['https://jp.mercari.com/user/profile/111'], // プロファイル専用リストにはある
         bulkEditSetting: { id: 'bulk-1', danger_seller_exclude_enabled: true },
       })
 
@@ -624,6 +627,24 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
       expect(completedUpdate?.exclusion_summary).toMatchObject({
         individual_danger_seller_excluded: 0,
+        bulk_edit_danger_seller_excluded: 1,
+        completed_count: 0,
+      })
+    })
+
+    it('一括編集設定専用の危険セラー除外が無効の場合、プロファイル専用リストに登録されていても除外しない', async () => {
+      mocks.scrapeUrl.mockResolvedValue([
+        scrapedProduct({ sellerUrl: 'https://jp.mercari.com/user/profile/111' }),
+      ])
+      const { db, extractionUpdates } = makeDatabase({
+        bulkDangerSellerUrls: ['https://jp.mercari.com/user/profile/111'],
+        bulkEditSetting: { id: 'bulk-1', danger_seller_exclude_enabled: false },
+      })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
+
+      const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+      expect(completedUpdate?.exclusion_summary).toMatchObject({
         bulk_edit_danger_seller_excluded: 0,
         completed_count: 1,
       })
