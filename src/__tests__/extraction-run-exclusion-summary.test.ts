@@ -161,6 +161,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      bulk_edit_rating_excluded: 0,
+      bulk_edit_shipping_days_excluded: 0,
+      bulk_edit_updated_months_excluded: 0,
+      bulk_edit_price_range_excluded: 0,
+      bulk_edit_bad_rating_excluded: 0,
       translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
@@ -198,6 +203,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      bulk_edit_rating_excluded: 0,
+      bulk_edit_shipping_days_excluded: 0,
+      bulk_edit_updated_months_excluded: 0,
+      bulk_edit_price_range_excluded: 0,
+      bulk_edit_bad_rating_excluded: 0,
       translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
@@ -245,6 +255,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      bulk_edit_rating_excluded: 0,
+      bulk_edit_shipping_days_excluded: 0,
+      bulk_edit_updated_months_excluded: 0,
+      bulk_edit_price_range_excluded: 0,
+      bulk_edit_bad_rating_excluded: 0,
       translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
@@ -301,6 +316,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      bulk_edit_rating_excluded: 0,
+      bulk_edit_shipping_days_excluded: 0,
+      bulk_edit_updated_months_excluded: 0,
+      bulk_edit_price_range_excluded: 0,
+      bulk_edit_bad_rating_excluded: 0,
       translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
@@ -509,6 +529,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      bulk_edit_rating_excluded: 0,
+      bulk_edit_shipping_days_excluded: 0,
+      bulk_edit_updated_months_excluded: 0,
+      bulk_edit_price_range_excluded: 0,
+      bulk_edit_bad_rating_excluded: 0,
       translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 1,
@@ -537,6 +562,11 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       slow_shipping_excluded: 0,
       stale_excluded: 0,
       price_range_excluded: 0,
+      bulk_edit_rating_excluded: 0,
+      bulk_edit_shipping_days_excluded: 0,
+      bulk_edit_updated_months_excluded: 0,
+      bulk_edit_price_range_excluded: 0,
+      bulk_edit_bad_rating_excluded: 0,
       translated_title_failed_excluded: 0,
       active_duplicate_excluded: 0,
       title_duplicate_excluded: 0,
@@ -589,23 +619,28 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       expect(completedUpdate?.exclusion_summary).toMatchObject({ individual_danger_seller_excluded: 0, completed_count: 1 })
     })
 
-    it('一括編集設定の価格範囲を有効にすると、グローバル抽出設定より優先してその閾値を使う', async () => {
+    it('一括編集設定の価格範囲を有効にすると、グローバル抽出設定による除外(段階①)に加えて、プロファイルの閾値でも追加除外する(段階②)', async () => {
       mocks.scrapeUrl.mockResolvedValue([
-        scrapedProduct({ sourceItemId: 'item-1', price: 500 }),
-        scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', price: 5000 }),
+        scrapedProduct({ sourceItemId: 'item-1', price: 50 }),
+        scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', price: 500 }),
+        scrapedProduct({ sourceUrl: 'https://example.com/item/3', sourceItemId: 'item-3', price: 5000 }),
       ])
       const { db, extractionUpdates } = makeDatabase({
-        priceMin: 100, // グローバル設定(無視されるはず)
-        bulkEditSetting: { id: 'bulk-1', price_range_enabled: true, price_min: 1000, price_max: 10000 },
+        priceMin: 100, // 段階①: price=50の商品のみ除外
+        bulkEditSetting: { id: 'bulk-1', price_range_enabled: true, price_min: 1000, price_max: 10000 }, // 段階②: price=500の商品を追加除外
       })
 
       await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
 
       const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
-      expect(completedUpdate?.exclusion_summary).toMatchObject({ price_range_excluded: 1, completed_count: 1 })
+      expect(completedUpdate?.exclusion_summary).toMatchObject({
+        price_range_excluded: 1,
+        bulk_edit_price_range_excluded: 1,
+        completed_count: 1,
+      })
     })
 
-    it('一括編集設定の価格範囲が無効(有効チェックが入っていない)の場合、閾値が入力されていても適用しない', async () => {
+    it('一括編集設定の価格範囲が無効(有効チェックが入っていない)の場合、閾値が入力されていても段階②の追加除外は適用しない', async () => {
       mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ price: 500 })])
       const { db, extractionUpdates } = makeDatabase({
         bulkEditSetting: { id: 'bulk-1', price_range_enabled: false, price_min: 1000, price_max: 10000 },
@@ -614,7 +649,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
 
       const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
-      expect(completedUpdate?.exclusion_summary).toMatchObject({ price_range_excluded: 0, completed_count: 1 })
+      expect(completedUpdate?.exclusion_summary).toMatchObject({ price_range_excluded: 0, bulk_edit_price_range_excluded: 0, completed_count: 1 })
     })
 
     it('一括編集設定全体が無効(is_enabled:false)の場合、プロファイルが選択されていても一切適用しない', async () => {
@@ -660,7 +695,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       expect(insertedProducts[0].ebay_price).toBeNull()
     })
 
-    it('一括編集設定の評価数除外を有効にすると、その閾値で除外する', async () => {
+    it('一括編集設定の評価数除外を有効にすると、その閾値で追加除外する(段階②)', async () => {
       mocks.scrapeUrl.mockResolvedValue([
         scrapedProduct({ sourceItemId: 'item-1', sellerRatingCount: 5 }),
         scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', sellerRatingCount: 50 }),
@@ -672,7 +707,36 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
 
       const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
-      expect(completedUpdate?.exclusion_summary).toMatchObject({ low_rating_excluded: 1, completed_count: 1 })
+      expect(completedUpdate?.exclusion_summary).toMatchObject({ bulk_edit_rating_excluded: 1, completed_count: 1 })
+    })
+
+    // ユーザー要望: 公式ツールの「低評価数除外」に相当する新機能。セラーの
+    // 悪い評価件数(sellerBadRatingCount)が許容数を超えたら追加除外する。
+    it('一括編集設定の低評価数除外を有効にすると、セラーの悪い評価件数が許容数を超える商品を追加除外する', async () => {
+      mocks.scrapeUrl.mockResolvedValue([
+        scrapedProduct({ sourceItemId: 'item-1', sellerBadRatingCount: 5 }),
+        scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', sellerBadRatingCount: 0 }),
+      ])
+      const { db, extractionUpdates } = makeDatabase({
+        bulkEditSetting: { id: 'bulk-1', low_rating_exclude_enabled: true, low_rating_max: 1 },
+      })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
+
+      const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+      expect(completedUpdate?.exclusion_summary).toMatchObject({ bulk_edit_bad_rating_excluded: 1, completed_count: 1 })
+    })
+
+    it('低評価数を取得できない商品(null)は判定せず素通りする', async () => {
+      mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ sellerBadRatingCount: undefined })])
+      const { db, extractionUpdates } = makeDatabase({
+        bulkEditSetting: { id: 'bulk-1', low_rating_exclude_enabled: true, low_rating_max: 1 },
+      })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', 'bulk-1', db)
+
+      const completedUpdate = extractionUpdates.find((u) => u.status === 'completed')
+      expect(completedUpdate?.exclusion_summary).toMatchObject({ bulk_edit_bad_rating_excluded: 0, completed_count: 1 })
     })
   })
 })

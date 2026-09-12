@@ -246,6 +246,55 @@ describe('Mercari item images', () => {
     }
   })
 
+  // ユーザー要望: 「低評価数除外」機能追加のため実データを検証したところ、
+  // 検索API(entities:search)のレスポンスにはseller/shipping_durationが
+  // 一切含まれず、単品詳細API(items/get)でのみ取得できることが判明した。
+  // また、発送日数はmin_days/max_daysという実在するフィールド名を
+  // これまでmin/maxとして誤ってチェックしていたバグも見つかった。
+  // 画像補完のためどのみち取得している詳細レスポンスから、評価数・
+  // 低評価数・発送日数も併せて補完する(追加APIコストなし)。
+  it('検索結果に無い評価数・低評価数・発送日数を、画像補完と同じ詳細APIレスポンスから補完する', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const requestUrl = String(input)
+      if (requestUrl.includes('entities:search')) {
+        return new Response(JSON.stringify({
+          items: [{
+            id: 'm1',
+            name: 'Test item',
+            price: 1000,
+            thumbnails: ['https://static.mercdn.net/thumb.jpg'],
+          }],
+        }), { status: 200 })
+      }
+      if (requestUrl.includes('/items/get?id=m1')) {
+        return new Response(JSON.stringify({
+          data: {
+            id: 'm1',
+            name: 'Test item',
+            price: 1000,
+            photos: fullImages,
+            seller: { ratings: { good: 10, normal: 0, bad: 2 }, num_ratings: 12 },
+            shipping_duration: { id: 3, name: '4~7日で発送', min_days: 4, max_days: 7 },
+          },
+        }), { status: 200 })
+      }
+      return new Response(null, { status: 404 })
+    }
+
+    try {
+      const products = await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 1 },
+      )
+      expect(products[0].sellerRatingCount).toBe(12)
+      expect(products[0].sellerBadRatingCount).toBe(2)
+      expect(products[0].shippingDays).toBe(4)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   it('詳細APIが失敗した商品は一覧画像を残して抽出を継続する', async () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = async (input: RequestInfo | URL) => {

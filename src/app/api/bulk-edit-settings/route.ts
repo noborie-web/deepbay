@@ -16,6 +16,7 @@ const THRESHOLD_FIELDS = [
   'rating_min',
   'shipping_days_max',
   'updated_months_ago',
+  'low_rating_max',
 ] as const
 
 const TOGGLE_FIELDS = [
@@ -29,6 +30,7 @@ const TOGGLE_FIELDS = [
   'rating_exclude_enabled',
   'shipping_days_exclude_enabled',
   'updated_months_exclude_enabled',
+  'low_rating_exclude_enabled',
 ] as const
 
 function admin() {

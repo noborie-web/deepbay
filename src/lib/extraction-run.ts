@@ -210,64 +210,111 @@ export async function runScrape(
         })
     const spotWordExcluded = sellerFilteredList.length - spotFilteredList.length
 
-    // 評価数除外(下限): セラーの総合評価数が閾値未満なら除外。取得できない
-    // 商品(null)は判定できないため除外しない(安全側)。一括編集設定が
-    // 指定されていればプロファイル側の有効/無効・閾値を使い、無ければ
-    // 従来通りグローバルな抽出設定を使う。
-    const ratingMin: number | null = bulkEditSetting
-      ? (bulkEditSetting.rating_exclude_enabled ? bulkEditSetting.rating_min : null)
-      : (extractionSettings?.rating_min ?? null)
-    const ratingFilteredList = ratingMin === null
+    // ユーザー要望: 公式ツールは除外詳細で「グローバル抽出設定による
+    // 除外」と「一括編集設定プロファイルによる除外」を2段階・別項目
+    // (「(一括編集)◯◯除外」)として表示している。段階①はどのプロファイルを
+    // 使っても常に適用される抽出設定(extraction_settings)の閾値、
+    // 段階②はさらに選択した一括編集設定プロファイル自身の閾値による
+    // 追加の絞り込み。以前は「プロファイルがあれば全面的に置き換え、
+    // 無ければグローバル」という択一方式だったが、公式に合わせて両方を
+    // 順に適用する方式に変更する。
+
+    // 段階①(グローバル、常時適用): 評価数除外(下限)。取得できない
+    // 商品(null)は判定できないため除外しない(安全側)。
+    const globalRatingMin: number | null = extractionSettings?.rating_min ?? null
+    const ratingFilteredList = globalRatingMin === null
       ? spotFilteredList
       : spotFilteredList.filter((scraped: { sellerRatingCount: number | null }) =>
-          scraped.sellerRatingCount === null || scraped.sellerRatingCount >= ratingMin,
+          scraped.sellerRatingCount === null || scraped.sellerRatingCount >= globalRatingMin,
         )
     const lowRatingExcluded = spotFilteredList.length - ratingFilteredList.length
 
-    // 発送日数除外(上限)
-    const shippingDaysMax: number | null = bulkEditSetting
-      ? (bulkEditSetting.shipping_days_exclude_enabled ? bulkEditSetting.shipping_days_max : null)
-      : (extractionSettings?.shipping_days_max ?? null)
-    const shippingFilteredList = shippingDaysMax === null
+    // 段階①: 発送日数除外(上限)
+    const globalShippingDaysMax: number | null = extractionSettings?.shipping_days_max ?? null
+    const shippingFilteredList = globalShippingDaysMax === null
       ? ratingFilteredList
       : ratingFilteredList.filter((scraped: { shippingDays: number | null }) =>
-          scraped.shippingDays === null || scraped.shippingDays <= shippingDaysMax,
+          scraped.shippingDays === null || scraped.shippingDays <= globalShippingDaysMax,
         )
     const slowShippingExcluded = ratingFilteredList.length - shippingFilteredList.length
 
-    // 最終更新月除外: 出品の最終更新日が指定月数より前なら除外
-    const updatedMonthsAgo: number | null = bulkEditSetting
-      ? (bulkEditSetting.updated_months_exclude_enabled ? bulkEditSetting.updated_months_ago : null)
-      : (extractionSettings?.updated_months_ago ?? null)
-    const staleFilteredList = updatedMonthsAgo === null
+    // 段階①: 最終更新月除外(出品の最終更新日が指定月数より前なら除外)
+    const globalUpdatedMonthsAgo: number | null = extractionSettings?.updated_months_ago ?? null
+    const staleFilteredList = globalUpdatedMonthsAgo === null
       ? shippingFilteredList
       : shippingFilteredList.filter((scraped: { sourceUpdatedAt: string | null }) => {
           if (!scraped.sourceUpdatedAt) return true
           const cutoff = new Date()
-          cutoff.setMonth(cutoff.getMonth() - updatedMonthsAgo)
+          cutoff.setMonth(cutoff.getMonth() - globalUpdatedMonthsAgo)
           return new Date(scraped.sourceUpdatedAt) >= cutoff
         })
     const staleExcluded = shippingFilteredList.length - staleFilteredList.length
 
-    // 価格範囲除外: 元の販売価格(仕入れ値)を対象とする。eBay出品価格は
-    // 為替レート取得・一括編集設定適用より後の段階で算出されるため、この
-    // 時点では未確定であり対象にできない(price_target='ebay'は商品編集
-    // 画面の手動除外パネルでのみ対応)。
-    const priceMin: number | null = bulkEditSetting
-      ? (bulkEditSetting.price_range_enabled ? bulkEditSetting.price_min : null)
-      : (extractionSettings?.price_min ?? null)
-    const priceMax: number | null = bulkEditSetting
-      ? (bulkEditSetting.price_range_enabled ? bulkEditSetting.price_max : null)
-      : (extractionSettings?.price_max ?? null)
-    const priceRangeFilteredList = (priceMin === null && priceMax === null)
+    // 段階①: 価格範囲除外。元の販売価格(仕入れ値)を対象とする。eBay出品
+    // 価格は為替レート取得・一括編集設定適用より後の段階で算出されるため、
+    // この時点では未確定であり対象にできない。
+    const globalPriceMin: number | null = extractionSettings?.price_min ?? null
+    const globalPriceMax: number | null = extractionSettings?.price_max ?? null
+    const priceRangeFilteredList = (globalPriceMin === null && globalPriceMax === null)
       ? staleFilteredList
       : staleFilteredList.filter((scraped: { price: number | null }) => {
           const price = scraped.price ?? 0
-          if (priceMin !== null && price < priceMin) return false
-          if (priceMax !== null && price > priceMax) return false
+          if (globalPriceMin !== null && price < globalPriceMin) return false
+          if (globalPriceMax !== null && price > globalPriceMax) return false
           return true
         })
     const priceRangeExcluded = staleFilteredList.length - priceRangeFilteredList.length
+
+    // 段階②(一括編集設定プロファイル、追加の絞り込み): プロファイルが
+    // 選択されていて、かつ各項目のトグルが有効な場合のみ適用する。
+    const bulkRatingMin: number | null = bulkEditSetting?.rating_exclude_enabled ? bulkEditSetting.rating_min : null
+    const bulkRatingFilteredList = bulkRatingMin === null
+      ? priceRangeFilteredList
+      : priceRangeFilteredList.filter((scraped: { sellerRatingCount: number | null }) =>
+          scraped.sellerRatingCount === null || scraped.sellerRatingCount >= bulkRatingMin,
+        )
+    const bulkEditRatingExcluded = priceRangeFilteredList.length - bulkRatingFilteredList.length
+
+    // 段階②: 低評価数除外(セラーの悪い評価件数が許容数を超えたら除外)。
+    // 取得できない商品(null)は判定できないため除外しない(安全側)。
+    const bulkLowRatingMax: number | null = bulkEditSetting?.low_rating_exclude_enabled ? bulkEditSetting.low_rating_max : null
+    const bulkLowRatingFilteredList = bulkLowRatingMax === null
+      ? bulkRatingFilteredList
+      : bulkRatingFilteredList.filter((scraped: { sellerBadRatingCount?: number | null }) =>
+          scraped.sellerBadRatingCount === null || scraped.sellerBadRatingCount === undefined || scraped.sellerBadRatingCount <= bulkLowRatingMax,
+        )
+    const bulkEditBadRatingExcluded = bulkRatingFilteredList.length - bulkLowRatingFilteredList.length
+
+    const bulkShippingDaysMax: number | null = bulkEditSetting?.shipping_days_exclude_enabled ? bulkEditSetting.shipping_days_max : null
+    const bulkShippingFilteredList = bulkShippingDaysMax === null
+      ? bulkLowRatingFilteredList
+      : bulkLowRatingFilteredList.filter((scraped: { shippingDays: number | null }) =>
+          scraped.shippingDays === null || scraped.shippingDays <= bulkShippingDaysMax,
+        )
+    const bulkEditShippingDaysExcluded = bulkLowRatingFilteredList.length - bulkShippingFilteredList.length
+
+    const bulkUpdatedMonthsAgo: number | null = bulkEditSetting?.updated_months_exclude_enabled ? bulkEditSetting.updated_months_ago : null
+    const bulkStaleFilteredList = bulkUpdatedMonthsAgo === null
+      ? bulkShippingFilteredList
+      : bulkShippingFilteredList.filter((scraped: { sourceUpdatedAt: string | null }) => {
+          if (!scraped.sourceUpdatedAt) return true
+          const cutoff = new Date()
+          cutoff.setMonth(cutoff.getMonth() - bulkUpdatedMonthsAgo)
+          return new Date(scraped.sourceUpdatedAt) >= cutoff
+        })
+    const bulkEditUpdatedMonthsExcluded = bulkShippingFilteredList.length - bulkStaleFilteredList.length
+
+    const bulkPriceMin: number | null = bulkEditSetting?.price_range_enabled ? bulkEditSetting.price_min : null
+    const bulkPriceMax: number | null = bulkEditSetting?.price_range_enabled ? bulkEditSetting.price_max : null
+    const bulkPriceRangeFilteredList = (bulkPriceMin === null && bulkPriceMax === null)
+      ? bulkStaleFilteredList
+      : bulkStaleFilteredList.filter((scraped: { price: number | null }) => {
+          const price = scraped.price ?? 0
+          if (bulkPriceMin !== null && price < bulkPriceMin) return false
+          if (bulkPriceMax !== null && price > bulkPriceMax) return false
+          return true
+        })
+    const bulkEditPriceRangeExcluded = bulkStaleFilteredList.length - bulkPriceRangeFilteredList.length
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const setting: any = bulkEditSetting
@@ -311,7 +358,7 @@ export async function runScrape(
     // バックし、失敗商品を区別できなかった。
     const titleEngine: string = extractionSettings?.title_engine ?? 'high'
     const titleEnabled: boolean = extractionSettings?.title_enabled ?? true
-    const originalTitles = priceRangeFilteredList.map((s: { title: string }) => s.title)
+    const originalTitles = bulkPriceRangeFilteredList.map((s: { title: string }) => s.title)
     let translationResults: { title: string; failed: boolean }[] = originalTitles.map((t: string) => ({ title: t, failed: false }))
     if (titleEnabled && process.env.OPENAI_API_KEY) {
       try {
@@ -324,11 +371,11 @@ export async function runScrape(
         translationResults = originalTitles.map((t: string) => ({ title: t, failed: false }))
       }
     }
-    const translationFilteredList = priceRangeFilteredList.filter(
+    const translationFilteredList = bulkPriceRangeFilteredList.filter(
       (_: unknown, idx: number) => !translationResults[idx].failed,
     )
     const translatedTitles = translationResults.filter((r) => !r.failed).map((r) => r.title)
-    const translatedTitleFailedExcluded = priceRangeFilteredList.length - translationFilteredList.length
+    const translatedTitleFailedExcluded = bulkPriceRangeFilteredList.length - translationFilteredList.length
 
     // 重複除外チェック用に既存商品を取得
     const excludeActive: boolean = extractionSettings?.exclude_active_duplicate ?? true
@@ -452,6 +499,11 @@ export async function runScrape(
       slow_shipping_excluded: slowShippingExcluded,
       stale_excluded: staleExcluded,
       price_range_excluded: priceRangeExcluded,
+      bulk_edit_rating_excluded: bulkEditRatingExcluded,
+      bulk_edit_shipping_days_excluded: bulkEditShippingDaysExcluded,
+      bulk_edit_updated_months_excluded: bulkEditUpdatedMonthsExcluded,
+      bulk_edit_price_range_excluded: bulkEditPriceRangeExcluded,
+      bulk_edit_bad_rating_excluded: bulkEditBadRatingExcluded,
       translated_title_failed_excluded: translatedTitleFailedExcluded,
       active_duplicate_excluded: activeDuplicateExcluded,
       title_duplicate_excluded: titleDuplicateExcluded,

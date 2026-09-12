@@ -149,38 +149,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
   const sellerId: string | null = item.sellerId ?? item.seller_id ?? null
   const sellerUrl: string | null = sellerId ? `https://jp.mercari.com/user/profile/${sellerId}` : null
 
-  // 評価数: seller情報から複数パスを試みる
-  const seller = item.seller ?? item.sellerInfo ?? null
-  let sellerRatingCount: number | null = null
-  if (seller) {
-    // num_ratings が直接ある場合
-    if (typeof seller.num_ratings === 'number') sellerRatingCount = seller.num_ratings
-    // ratings オブジェクトがある場合 → good + bad の合計
-    else if (seller.ratings) {
-      const g = seller.ratings.good ?? 0
-      const b = seller.ratings.bad ?? 0
-      if (g + b > 0) sellerRatingCount = g + b
-    }
-    // evaluation_count / ratingCount
-    else if (typeof seller.evaluation_count === 'number') sellerRatingCount = seller.evaluation_count
-    else if (typeof seller.ratingCount === 'number') sellerRatingCount = seller.ratingCount
-  }
-
-  // 発送日数: shipping_duration から取得
-  // APIレスポンス例: { min: 1, max: 2 } または "1~2日で発送"
-  const sd = item.shipping_duration ?? item.shippingDuration ?? item.shipping_payer ?? null
-  let shippingDays: number | null = null
-  if (sd && typeof sd === 'object') {
-    if (typeof sd.min === 'number') shippingDays = sd.min
-    else if (typeof sd.max === 'number') shippingDays = sd.max
-  } else if (typeof sd === 'string') {
-    const m = sd.match(/(\d+)/)
-    if (m) shippingDays = parseInt(m[1], 10)
-  }
-  // フォールバック: shipping_duration_days
-  if (shippingDays === null && typeof item.shipping_duration_days === 'number') {
-    shippingDays = item.shipping_duration_days
-  }
+  const { sellerRatingCount, sellerBadRatingCount, shippingDays } = extractSellerAndShipping(item)
 
   // 最終更新日: Unix秒またはISO文字列
   const updatedRaw = item.updated ?? item.updated_at ?? item.updatedAt ?? item.created ?? null
@@ -206,11 +175,59 @@ function toProduct(item: any, url: string): ScrapedProduct {
     condition: item.item_condition?.name ?? item.itemCondition?.name ?? null,
     category: item.item_category?.name ?? item.itemCategory?.name ?? null,
     sellerRatingCount,
+    sellerBadRatingCount,
     shippingDays,
     sourceUpdatedAt,
     availability,
     sellerUrl,
   }
+}
+
+// 評価数・低評価数(セラーの悪い評価件数)・発送日数の抽出ロジック。
+// 実データ確認: 検索API(entities:search)のレスポンスにはseller/shipping_duration
+// が一切含まれず、単品詳細API(items/get)でのみ取得できる
+// (seller.ratings.bad / shipping_duration.min_days・max_days)。
+// 以前はmin/maxという実在しないフィールド名をチェックしていたため、
+// 詳細データがあっても発送日数が常にnullになるバグがあった。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractSellerAndShipping(item: any): {
+  sellerRatingCount: number | null
+  sellerBadRatingCount: number | null
+  shippingDays: number | null
+} {
+  const seller = item.seller ?? item.sellerInfo ?? null
+  let sellerRatingCount: number | null = null
+  let sellerBadRatingCount: number | null = null
+  if (seller) {
+    if (typeof seller.ratings?.bad === 'number') sellerBadRatingCount = seller.ratings.bad
+
+    if (typeof seller.num_ratings === 'number') sellerRatingCount = seller.num_ratings
+    else if (seller.ratings) {
+      const g = seller.ratings.good ?? 0
+      const b = seller.ratings.bad ?? 0
+      if (g + b > 0) sellerRatingCount = g + b
+    } else if (typeof seller.evaluation_count === 'number') sellerRatingCount = seller.evaluation_count
+    else if (typeof seller.ratingCount === 'number') sellerRatingCount = seller.ratingCount
+  }
+
+  // 発送日数: shipping_duration から取得
+  // APIレスポンス例: { min_days: 4, max_days: 7 } または "4~7日で発送"
+  const sd = item.shipping_duration ?? item.shippingDuration ?? null
+  let shippingDays: number | null = null
+  if (sd && typeof sd === 'object') {
+    if (typeof sd.min_days === 'number') shippingDays = sd.min_days
+    else if (typeof sd.max_days === 'number') shippingDays = sd.max_days
+    else if (typeof sd.min === 'number') shippingDays = sd.min
+    else if (typeof sd.max === 'number') shippingDays = sd.max
+  } else if (typeof sd === 'string') {
+    const m = sd.match(/(\d+)/)
+    if (m) shippingDays = parseInt(m[1], 10)
+  }
+  if (shippingDays === null && typeof item.shipping_duration_days === 'number') {
+    shippingDays = item.shipping_duration_days
+  }
+
+  return { sellerRatingCount, sellerBadRatingCount, shippingDays }
 }
 
 export class MercariScraper {
@@ -455,9 +472,17 @@ export class MercariScraper {
         try {
           const detail = await this.fetchItemDetail(product.sourceItemId)
           const detailImages = extractImages(detail)
-          return detailImages.length > 0
-            ? { ...product, images: detailImages }
-            : product
+          // 検索結果には評価数・低評価数・発送日数が含まれないため、
+          // 画像補完のためにどのみち取得している単品詳細レスポンスから
+          // 併せて補完する(追加のAPIコストなし)。
+          const { sellerRatingCount, sellerBadRatingCount, shippingDays } = extractSellerAndShipping(detail)
+          return {
+            ...product,
+            images: detailImages.length > 0 ? detailImages : product.images,
+            sellerRatingCount: sellerRatingCount ?? product.sellerRatingCount,
+            sellerBadRatingCount: sellerBadRatingCount ?? product.sellerBadRatingCount,
+            shippingDays: shippingDays ?? product.shippingDays,
+          }
         } catch {
           // 詳細APIが404でも、Mercari CDNの連番画像を確認して全画像を補完する。
           const probedImages = await this.probeItemImages(product.sourceItemId)

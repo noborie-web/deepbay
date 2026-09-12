@@ -37,6 +37,8 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
   const [priceMax, setPriceMax] = useState(initialValue(setting?.price_max))
   const [ratingEnabled, setRatingEnabled] = useState(setting?.rating_exclude_enabled ?? false)
   const [ratingMin, setRatingMin] = useState(initialValue(setting?.rating_min))
+  const [lowRatingEnabled, setLowRatingEnabled] = useState(setting?.low_rating_exclude_enabled ?? false)
+  const [lowRatingMax, setLowRatingMax] = useState(initialValue(setting?.low_rating_max))
   const [shippingDaysEnabled, setShippingDaysEnabled] = useState(setting?.shipping_days_exclude_enabled ?? false)
   const [shippingDaysMax, setShippingDaysMax] = useState(initialValue(setting?.shipping_days_max))
   const [updatedMonthsEnabled, setUpdatedMonthsEnabled] = useState(setting?.updated_months_exclude_enabled ?? false)
@@ -89,6 +91,8 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
           price_max: optionalNumber(priceMax),
           rating_exclude_enabled: ratingEnabled,
           rating_min: optionalNumber(ratingMin),
+          low_rating_exclude_enabled: lowRatingEnabled,
+          low_rating_max: optionalNumber(lowRatingMax),
           shipping_days_exclude_enabled: shippingDaysEnabled,
           shipping_days_max: optionalNumber(shippingDaysMax),
           updated_months_exclude_enabled: updatedMonthsEnabled,
@@ -243,6 +247,11 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
                 {toggleRow('合計評価数除外', ratingEnabled, setRatingEnabled, (
                   <label className="block text-xs text-gray-600">許容合計評価数（件未満で除外）
                     <input type="number" min="0" value={ratingMin} onChange={event => setRatingMin(event.target.value)} className={inputClassName} />
+                  </label>
+                ))}
+                {toggleRow('低評価数除外', lowRatingEnabled, setLowRatingEnabled, (
+                  <label className="block text-xs text-gray-600">許容低評価数（件以下、超えたら除外）
+                    <input type="number" min="0" value={lowRatingMax} onChange={event => setLowRatingMax(event.target.value)} className={inputClassName} />
                   </label>
                 ))}
               </div>
