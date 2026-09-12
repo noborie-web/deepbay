@@ -402,6 +402,24 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
           {/* 利益計算・価格帯別利益額モード */}
           {(mode === 'profit' || mode === 'tiered') && (
             <div className="space-y-3">
+              {mode === 'tiered' && (
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-gray-500">
+                    {tierSettingsLoaded && '保存済みの設定を自動で読み込んでいます（未保存の場合は初期値を表示）'}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    {tierSaveStatus === 'error' && <span className="text-xs text-red-500">保存に失敗しました</span>}
+                    <button
+                      type="button"
+                      onClick={saveTierSettings}
+                      disabled={tierSaveStatus === 'saving'}
+                      className="border border-gray-300 text-gray-700 rounded px-3 py-1.5 text-xs hover:bg-gray-100 disabled:opacity-50"
+                    >
+                      {tierSaveStatus === 'saving' ? '保存中...' : tierSaveStatus === 'saved' ? '保存しました' : '設定を保存'}
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <label className="block space-y-1">
                   <span className="text-xs text-gray-500">1ドルあたりの円レート</span>
@@ -484,28 +502,14 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                         手数料・送料・固定費を差し引いた後に残したい利益を円で設定します。
                       </p>
                     </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={saveTierSettings}
-                        disabled={tierSaveStatus === 'saving'}
-                        className="border border-gray-300 text-gray-700 rounded px-2.5 py-1 text-xs hover:bg-gray-100 disabled:opacity-50"
-                      >
-                        {tierSaveStatus === 'saving' ? '保存中...' : tierSaveStatus === 'saved' ? '保存しました' : '設定を保存'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={addTier}
-                        className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50"
-                      >
-                        ＋末尾に行を追加
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={addTier}
+                      className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 shrink-0"
+                    >
+                      ＋末尾に行を追加
+                    </button>
                   </div>
-                  {tierSaveStatus === 'error' && <p className="text-[11px] text-red-500">保存に失敗しました</p>}
-                  {tierSettingsLoaded && (
-                    <p className="text-[11px] text-gray-400">保存済みの設定を自動で読み込んでいます（未保存の場合は初期値を表示）</p>
-                  )}
                   <div className="grid grid-cols-[1fr_1fr_72px] gap-2 px-1 text-[11px] text-gray-500">
                     <span>仕入価格の上限（円）</span>
                     <span>希望利益額（円）</span>
