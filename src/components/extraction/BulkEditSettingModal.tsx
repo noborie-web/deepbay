@@ -60,6 +60,7 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
   const [bulkSellers, setBulkSellers] = useState<BulkDangerSeller[]>([])
   const [newSellerUrl, setNewSellerUrl] = useState('')
   const [sellerListError, setSellerListError] = useState('')
+  const [importing, setImporting] = useState(false)
 
   useEffect(() => {
     if (!setting?.id) return
@@ -84,6 +85,35 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
       setNewSellerUrl('')
     } catch (e) {
       setSellerListError(e instanceof Error ? e.message : '追加に失敗しました')
+    }
+  }
+
+  // ユーザー要望: 抽出危険設定(グローバル)に登録済みのセラーURLを、
+  // 1件ずつ手入力せずまとめて反映したい。
+  async function importFromGlobalSellers() {
+    if (!setting?.id) return
+    setSellerListError('')
+    setImporting(true)
+    try {
+      const globalResponse = await fetch('/api/extraction-settings')
+      const globalData = await globalResponse.json()
+      const globalUrls: string[] = (globalData.sellers ?? []).map((s: { seller_url: string }) => s.seller_url)
+      if (globalUrls.length === 0) {
+        setSellerListError('抽出危険設定に登録されたセラーURLがありません')
+        return
+      }
+      const response = await fetch('/api/bulk-edit-danger-sellers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bulk_edit_setting_id: setting.id, seller_urls: globalUrls }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error ?? '反映に失敗しました')
+      setBulkSellers((current) => [...current, ...(data.sellers ?? [])])
+    } catch (e) {
+      setSellerListError(e instanceof Error ? e.message : '反映に失敗しました')
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -285,6 +315,14 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
                     ) : (
                       <>
                         <p className="mb-2 text-xs text-gray-500">この一括編集設定専用の危険セラーリスト（グローバル設定とは別）</p>
+                        <button
+                          type="button"
+                          onClick={importFromGlobalSellers}
+                          disabled={importing}
+                          className="mb-2 rounded border border-blue-200 px-3 py-1 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                        >
+                          {importing ? '反映中...' : '抽出危険設定の登録URLを一括反映'}
+                        </button>
                         {sellerListError && <p className="mb-2 text-xs text-red-600">{sellerListError}</p>}
                         <div className="flex gap-2">
                           <input

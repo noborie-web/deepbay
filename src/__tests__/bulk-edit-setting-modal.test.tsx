@@ -257,6 +257,38 @@ describe('BulkEditSettingModal', () => {
     await waitFor(() => expect(screen.queryByText('https://jp.mercari.com/user/profile/999')).not.toBeInTheDocument())
   })
 
+  // ユーザー要望: 抽出危険設定(グローバル)に登録済みのセラーURLを
+  // 1件ずつ手入力せずまとめて反映したい。
+  it('「抽出危険設定の登録URLを一括反映」を押すと、グローバル設定のセラーURLがまとめて追加される', async () => {
+    const globalSellers = [
+      { seller_url: 'https://jp.mercari.com/user/profile/111' },
+      { seller_url: 'https://jp.mercari.com/user/profile/222' },
+    ]
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/extraction-settings')) {
+        return { ok: true, json: async () => ({ sellers: globalSellers }) }
+      }
+      if (url.includes('bulk-edit-danger-sellers')) {
+        if (init?.method === 'POST') {
+          const body = JSON.parse(String(init.body))
+          const inserted = body.seller_urls.map((seller_url: string, i: number) => ({ id: `imported-${i}`, seller_url }))
+          return { ok: true, json: async () => ({ sellers: inserted }) }
+        }
+        return { ok: true, json: async () => ({ sellers: [] }) }
+      }
+      return { ok: true, json: async () => ({ setting: existingSetting }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<BulkEditSettingModal setting={existingSetting} onSaved={vi.fn()} onClose={vi.fn()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '除外設定' }))
+    await userEvent.click(await screen.findByRole('button', { name: '抽出危険設定の登録URLを一括反映' }))
+
+    expect(await screen.findByText('https://jp.mercari.com/user/profile/111')).toBeInTheDocument()
+    expect(screen.getByText('https://jp.mercari.com/user/profile/222')).toBeInTheDocument()
+  })
+
   it('未保存(id無し)の設定では専用リストの代わりに保存を促す案内を表示する', async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ setting: existingSetting }) }))
     vi.stubGlobal('fetch', fetchMock)
