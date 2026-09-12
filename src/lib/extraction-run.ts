@@ -57,7 +57,7 @@ export async function runScrape(
     const limit = 600
 
     // 抽出設定を取得
-    const [{ data: dangerSellers }, { data: dangerWords }, { data: veroBrandRows }, { data: replaceWords }, { data: extractionSettings }, { data: spotWordRows }, { data: rawBulkEditSetting }] = await Promise.all([
+    const [{ data: dangerSellers }, { data: dangerWords }, { data: veroBrandRows }, { data: replaceWords }, { data: extractionSettings }, { data: spotWordRows }, { data: rawBulkEditSetting }, { data: bulkDangerSellerRows }] = await Promise.all([
       supabase.from('danger_sellers').select('seller_url').eq('user_id', userId),
       supabase.from('danger_words').select('word').eq('user_id', userId),
       supabase.from('vero_brands').select('brand').eq('user_id', userId),
@@ -67,6 +67,9 @@ export async function runScrape(
       bulkEditSettingId
         ? supabase.from('bulk_edit_settings').select('*').eq('id', bulkEditSettingId).single()
         : Promise.resolve({ data: null }),
+      bulkEditSettingId
+        ? supabase.from('bulk_edit_danger_sellers').select('seller_url').eq('bulk_edit_setting_id', bulkEditSettingId)
+        : Promise.resolve({ data: [] }),
     ])
 
     // ユーザー要望: 一括編集設定「全体」のON/OFFを切り替えられるように
@@ -279,12 +282,18 @@ export async function runScrape(
       : priceRangeFilteredList
     const bulkEditSoldOutExcluded = priceRangeFilteredList.length - bulkSoldOutFilteredList.length
 
-    const bulkSellerFilteredList = (!dangerSellerEnabled || sellerUrls.length === 0)
+    // ユーザー要望: 一括編集設定プロファイルごとに独立した危険セラー
+    // リストを持てるようにし、段階②を実際に機能させる(以前はグローバル
+    // リストを再チェックするだけで常に0件だった)。
+    const bulkSellerUrls: string[] = (bulkDangerSellerRows ?? []).map((s: { seller_url: string }) =>
+      s.seller_url.split('?')[0].trim().replace(/\/+$/, ''),
+    )
+    const bulkSellerFilteredList = (!dangerSellerEnabled || bulkSellerUrls.length === 0)
       ? bulkSoldOutFilteredList
       : bulkSoldOutFilteredList.filter((scraped: { sellerUrl?: string | null }) => {
           if (!scraped.sellerUrl) return true
           const normalizedSellerUrl = scraped.sellerUrl.split('?')[0].trim().replace(/\/+$/, '')
-          return !sellerUrls.some((s) => normalizedSellerUrl.startsWith(s))
+          return !bulkSellerUrls.some((s) => normalizedSellerUrl.startsWith(s))
         })
     const bulkEditDangerSellerExcluded = bulkSoldOutFilteredList.length - bulkSellerFilteredList.length
 
