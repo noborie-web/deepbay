@@ -27,7 +27,10 @@ vi.mock('@/lib/supabase/server', () => ({
 let fetchMock: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
-  fetchMock = vi.fn()
+  // PriceEditModalは価格帯別利益額の保存設定読み込み(/api/price-tier-settings)
+  // も自動で呼ぶため、個別のmockResolvedValueOnceで想定していない呼び出しに
+  // 備えて無害なデフォルト応答を用意する(mockResolvedValueOnceは優先される)。
+  fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }))
   global.fetch = fetchMock as unknown as typeof fetch
 })
 
@@ -1793,5 +1796,81 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
       expect(screen.getByText(/自動取得できませんでした/)).toBeTruthy()
     })
     expect(screen.getByRole('spinbutton', { name: '1ドルあたりの円レート' })).toHaveValue(150)
+  })
+
+  // ユーザー要望: 「価格帯別利益額」を一番よく使う予定だが、毎回入力し
+  // 直すのが手間なため、保存した設定を次回開いたときに自動で読み込みたい。
+  it('保存済みの価格帯別利益額設定があれば、モーダルを開いたときに自動で読み込む', async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ rate: 150, date: '2026-07-25' }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          setting: {
+            tiers: [
+              { maxPurchaseJpy: 8000, profitJpy: 2500 },
+              { maxPurchaseJpy: null, profitJpy: 9000 },
+            ],
+            ebay_fee_rate: 0.15,
+            shipping_jpy: 1500,
+            fixed_cost_usd: 1,
+            ad_rate: 0.04,
+            customs_rate: 0,
+            discount_rate: 0,
+          },
+        }),
+      })
+    const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
+    const product = makeProduct('p1', { purchase_price_jpy: 6000 })
+
+    render(
+      <PriceEditModal
+        products={[product]}
+        pagedIds={new Set(['p1'])}
+        getPurchaseJpy={() => 6000}
+        onApply={vi.fn()}
+        onClose={vi.fn()}
+      />
+    )
+
+    await userEvent.click(screen.getByLabelText('価格帯別利益額'))
+
+    await waitFor(() => {
+      expect(screen.getByRole('spinbutton', { name: '仕入上限 1' })).toHaveValue(8000)
+    })
+    expect(screen.getByRole('spinbutton', { name: '希望利益額 1' })).toHaveValue(2500)
+    expect(screen.getByRole('spinbutton', { name: '希望利益額 2' })).toHaveValue(9000)
+    expect(screen.getByLabelText('広告プロモーション率')).toHaveValue(4)
+  })
+
+  it('「設定を保存」を押すと、現在の価格帯別利益額設定がPUTで保存される', async () => {
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ rate: 150, date: '2026-07-25' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ setting: null }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ setting: {} }) })
+    const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
+    const product = makeProduct('p1', { purchase_price_jpy: 6000 })
+
+    render(
+      <PriceEditModal
+        products={[product]}
+        pagedIds={new Set(['p1'])}
+        getPurchaseJpy={() => 6000}
+        onApply={vi.fn()}
+        onClose={vi.fn()}
+      />
+    )
+
+    await userEvent.click(screen.getByLabelText('価格帯別利益額'))
+    await userEvent.click(screen.getByRole('button', { name: '設定を保存' }))
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/price-tier-settings', expect.objectContaining({ method: 'PUT' }))
+    })
+    const call = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    const body = JSON.parse(String((call?.[1] as RequestInit).body))
+    expect(body.tiers[0]).toMatchObject({ maxPurchaseJpy: 5000, profitJpy: 2000 })
+    expect(body.tiers.at(-1)).toMatchObject({ maxPurchaseJpy: null, profitJpy: 15000 })
+    await screen.findByRole('button', { name: '保存しました' })
   })
 })
