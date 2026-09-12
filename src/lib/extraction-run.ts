@@ -179,7 +179,10 @@ export async function runScrape(
     // 場合、その商品だけを除外する(抽出URL自体が危険セラーのページである
     // 場合は上のチェックで既にスキップ済み)。スクレイパーが出品者URLを
     // 取得できるサイトのみ対象(sellerUrlが取得できない場合は判定しない)。
-    const sellerFilteredList = (!dangerSellerEnabled || sellerUrls.length === 0)
+    // ユーザー要望: 公式ツールはこれをグローバル段階(常時適用)として
+    // 表示するため、一括編集設定の有無に関わらず常に適用する(段階②の
+    // 追加除外は後段でdangerSellerEnabledを使って別途行う)。
+    const sellerFilteredList = sellerUrls.length === 0
       ? veroFilteredList
       : veroFilteredList.filter((scraped: { sellerUrl?: string | null }) => {
           if (!scraped.sellerUrl) return true
@@ -266,14 +269,32 @@ export async function runScrape(
     const priceRangeExcluded = staleFilteredList.length - priceRangeFilteredList.length
 
     // 段階②(一括編集設定プロファイル、追加の絞り込み): プロファイルが
-    // 選択されていて、かつ各項目のトグルが有効な場合のみ適用する。
+    // 選択されていて、かつ各項目のトグルが有効な場合のみ適用する。公式
+    // ツールの並び(売り切れ→危険Seller→発送日数→低評価数→評価数→
+    // 最終更新月→価格範囲)に合わせる。段階①で既に除外済みのため通常は
+    // 0件になるが、プロファイル側でトグルをOFFにできる点に意味がある。
+    const soldOutEnabled: boolean = bulkEditSetting?.sold_out_exclude_enabled ?? true
+    const bulkSoldOutFilteredList = soldOutEnabled
+      ? priceRangeFilteredList.filter((scraped: { availability?: string }) => scraped.availability !== 'sold_out')
+      : priceRangeFilteredList
+    const bulkEditSoldOutExcluded = priceRangeFilteredList.length - bulkSoldOutFilteredList.length
+
+    const bulkSellerFilteredList = (!dangerSellerEnabled || sellerUrls.length === 0)
+      ? bulkSoldOutFilteredList
+      : bulkSoldOutFilteredList.filter((scraped: { sellerUrl?: string | null }) => {
+          if (!scraped.sellerUrl) return true
+          const normalizedSellerUrl = scraped.sellerUrl.split('?')[0].trim().replace(/\/+$/, '')
+          return !sellerUrls.some((s) => normalizedSellerUrl.startsWith(s))
+        })
+    const bulkEditDangerSellerExcluded = bulkSoldOutFilteredList.length - bulkSellerFilteredList.length
+
     const bulkRatingMin: number | null = bulkEditSetting?.rating_exclude_enabled ? bulkEditSetting.rating_min : null
     const bulkRatingFilteredList = bulkRatingMin === null
-      ? priceRangeFilteredList
-      : priceRangeFilteredList.filter((scraped: { sellerRatingCount: number | null }) =>
+      ? bulkSellerFilteredList
+      : bulkSellerFilteredList.filter((scraped: { sellerRatingCount: number | null }) =>
           scraped.sellerRatingCount === null || scraped.sellerRatingCount >= bulkRatingMin,
         )
-    const bulkEditRatingExcluded = priceRangeFilteredList.length - bulkRatingFilteredList.length
+    const bulkEditRatingExcluded = bulkSellerFilteredList.length - bulkRatingFilteredList.length
 
     // 段階②: 低評価数除外(セラーの悪い評価件数が許容数を超えたら除外)。
     // 取得できない商品(null)は判定できないため除外しない(安全側)。
@@ -499,6 +520,8 @@ export async function runScrape(
       slow_shipping_excluded: slowShippingExcluded,
       stale_excluded: staleExcluded,
       price_range_excluded: priceRangeExcluded,
+      bulk_edit_sold_out_excluded: bulkEditSoldOutExcluded,
+      bulk_edit_danger_seller_excluded: bulkEditDangerSellerExcluded,
       bulk_edit_rating_excluded: bulkEditRatingExcluded,
       bulk_edit_shipping_days_excluded: bulkEditShippingDaysExcluded,
       bulk_edit_updated_months_excluded: bulkEditUpdatedMonthsExcluded,

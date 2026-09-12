@@ -29,6 +29,7 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
   const [shippingCostJpy, setShippingCostJpy] = useState(initialValue(setting?.shipping_cost_jpy))
   const [fixedCostUsd, setFixedCostUsd] = useState(initialValue(setting?.fixed_cost_usd))
 
+  const [soldOutEnabled, setSoldOutEnabled] = useState(setting?.sold_out_exclude_enabled ?? true)
   const [veroEnabled, setVeroEnabled] = useState(setting?.vero_exclude_enabled ?? true)
   const [dangerSellerEnabled, setDangerSellerEnabled] = useState(setting?.danger_seller_exclude_enabled ?? true)
   const [dangerWordEnabled, setDangerWordEnabled] = useState(setting?.danger_word_exclude_enabled ?? true)
@@ -83,6 +84,7 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
           ebay_fee_rate: optionalNumber(ebayFeeRate),
           shipping_cost_jpy: optionalNumber(shippingCostJpy),
           fixed_cost_usd: optionalNumber(fixedCostUsd),
+          sold_out_exclude_enabled: soldOutEnabled,
           vero_exclude_enabled: veroEnabled,
           danger_seller_exclude_enabled: dangerSellerEnabled,
           danger_word_exclude_enabled: dangerWordEnabled,
@@ -226,7 +228,8 @@ export default function BulkEditSettingModal({ setting, onSaved, onClose }: Prop
           {tab === 'exclusion' && (
             <>
               <p className="text-xs font-medium text-red-600">セキュリティ除外設定</p>
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                {toggleRow('売り切れ除外', soldOutEnabled, setSoldOutEnabled)}
                 {toggleRow('Veroワード除外', veroEnabled, setVeroEnabled)}
                 {toggleRow('危険セラー除外', dangerSellerEnabled, setDangerSellerEnabled)}
                 {toggleRow('危険単語除外', dangerWordEnabled, setDangerWordEnabled)}

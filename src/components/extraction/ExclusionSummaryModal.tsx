@@ -25,6 +25,8 @@ const ROWS: { key: keyof ExtractionExclusionSummary; label: string }[] = [
   { key: 'slow_shipping_excluded', label: '発送日数除外' },
   { key: 'stale_excluded', label: '最終更新月除外' },
   { key: 'price_range_excluded', label: '価格範囲除外' },
+  { key: 'bulk_edit_sold_out_excluded', label: '(一括編集)売り切れ除外' },
+  { key: 'bulk_edit_danger_seller_excluded', label: '(一括編集)危険Seller除外' },
   { key: 'bulk_edit_rating_excluded', label: '(一括編集)評価数除外' },
   { key: 'bulk_edit_bad_rating_excluded', label: '(一括編集)低評価数除外' },
   { key: 'bulk_edit_shipping_days_excluded', label: '(一括編集)発送日数除外' },

@@ -23,6 +23,7 @@ const TOGGLE_FIELDS = [
   'is_default',
   'is_enabled',
   'auto_pricing_enabled',
+  'sold_out_exclude_enabled',
   'vero_exclude_enabled',
   'danger_seller_exclude_enabled',
   'danger_word_exclude_enabled',

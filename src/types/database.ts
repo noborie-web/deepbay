@@ -53,6 +53,7 @@ export interface BulkEditSetting {
   is_default: boolean
   is_enabled: boolean
   auto_pricing_enabled: boolean
+  sold_out_exclude_enabled: boolean
   vero_exclude_enabled: boolean
   danger_seller_exclude_enabled: boolean
   danger_word_exclude_enabled: boolean
@@ -84,6 +85,8 @@ export interface ExtractionExclusionSummary {
   slow_shipping_excluded: number
   stale_excluded: number
   price_range_excluded: number
+  bulk_edit_sold_out_excluded: number
+  bulk_edit_danger_seller_excluded: number
   bulk_edit_rating_excluded: number
   bulk_edit_shipping_days_excluded: number
   bulk_edit_updated_months_excluded: number
