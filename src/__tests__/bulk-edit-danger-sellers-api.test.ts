@@ -14,6 +14,8 @@ function makeDatabase(options: {
   ownsSetting?: boolean
   sellers?: Array<{ id: string; seller_url: string }>
   insertedSeller?: { id: string; seller_url: string } | null
+  insertedSellers?: Array<{ id: string; seller_url: string }>
+  existingSellerUrls?: Array<{ seller_url: string }>
   deleteCount?: number
 } = {}) {
   const ownsSetting = options.ownsSetting ?? true
@@ -22,9 +24,12 @@ function makeDatabase(options: {
     calls,
     db: {
       from(table: string) {
-        let operation: 'delete' | null = null
+        let operation: 'delete' | 'insert' | 'select-existing' | null = null
         const query = {
-          select() { return query },
+          select() {
+            if (operation !== 'insert') operation = 'select-existing'
+            return query
+          },
           eq() { return query },
           order() {
             calls.push({ table, op: 'list' })
@@ -36,6 +41,7 @@ function makeDatabase(options: {
           },
           insert() {
             calls.push({ table, op: 'insert' })
+            operation = 'insert'
             return query
           },
           single() {
@@ -47,7 +53,13 @@ function makeDatabase(options: {
             return query
           },
           then(onFulfilled: (v: unknown) => unknown, onRejected?: (r: unknown) => unknown) {
-            const value = operation === 'delete' ? { error: null, count: options.deleteCount ?? 1 } : { data: null, error: null }
+            const value = operation === 'delete'
+              ? { error: null, count: options.deleteCount ?? 1 }
+              : operation === 'insert'
+                ? { data: options.insertedSellers ?? [], error: null }
+                : operation === 'select-existing'
+                  ? { data: options.existingSellerUrls ?? [], error: null }
+                  : { data: null, error: null }
             return Promise.resolve(value).then(onFulfilled, onRejected)
           },
         }
@@ -97,6 +109,52 @@ describe('bulk edit danger sellers API', () => {
     expect(response.status).toBe(201)
     const body = await response.json()
     expect(body.seller).toEqual(inserted)
+  })
+
+  // ユーザー要望: 抽出危険設定(グローバル)の登録URLを一括反映できるように
+  // したい。
+  it('POST with seller_urls bulk-inserts new URLs and skips ones already registered', async () => {
+    const insertedSellers = [{ id: 's3', seller_url: 'https://jp.mercari.com/user/profile/333' }]
+    const { db, calls } = makeDatabase({
+      existingSellerUrls: [{ seller_url: 'https://jp.mercari.com/user/profile/111' }],
+      insertedSellers,
+    })
+    mocks.createServiceClient.mockReturnValue(db)
+
+    const response = await POST(new NextRequest('http://localhost/api/bulk-edit-danger-sellers', {
+      method: 'POST',
+      body: JSON.stringify({
+        bulk_edit_setting_id: 'bulk-1',
+        seller_urls: [
+          'https://jp.mercari.com/user/profile/111', // 既存のため除外されるはず
+          'https://jp.mercari.com/user/profile/333',
+        ],
+      }),
+    }))
+
+    expect(response.status).toBe(201)
+    const body = await response.json()
+    expect(body.sellers).toEqual(insertedSellers)
+    expect(calls.some((c) => c.op === 'insert')).toBe(true)
+  })
+
+  it('POST with seller_urls returns an empty result when all URLs are already registered', async () => {
+    const { db } = makeDatabase({
+      existingSellerUrls: [{ seller_url: 'https://jp.mercari.com/user/profile/111' }],
+    })
+    mocks.createServiceClient.mockReturnValue(db)
+
+    const response = await POST(new NextRequest('http://localhost/api/bulk-edit-danger-sellers', {
+      method: 'POST',
+      body: JSON.stringify({
+        bulk_edit_setting_id: 'bulk-1',
+        seller_urls: ['https://jp.mercari.com/user/profile/111'],
+      }),
+    }))
+
+    expect(response.status).toBe(201)
+    const body = await response.json()
+    expect(body.sellers).toEqual([])
   })
 
   it('POST rejects when the setting is not owned by the authenticated user', async () => {

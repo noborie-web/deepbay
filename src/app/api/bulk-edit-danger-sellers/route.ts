@@ -52,12 +52,39 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => null) as Record<string, unknown> | null
   const bulkEditSettingId = typeof body?.bulk_edit_setting_id === 'string' ? body.bulk_edit_setting_id : null
-  const sellerUrl = typeof body?.seller_url === 'string' ? body.seller_url.trim() : ''
   if (!bulkEditSettingId) return NextResponse.json({ error: 'bulk_edit_setting_idが必要です' }, { status: 400 })
-  if (!sellerUrl) return NextResponse.json({ error: 'セラーURLは必須です' }, { status: 400 })
   if (!(await assertOwnsSetting(user.id, bulkEditSettingId))) {
     return NextResponse.json({ error: 'Setting not found' }, { status: 404 })
   }
+
+  // ユーザー要望: 抽出危険設定(グローバル)に登録済みのセラーURLを、
+  // 一括編集設定専用リストへまとめて反映できるようにしたい
+  // (1件ずつ手入力するのが手間だったため)。
+  if (Array.isArray(body?.seller_urls)) {
+    const client = admin()
+    const urls = body.seller_urls
+      .filter((u): u is string => typeof u === 'string' && u.trim().length > 0)
+      .map((u) => u.trim())
+    if (urls.length === 0) return NextResponse.json({ error: 'セラーURLが必要です' }, { status: 400 })
+
+    const { data: existing } = await client
+      .from('bulk_edit_danger_sellers')
+      .select('seller_url')
+      .eq('bulk_edit_setting_id', bulkEditSettingId)
+    const existingUrls = new Set((existing ?? []).map((e: { seller_url: string }) => e.seller_url))
+    const newUrls = [...new Set(urls)].filter((u) => !existingUrls.has(u))
+    if (newUrls.length === 0) return NextResponse.json({ sellers: [] }, { status: 201 })
+
+    const { data, error } = await client
+      .from('bulk_edit_danger_sellers')
+      .insert(newUrls.map((seller_url) => ({ bulk_edit_setting_id: bulkEditSettingId, user_id: user.id, seller_url })))
+      .select('*')
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ sellers: data ?? [] }, { status: 201 })
+  }
+
+  const sellerUrl = typeof body?.seller_url === 'string' ? body.seller_url.trim() : ''
+  if (!sellerUrl) return NextResponse.json({ error: 'セラーURLは必須です' }, { status: 400 })
 
   const { data, error } = await admin()
     .from('bulk_edit_danger_sellers')
