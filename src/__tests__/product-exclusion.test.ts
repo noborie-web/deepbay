@@ -39,6 +39,7 @@ function makeProduct(id: string, overrides: Partial<Product> = {}): Product {
     listed_at: null,
     sold_at: null,
     seller_rating_count: null,
+    seller_url: null,
     shipping_days: null,
     source_updated_at: null,
     purchase_price_jpy: null,
@@ -171,17 +172,35 @@ describe('キーワード除外判定(スポット文字・簡易除外・危険
   })
 })
 
+// バグ修正: 以前はproduct.source_url(商品ページURL、例:
+// https://jp.mercari.com/item/m123)を登録済み危険セラーURL(出品者
+// プロフィールURL)と比較していたため、形の異なるURL同士の比較となり
+// 実データでは常に0件になっていた。products.seller_url(抽出時に
+// スクレイパーのsellerUrlを保存したもの)と比較するよう修正した。
 describe('危険セラー除外判定', () => {
-  it('セラーURLの前方一致で商品を抽出する(クエリパラメータ・末尾スラッシュは無視)', () => {
+  it('seller_urlの前方一致で商品を抽出する(クエリパラメータ・末尾スラッシュは無視)', () => {
     const products = [
-      makeProduct('p1', { source_url: 'https://jp.mercari.com/user/profile/123?ref=x' }),
-      makeProduct('p2', { source_url: 'https://jp.mercari.com/user/profile/999' }),
+      makeProduct('p1', {
+        source_url: 'https://jp.mercari.com/item/m111',
+        seller_url: 'https://jp.mercari.com/user/profile/123?ref=x',
+      }),
+      makeProduct('p2', {
+        source_url: 'https://jp.mercari.com/item/m222',
+        seller_url: 'https://jp.mercari.com/user/profile/999',
+      }),
     ]
     expect(findDangerSellerProductIds(products, ['https://jp.mercari.com/user/profile/123/'])).toEqual(['p1'])
   })
 
   it('セラーURL未設定なら何も除外しない', () => {
     expect(findDangerSellerProductIds([makeProduct('p1')], [])).toEqual([])
+  })
+
+  it('seller_urlを取得できていない商品(抽出時点で未対応/未保存)は判定せず素通りする', () => {
+    const products = [
+      makeProduct('p1', { source_url: 'https://jp.mercari.com/item/m111', seller_url: null }),
+    ]
+    expect(findDangerSellerProductIds(products, ['https://jp.mercari.com/user/profile/123'])).toEqual([])
   })
 })
 

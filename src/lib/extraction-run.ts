@@ -435,6 +435,7 @@ export async function runScrape(
       title: string; price: number | null; description: string
       images: string[]; condition: string | null
       sellerRatingCount: number | null; shippingDays: number | null; sourceUpdatedAt: string | null
+      sellerUrl?: string | null
     }, idx: number) => {
       let ebayTitle = applyReplaces(translatedTitles[idx] ?? scraped.title)
       if (setting) {
@@ -473,6 +474,7 @@ export async function runScrape(
         ebay_images: scraped.images,
         listing_status: 'draft' as const,
         seller_rating_count: scraped.sellerRatingCount,
+        seller_url: scraped.sellerUrl ?? null,
         shipping_days: scraped.shippingDays,
         source_updated_at: scraped.sourceUpdatedAt,
       }

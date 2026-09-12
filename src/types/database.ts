@@ -149,6 +149,7 @@ export interface Product {
   listed_at: string | null
   sold_at: string | null
   seller_rating_count: number | null
+  seller_url: string | null
   shipping_days: number | null
   source_updated_at: string | null
   purchase_price_jpy: number | null

@@ -62,6 +62,7 @@ function makeProduct(id: string, overrides: Record<string, unknown> = {}) {
     listed_at: null,
     sold_at: null,
     seller_rating_count: null,
+    seller_url: null,
     shipping_days: null,
     source_updated_at: null,
     purchase_price_jpy: null,
@@ -213,7 +214,10 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     fetchMock
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => [makeProduct('p1', { source_url: 'https://example.com/danger/p1' })],
+        json: async () => [makeProduct('p1', {
+          source_url: 'https://example.com/item/p1',
+          seller_url: 'https://example.com/danger',
+        })],
       })
       .mockResolvedValueOnce({
         ok: true,

@@ -35,6 +35,7 @@ function makeProduct(overrides: Partial<Product> = {}): Product {
     listed_at: null,
     sold_at: null,
     seller_rating_count: null,
+    seller_url: null,
     shipping_days: null,
     source_updated_at: null,
     purchase_price_jpy: 6000,
