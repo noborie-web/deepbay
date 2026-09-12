@@ -81,6 +81,36 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
   const exchangeRateEditedRef = useRef(false)
   const nextTierIdRef = useRef(5)
 
+  // ユーザー要望: 「価格帯別利益額」モードを一番よく使う予定だが、毎回
+  // 同じ価格帯・利益額を入力し直すのが手間なため、設定を保存して次回
+  // 自動読み込みできるようにする。
+  const [tierSettingsLoaded, setTierSettingsLoaded] = useState(false)
+  const [tierSaveStatus, setTierSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+
+  async function saveTierSettings() {
+    setTierSaveStatus('saving')
+    try {
+      const response = await fetch('/api/price-tier-settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tiers: parsedProfitTiers,
+          ebay_fee_rate: parseFloat(ebayFeeRate),
+          shipping_jpy: parseFloat(shippingJpy),
+          fixed_cost_usd: parseFloat(fixedCostUsd),
+          ad_rate: parseFloat(adRate) / 100,
+          customs_rate: parseFloat(customsRate) / 100,
+          discount_rate: parseFloat(discountRate) / 100,
+        }),
+      })
+      if (!response.ok) throw new Error()
+      setTierSaveStatus('saved')
+      setTimeout(() => setTierSaveStatus('idle'), 2000)
+    } catch {
+      setTierSaveStatus('error')
+    }
+  }
+
   async function loadExchangeRate(force: boolean) {
     try {
       const data = await requestExchangeRate()
@@ -110,6 +140,37 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
       })
       .catch(() => {
         if (!cancelled) setExchangeRateStatus('error')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // 保存済みの価格帯別利益額設定を読み込む(為替レート取得の後に実行する
+  // ことで、既存のfetch呼び出し順序に依存するテストへの影響を避ける)。
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/price-tier-settings')
+      .then((res) => res.json())
+      .then((data: { setting?: { tiers: { maxPurchaseJpy: number | null; profitJpy: number }[]; ebay_fee_rate: number; shipping_jpy: number; fixed_cost_usd: number; ad_rate: number; customs_rate: number; discount_rate: number } | null }) => {
+        if (cancelled || !data.setting) return
+        const saved = data.setting
+        setProfitTiers(saved.tiers.map((t, index) => ({
+          id: `tier-saved-${index}`,
+          maxPurchaseJpy: t.maxPurchaseJpy === null ? '' : String(t.maxPurchaseJpy),
+          profitJpy: String(t.profitJpy),
+        })))
+        nextTierIdRef.current = saved.tiers.length + 1
+        setEbayFeeRate(String(saved.ebay_fee_rate))
+        setShippingJpy(String(saved.shipping_jpy))
+        setFixedCostUsd(String(saved.fixed_cost_usd))
+        setAdRate(String(saved.ad_rate * 100))
+        setCustomsRate(String(saved.customs_rate * 100))
+        setDiscountRate(String(saved.discount_rate * 100))
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setTierSettingsLoaded(true)
       })
     return () => {
       cancelled = true
@@ -423,14 +484,28 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
                         手数料・送料・固定費を差し引いた後に残したい利益を円で設定します。
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={addTier}
-                      className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50 shrink-0"
-                    >
-                      ＋末尾に行を追加
-                    </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={saveTierSettings}
+                        disabled={tierSaveStatus === 'saving'}
+                        className="border border-gray-300 text-gray-700 rounded px-2.5 py-1 text-xs hover:bg-gray-100 disabled:opacity-50"
+                      >
+                        {tierSaveStatus === 'saving' ? '保存中...' : tierSaveStatus === 'saved' ? '保存しました' : '設定を保存'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={addTier}
+                        className="border border-blue-400 text-blue-600 rounded px-2.5 py-1 text-xs hover:bg-blue-50"
+                      >
+                        ＋末尾に行を追加
+                      </button>
+                    </div>
                   </div>
+                  {tierSaveStatus === 'error' && <p className="text-[11px] text-red-500">保存に失敗しました</p>}
+                  {tierSettingsLoaded && (
+                    <p className="text-[11px] text-gray-400">保存済みの設定を自動で読み込んでいます（未保存の場合は初期値を表示）</p>
+                  )}
                   <div className="grid grid-cols-[1fr_1fr_72px] gap-2 px-1 text-[11px] text-gray-500">
                     <span>仕入価格の上限（円）</span>
                     <span>希望利益額（円）</span>

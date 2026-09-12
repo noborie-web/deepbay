@@ -203,6 +203,25 @@ export interface InventoryRun {
   created_at: string
 }
 
+export interface PriceTier {
+  maxPurchaseJpy: number | null
+  profitJpy: number
+}
+
+export interface PriceTierSetting {
+  id: string
+  user_id: string
+  tiers: PriceTier[]
+  ebay_fee_rate: number
+  shipping_jpy: number
+  fixed_cost_usd: number
+  ad_rate: number
+  customs_rate: number
+  discount_rate: number
+  created_at: string
+  updated_at: string
+}
+
 export interface Scraper {
   id: string
   name: string
@@ -221,6 +240,7 @@ export type BulkEditSettingInsert = Pick<BulkEditSetting, 'user_id' | 'name'> & 
 export type ExtractionInsert = Pick<Extraction, 'user_id' | 'source_url' | 'source_site'> & Partial<Extraction>
 export type ProductInsert = Pick<Product, 'user_id' | 'source_url' | 'source_site' | 'original_title'> & Partial<Product>
 export type ScraperInsert = Pick<Scraper, 'name' | 'site_key' | 'url_pattern'> & Partial<Scraper>
+export type PriceTierSettingInsert = Pick<PriceTierSetting, 'user_id' | 'tiers'> & Partial<PriceTierSetting>
 
 export interface Database {
   public: {
@@ -232,6 +252,7 @@ export interface Database {
       extractions: { Row: Extraction; Insert: ExtractionInsert; Update: Partial<Extraction> }
       products: { Row: Product; Insert: ProductInsert; Update: Partial<Product> }
       scrapers: { Row: Scraper; Insert: ScraperInsert; Update: Partial<Scraper> }
+      price_tier_settings: { Row: PriceTierSetting; Insert: PriceTierSettingInsert; Update: Partial<PriceTierSetting> }
     }
   }
 }
