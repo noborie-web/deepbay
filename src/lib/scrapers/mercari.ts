@@ -503,11 +503,18 @@ export class MercariScraper {
     const shopResults = new Map<string, ScrapedProduct>()
     const shopErrors = new Map<string, string>()
     if (shopProducts.length > 0) {
+      // TODO(一時診断用): 起動直後の接続状態と切断理由を記録する。
+      let launchDiagnostics = ''
       const browser = await launchHeadlessBrowser()
+      browser.on?.('disconnected', () => {
+        launchDiagnostics += '\n[event] browser disconnected'
+      })
+      launchDiagnostics += `\n[launch] isConnected=${browser.isConnected?.()} version=${(() => { try { return browser.version?.() } catch (e) { return `error:${String(e)}` } })()}`
       try {
         for (const product of shopProducts) {
           if (!product.sourceItemId) continue
           try {
+            launchDiagnostics += `\n[before newPage ${product.sourceItemId}] isConnected=${browser.isConnected?.()}`
             const detail = await fetchShopProductDetail(browser, product.sourceItemId)
             if (!detail) continue
             shopResults.set(product.sourceItemId, {
@@ -520,7 +527,8 @@ export class MercariScraper {
             })
           } catch (err) {
             // TODO(一時診断用): #154デプロイ後も失敗が続くため再度記録する。
-            const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
+            const baseMessage = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
+            const message = `${baseMessage}\n--- diagnostics ---${launchDiagnostics}`
             console.error('[mercari shops enrich] failed for', product.sourceItemId, message)
             shopErrors.set(product.sourceItemId, message)
           }
@@ -591,7 +599,7 @@ export class MercariScraper {
           rawData: {
             ...(product.rawData as object ?? {}),
             __shopEnrichError: shopError,
-            __shopEnrichDeployMarker: 'round4-sequential-followup',
+            __shopEnrichDeployMarker: 'round5-launch-diagnostics',
           },
         }
       }
