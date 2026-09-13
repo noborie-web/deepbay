@@ -489,10 +489,17 @@ export class MercariScraper {
     // 空欄になっていた。Shops商品向けのヘッドレスブラウザは起動コストが
     // 高いため、混在検索結果に1件でもShops商品があるときだけ遅延起動し、
     // このenrichImages呼び出し全体で使い回す。
-    let shopBrowser: Browser | undefined
-    const getShopBrowser = async (): Promise<Browser> => {
-      if (!shopBrowser) shopBrowser = await launchHeadlessBrowser()
-      return shopBrowser
+    // 実データで確認済みの不具合: 起動処理を`if (!shopBrowser) shopBrowser =
+    // await launchHeadlessBrowser()`と書くと、チェックと代入の間にawaitが
+    // 挟まるため、concurrency分の並列処理から同時に呼ばれた場合に毎回
+    // 起動条件を満たしてしまい、Chromiumが複数同時起動してサーバーレス
+    // 環境のメモリ上限を超え"browser has been closed"エラーで全滅していた。
+    // Promise自体をキャッシュすることで、最初の呼び出しだけが起動し、
+    // 以降の並列呼び出しは同じ起動処理(Promise)を待つようにする。
+    let shopBrowserPromise: Promise<Browser> | undefined
+    const getShopBrowser = (): Promise<Browser> => {
+      if (!shopBrowserPromise) shopBrowserPromise = launchHeadlessBrowser()
+      return shopBrowserPromise
     }
 
     try {
@@ -515,13 +522,8 @@ export class MercariScraper {
               images: detail.images.length > 0 ? detail.images : product.images,
             }
           } catch (err) {
-            // TODO(一時診断用): 修正後も本番で失敗が続くため再度エラー内容を記録する。
-            const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
-            console.error('[mercari shops enrich] failed for', product.sourceItemId, message)
-            return {
-              ...product,
-              rawData: { ...(product.rawData as object ?? {}), __shopEnrichError: message },
-            }
+            console.error('[mercari shops enrich] failed for', product.sourceItemId, err)
+            return product
           }
         }
 
@@ -562,7 +564,7 @@ export class MercariScraper {
       options.onPage?.(enriched.length, products.length)
     }
     } finally {
-      await shopBrowser?.close().catch(() => {})
+      await shopBrowserPromise?.then((b) => b.close()).catch(() => {})
     }
 
     if (enriched.length === 0) {
