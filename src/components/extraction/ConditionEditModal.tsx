@@ -52,7 +52,7 @@ export default function ConditionEditModal({ targetCount, onApply, onClose }: Pr
             </label>
             <label className="flex items-center gap-1.5 text-sm cursor-pointer">
               <input type="radio" value="all" checked={scope === 'all'} onChange={() => setScope('all')} />
-              すべて（{targetCount.all}件）
+              抽出商品すべて（{targetCount.all}件）
             </label>
           </div>
         </div>
