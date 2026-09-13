@@ -12,7 +12,7 @@ const nextConfig: NextConfig = {
   // "Cannot find module '.../playwright-core/browsers.json'" エラーになり
   // メルカリShopsのエンリッチメントが常に失敗していた。明示的に含める。
   outputFileTracingIncludes: {
-    "/api/**/*": [
+    "**/*": [
       "./node_modules/playwright-core/**",
       "./node_modules/@sparticuz/chromium/**",
     ],
