@@ -230,7 +230,15 @@ export function generateListingCsv(products: Product[], options: ListingExportOp
   return `\uFEFF${[headers.join(','), ...rows].join('\r\n')}`
 }
 
+// ユーザー要望: specifics-in(外部ツール)がこのjp_spec列の内容から
+// カテゴリ別のItem Specificsを自動生成しているため、公式ツールと同様に
+// 仕入元サイトの生データ(カテゴリ階層・出品者情報・商品状態など)を
+// 優先して出力する。取得できていない商品(古い抽出・生データ非対応
+// サイトなど)は従来通りの簡易スナップショットにフォールバックする。
 function sourceSnapshot(product: Product): string {
+  if (product.raw_source_data) {
+    return JSON.stringify(product.raw_source_data)
+  }
   return JSON.stringify({
     id: product.source_item_id,
     url: product.source_url,

@@ -290,6 +290,14 @@ describe('Mercari item images', () => {
       expect(products[0].sellerRatingCount).toBe(12)
       expect(products[0].sellerBadRatingCount).toBe(2)
       expect(products[0].shippingDays).toBe(4)
+      // ユーザー要望: specifics-in(外部ツール)向けCSV出力(jp_spec)で
+      // カテゴリ判定等に使うため、検索結果の簡易itemではなく、画像補完で
+      // 取得した単品詳細レスポンス(より豊富な生データ)をrawDataとして
+      // 保持する。
+      expect(products[0].rawData).toMatchObject({
+        seller: { ratings: { good: 10, normal: 0, bad: 2 }, num_ratings: 12 },
+        shipping_duration: { min_days: 4, max_days: 7 },
+      })
     } finally {
       globalThis.fetch = originalFetch
     }

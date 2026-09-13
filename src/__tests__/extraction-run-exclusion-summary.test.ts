@@ -591,6 +591,30 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     })
   })
 
+  // ユーザー要望: specifics-in(外部ツール)向けCSV出力(jp_spec)が
+  // カテゴリ判定等に使う仕入元サイトの生データを、抽出時にproductsへ
+  // 保存できるようにする。
+  it('スクレイパーが取得した生データ(rawData)をraw_source_dataとして保存する', async () => {
+    const rawData = { id: 'item-1', item_category: { name: 'CD' } }
+    mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ rawData })])
+    const { db, insertedProducts } = makeDatabase()
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    expect(insertedProducts).toHaveLength(1)
+    expect(insertedProducts[0].raw_source_data).toEqual(rawData)
+  })
+
+  it('生データを取得できないサイトの商品はraw_source_dataがnullで保存される', async () => {
+    mocks.scrapeUrl.mockResolvedValue([scrapedProduct()])
+    const { db, insertedProducts } = makeDatabase()
+
+    await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+    expect(insertedProducts).toHaveLength(1)
+    expect(insertedProducts[0].raw_source_data).toBeNull()
+  })
+
   // ユーザー要望: 公式ツールのように、一括編集設定(プロファイル)ごとに
   // 除外条件を個別に有効・無効切り替えできるようにしたい。
   describe('一括編集設定(プロファイル)ごとの除外条件切り替え', () => {

@@ -445,6 +445,8 @@ export async function runScrape(
       images: string[]; condition: string | null
       sellerRatingCount: number | null; shippingDays: number | null; sourceUpdatedAt: string | null
       sellerUrl?: string | null
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rawData?: Record<string, any> | null
     }, idx: number) => {
       let ebayTitle = applyReplaces(translatedTitles[idx] ?? scraped.title)
       if (setting) {
@@ -486,6 +488,7 @@ export async function runScrape(
         seller_url: scraped.sellerUrl ?? null,
         shipping_days: scraped.shippingDays,
         source_updated_at: scraped.sourceUpdatedAt,
+        raw_source_data: scraped.rawData ?? null,
       }
     })
 

@@ -152,6 +152,9 @@ export interface Product {
   seller_url: string | null
   shipping_days: number | null
   source_updated_at: string | null
+  // 仕入元サイトの生レスポンス(取得できるサイト・タイミングのみ)。
+  // specifics-in向けCSV出力(jp_spec)でカテゴリ判定等に使う。
+  raw_source_data: Record<string, unknown> | null
   purchase_price_jpy: number | null
   price_type: ProductPriceType
   created_at: string

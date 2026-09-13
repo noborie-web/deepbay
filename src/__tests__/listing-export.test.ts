@@ -36,6 +36,7 @@ function makeProduct(overrides: Partial<Product> = {}): Product {
     sold_at: null,
     seller_rating_count: null,
     seller_url: null,
+    raw_source_data: null,
     shipping_days: null,
     source_updated_at: null,
     purchase_price_jpy: 6000,
@@ -177,6 +178,39 @@ describe('listing export', () => {
     expect(header).toContain('C:Video Game Series')
     expect(csv).toContain(',Original description,Original title,')
     expect(csv).toContain(',eBay Payments,Returns Accepted,Japan Shipping,')
+  })
+
+  // ユーザー要望: specifics-in(外部ツール)がjp_spec列の内容からカテゴリ
+  // 別のItem Specificsを自動生成しているため、公式ツールと同様に仕入元
+  // サイトの生データ(カテゴリ階層・出品者情報など)をそのまま出力したい。
+  // これまでは数フィールドだけの簡易オブジェクトしか出力しておらず、
+  // specifics-inがカテゴリを判別できず誤ったフィールドセットを生成する
+  // 原因になっていた。
+  it('raw_source_dataがあればjp_spec列にそのまま出力する(specifics-inのカテゴリ判定用)', () => {
+    const rawSourceData = {
+      id: 'm1',
+      item_category: { name: '邦楽', parent_category_name: 'CD', root_category_name: 'CD・DVD・ブルーレイ' },
+      seller: { name: 'テストセラー', num_ratings: 100 },
+    }
+    const product = makeProduct({ raw_source_data: rawSourceData })
+    const csv = generateSpecificsCsv([product], OPTIONS)
+    const rows = parseCsv(csv)
+    const jpSpec = rows[1][rows[0].indexOf('jp_spec')]
+    expect(JSON.parse(jpSpec)).toEqual(rawSourceData)
+  })
+
+  it('raw_source_dataが無い商品は従来通りの簡易スナップショットにフォールバックする', () => {
+    const product = makeProduct({ raw_source_data: null })
+    const csv = generateSpecificsCsv([product], OPTIONS)
+    const rows = parseCsv(csv)
+    const jpSpec = JSON.parse(rows[1][rows[0].indexOf('jp_spec')])
+    expect(jpSpec).toMatchObject({
+      id: product.source_item_id,
+      url: product.source_url,
+      site: product.source_site,
+      title: product.original_title,
+    })
+    expect(jpSpec.item_category).toBeUndefined()
   })
 
   it('PicURLへ全画像をパイプ区切りで出力する', () => {
