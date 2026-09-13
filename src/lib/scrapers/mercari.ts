@@ -484,6 +484,13 @@ export class MercariScraper {
           return {
             ...product,
             images: detailImages.length > 0 ? detailImages : product.images,
+            // 検索結果一覧のitem.descriptionは常に空文字で、商品説明は
+            // 単品詳細レスポンスにしか含まれない。specifics-in向けCSVの
+            // jp_desc列(商品説明生成に使われる)が空になっていたバグを
+            // 修正するため、詳細レスポンスから補完する。
+            description: (typeof detail.description === 'string' && detail.description)
+              ? detail.description
+              : product.description,
             sellerRatingCount: sellerRatingCount ?? product.sellerRatingCount,
             sellerBadRatingCount: sellerBadRatingCount ?? product.sellerBadRatingCount,
             shippingDays: shippingDays ?? product.shippingDays,
