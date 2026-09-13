@@ -1,5 +1,8 @@
+import type { Browser } from 'playwright-core'
 import { ScraperError } from './types'
 import type { ScrapedProduct, ScraperOptions } from './types'
+import { launchHeadlessBrowser } from './headless-browser'
+import { fetchShopProductDetail } from './mercari_shops'
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -132,6 +135,16 @@ function extractImages(item: any): string[] {
     .filter((image: string) => /^https?:\/\//.test(image)))]
 }
 
+// メルカリShops(法人/ショップ出品)商品の判定。実データ確認:
+// 検索API(entities:search)のレスポンスでは通常のメルカリ商品と違い
+// item.shopオブジェクトを持ち、item.itemTypeが"ITEM_TYPE_BEYOND"になる。
+// Shops商品は単品詳細API(items/get)が404/400を返すため、通常商品と
+// 同じ扱いをすると画像以外(説明・カテゴリー・状態)が空欄になる。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isShopItem(item: any): boolean {
+  return item?.shop != null || item?.itemType === 'ITEM_TYPE_BEYOND'
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toProduct(item: any, url: string): ScrapedProduct {
   const itemId: string = item.id ?? item.item_id ?? ''
@@ -165,7 +178,9 @@ function toProduct(item: any, url: string): ScrapedProduct {
   }
 
   return {
-    sourceUrl: itemId ? `https://jp.mercari.com/item/${itemId}` : url,
+    sourceUrl: itemId
+      ? (isShopItem(item) ? `https://jp.mercari.com/shops/product/${itemId}` : `https://jp.mercari.com/item/${itemId}`)
+      : url,
     sourceSite: 'mercari',
     sourceItemId: itemId,
     title: item.name ?? '',
@@ -469,10 +484,40 @@ export class MercariScraper {
     const enriched: ScrapedProduct[] = []
     const concurrency = 8
 
+    // メルカリShops商品はitems/getが404/400になるため単品詳細を取得できず、
+    // 従来は画像連番プローブのみのフォールバックで説明・カテゴリー・状態が
+    // 空欄になっていた。Shops商品向けのヘッドレスブラウザは起動コストが
+    // 高いため、混在検索結果に1件でもShops商品があるときだけ遅延起動し、
+    // このenrichImages呼び出し全体で使い回す。
+    let shopBrowser: Browser | undefined
+    const getShopBrowser = async (): Promise<Browser> => {
+      if (!shopBrowser) shopBrowser = await launchHeadlessBrowser()
+      return shopBrowser
+    }
+
+    try {
     for (let index = 0; index < products.length; index += concurrency) {
       const chunk = products.slice(index, index + concurrency)
       const results = await Promise.all(chunk.map(async (product) => {
         if (!product.sourceItemId) return product
+
+        if (isShopItem(product.rawData)) {
+          try {
+            const browser = await getShopBrowser()
+            const detail = await fetchShopProductDetail(browser, product.sourceItemId)
+            if (!detail) return product
+            return {
+              ...product,
+              sourceUrl: detail.sourceUrl,
+              description: detail.description || product.description,
+              category: detail.category ?? product.category,
+              condition: detail.condition ?? product.condition,
+              images: detail.images.length > 0 ? detail.images : product.images,
+            }
+          } catch {
+            return product
+          }
+        }
 
         try {
           const detail = await this.fetchItemDetail(product.sourceItemId)
@@ -509,6 +554,9 @@ export class MercariScraper {
       }))
       enriched.push(...results)
       options.onPage?.(enriched.length, products.length)
+    }
+    } finally {
+      await shopBrowser?.close().catch(() => {})
     }
 
     if (enriched.length === 0) {

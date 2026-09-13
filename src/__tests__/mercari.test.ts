@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   _extractImages,
   _generateDPoP,
@@ -604,6 +604,79 @@ describe('scrapeSearch pagination', () => {
       expect(callIndex).toBe(1)
     } finally {
       globalThis.fetch = origFetch
+    }
+  })
+})
+
+describe('toProduct() メルカリShops商品のsourceUrl', () => {
+  it('item.shopが存在する場合は/shops/product/のURLになる', () => {
+    const p = _toProduct({ id: 'm1', name: 'Test', shop: { id: 'shop1' } }, 'https://jp.mercari.com/search?keyword=test')
+    expect(p.sourceUrl).toBe('https://jp.mercari.com/shops/product/m1')
+  })
+
+  it('itemType=ITEM_TYPE_BEYONDの場合も/shops/product/のURLになる', () => {
+    const p = _toProduct({ id: 'm2', name: 'Test', itemType: 'ITEM_TYPE_BEYOND' }, 'https://jp.mercari.com/search?keyword=test')
+    expect(p.sourceUrl).toBe('https://jp.mercari.com/shops/product/m2')
+  })
+
+  it('通常のメルカリ商品は従来通り/item/のURLになる', () => {
+    const p = _toProduct({ id: 'm3', name: 'Test' }, 'https://jp.mercari.com/search?keyword=test')
+    expect(p.sourceUrl).toBe('https://jp.mercari.com/item/m3')
+  })
+})
+
+describe('enrichImages() メルカリShops商品のフォールバック', () => {
+  it('items/getが失敗するメルカリShops商品はヘッドレスブラウザ経由の詳細取得で説明・カテゴリー・状態を補完する', async () => {
+    vi.resetModules()
+    vi.doMock('../lib/scrapers/headless-browser', () => ({
+      launchHeadlessBrowser: vi.fn(async () => ({ close: vi.fn(async () => {}) })),
+    }))
+    vi.doMock('../lib/scrapers/mercari_shops', () => ({
+      fetchShopProductDetail: vi.fn(async (_browser: unknown, itemId: string) => ({
+        sourceUrl: `https://jp.mercari.com/shops/product/${itemId}`,
+        sourceSite: 'mercari_shops',
+        sourceItemId: itemId,
+        title: 'Shops商品',
+        price: 3000,
+        description: 'Shops商品の説明文',
+        images: ['https://example.com/shop1.jpg'],
+        condition: '新品、未使用',
+        category: '邦楽',
+        sellerRatingCount: null,
+        shippingDays: null,
+        sourceUpdatedAt: null,
+        availability: 'available' as const,
+      })),
+    }))
+
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      if (urlStr.includes('entities:search')) {
+        return new Response(JSON.stringify({
+          items: [{ id: 'shop1', name: 'Shops商品', price: 3000, shop: { id: 'shopA' } }],
+          meta: {},
+        }), { status: 200 })
+      }
+      // items/get(通常商品の単品詳細)はメルカリShops商品には400を返す実挙動を再現
+      return new Response('', { status: 400 })
+    }
+
+    try {
+      const { MercariScraper } = await import('../lib/scrapers/mercari')
+      const scraper = new MercariScraper()
+      const results = await scraper.scrape('https://jp.mercari.com/search?keyword=test', { limit: 10 })
+      expect(results).toHaveLength(1)
+      expect(results[0].description).toBe('Shops商品の説明文')
+      expect(results[0].category).toBe('邦楽')
+      expect(results[0].condition).toBe('新品、未使用')
+      expect(results[0].images).toEqual(['https://example.com/shop1.jpg'])
+      expect(results[0].sourceUrl).toBe('https://jp.mercari.com/shops/product/shop1')
+    } finally {
+      globalThis.fetch = origFetch
+      vi.doUnmock('../lib/scrapers/headless-browser')
+      vi.doUnmock('../lib/scrapers/mercari_shops')
+      vi.resetModules()
     }
   })
 })

@@ -2,6 +2,7 @@ import * as cheerio from 'cheerio'
 import type { Browser } from 'playwright-core'
 import type { IScraper, ScrapedProduct, ScraperOptions } from './types'
 import { ScraperError } from './types'
+import { launchHeadlessBrowser } from './headless-browser'
 
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const SEARCH_URL_PATTERN = /jp\.mercari\.com\/search\?.*\bitem_types=beyond\b/
@@ -11,6 +12,14 @@ const SEARCH_URL_PATTERN = /jp\.mercari\.com\/search\?.*\bitem_types=beyond\b/
 // なり、Vercelの実行時間上限(5分)を超えるおそれがあるため、要求された
 // limitとは無関係にこの絶対上限を設ける。
 const MAX_SEARCH_ITEMS = 150
+// 検索結果一覧は簡易情報(タイトル・価格・サムネイルのみ)しか持たず、
+// 商品説明・カテゴリー・状態は単品ページにアクセスしないと取得できない
+// (ユーザー報告: メルカリShopsの一括抽出でdescription/カテゴリーが
+// 空欄になる不具合)。単品ページの訪問は検索ページ以上にコストが高い
+// (1件ごとにPlaywrightのページ遷移+レンダリング待ちが必要)ため、
+// Vercelの実行時間上限を踏まえてエンリッチメント対象件数にも
+// 別途上限を設ける。
+const MAX_ENRICH_ITEMS = 40
 
 /**
  * メルカリShopsの商品ページは価格・状態・カテゴリがクライアントサイド
@@ -71,24 +80,88 @@ export function _extractSearchItems($: cheerio.CheerioAPI, seenIds: Set<string>,
   return extractSearchItems($, seenIds, siteKey)
 }
 
-async function launchBrowser(): Promise<Browser> {
-  const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME)
+// 単品ページのcheerio解析ロジック本体(クラスの`parse`メソッドとmercari.ts
+// からのShops商品エンリッチメントの両方で共有する純粋関数)。
+function parseShopProductHtml($: cheerio.CheerioAPI, url: string, siteKey: string): ScrapedProduct {
+  const itemId = url.match(/\/shops\/product\/([a-zA-Z0-9]+)/)?.[1] ?? null
 
-  if (isServerless) {
-    const [{ chromium }, sparticuzChromiumModule] = await Promise.all([
-      import('playwright-core'),
-      import('@sparticuz/chromium'),
-    ])
-    const sparticuzChromium = sparticuzChromiumModule.default
-    return chromium.launch({
-      args: sparticuzChromium.args,
-      executablePath: await sparticuzChromium.executablePath(),
-      headless: true,
-    })
+  const title = $('[data-testid="display-name"]').first().text().trim()
+    || $('meta[property="og:title"]').attr('content')?.replace(/\s*-\s*メルカリ\s*$/, '').trim()
+    || ''
+
+  const priceText = $('[data-testid="product-price"]').first().text().trim()
+  const price = priceText ? parseInt(priceText.replace(/[^0-9]/g, ''), 10) || null : null
+
+  const description = $('[data-testid="description"]').first().text().trim()
+    || $('meta[property="og:description"]').attr('content')?.trim()
+    || ''
+
+  const condition = $('[data-testid="商品の状態"]').first().text().trim() || null
+
+  // パンくずの各階層はリンク+テキストで二重に取得されることがあるため重複除去し、
+  // 最も詳細な(末尾の)階層をカテゴリとする。
+  const categoryParts = Array.from(new Set(
+    $('[data-testid="product-detail-category"]').find('a, span')
+      .map((_, el) => $(el).text().trim())
+      .get()
+      .filter(Boolean),
+  ))
+  const category = categoryParts.length > 0 ? categoryParts[categoryParts.length - 1] : null
+
+  const images = Array.from({ length: 12 }, (_, i) => {
+    const el = $(`[data-testid="image-${i}"]`).first()
+    if (el.length === 0) return null
+    const img = el.is('img') ? el : el.find('img').first()
+    return img.attr('src') ?? null
+  }).filter((src): src is string => Boolean(src))
+
+  const fallbackImage = $('meta[property="og:image"]').attr('content')
+
+  // 実際のページで確認: 売り切れ商品はレンダリング後のHTMLで購入ボタンが
+  // <button disabled data-testid="disabled-purchase-button">に置き換わる
+  // (未ログイン状態でも表示され、在庫あり商品にはこのdata-testidは無い)。
+  const availability: ScrapedProduct['availability'] = $('[data-testid="disabled-purchase-button"]').length > 0
+    ? 'sold_out'
+    : 'available'
+
+  return {
+    sourceUrl: url,
+    sourceSite: siteKey,
+    sourceItemId: itemId,
+    title,
+    price,
+    description,
+    images: images.length > 0 ? images : (fallbackImage ? [fallbackImage] : []),
+    condition,
+    category,
+    sellerRatingCount: null,
+    shippingDays: null,
+    sourceUpdatedAt: null,
+    availability,
   }
+}
 
-  const { chromium } = await import('playwright')
-  return chromium.launch({ headless: true })
+// mercari.ts側(通常のメルカリ検索にShops商品が混在するケース)から
+// 単品ページの詳細(description/category/condition)を補完するために使う。
+// ブラウザのライフサイクル管理は呼び出し側の責務とする(1件ごとに
+// 起動すると遅すぎるため、複数件をまとめて処理する側で使い回す前提)。
+export async function fetchShopProductDetail(
+  browser: Browser,
+  itemId: string,
+  options: { userAgent?: string; timeoutMs?: number } = {},
+): Promise<ScrapedProduct | null> {
+  const { userAgent = DEFAULT_UA, timeoutMs = 20000 } = options
+  const url = `https://jp.mercari.com/shops/product/${itemId}`
+  const page = await browser.newPage({ userAgent })
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs })
+    await page.waitForSelector('[data-testid="product-price"]', { timeout: timeoutMs }).catch(() => {})
+    const html = await page.content()
+    const $ = cheerio.load(html)
+    return parseShopProductHtml($, url, 'mercari_shops')
+  } finally {
+    await page.close().catch(() => {})
+  }
 }
 
 export class MercariShopsScraper implements IScraper {
@@ -109,7 +182,7 @@ export class MercariShopsScraper implements IScraper {
 
     let browser: Browser | undefined
     try {
-      browser = await launchBrowser()
+      browser = await launchHeadlessBrowser()
       const page = await browser.newPage({ userAgent })
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs })
       // 価格はクライアントサイドレンダリングのため、表示されるまで待つ。
@@ -140,7 +213,7 @@ export class MercariShopsScraper implements IScraper {
 
     let browser: Browser | undefined
     try {
-      browser = await launchBrowser()
+      browser = await launchHeadlessBrowser()
       const page = await browser.newPage({ userAgent })
 
       let pageUrl = url
@@ -186,65 +259,53 @@ export class MercariShopsScraper implements IScraper {
       throw new ScraperError('検索結果が0件です', this.siteKey, url)
     }
 
-    return allProducts.slice(0, effectiveLimit)
+    const limited = allProducts.slice(0, effectiveLimit)
+    return this.enrichSearchResults(limited, { userAgent, timeoutMs })
+  }
+
+  // 検索結果一覧はタイトル・価格・サムネイルのみのため、各商品ページに
+  // アクセスして商品説明・カテゴリー・状態・全画像を補完する。件数が
+  // 多いとPlaywrightのページ遷移コストでVercelの実行時間上限を超える
+  // おそれがあるため、補完対象はMAX_ENRICH_ITEMS件までに絞る
+  // (それ以降の商品はタイトル・価格のみの一覧情報のまま返す)。
+  private async enrichSearchResults(
+    products: ScrapedProduct[],
+    options: { userAgent: string; timeoutMs: number },
+  ): Promise<ScrapedProduct[]> {
+    const targets = products.slice(0, MAX_ENRICH_ITEMS)
+    if (targets.length === 0) return products
+
+    let browser: Browser | undefined
+    const detailByItemId = new Map<string, ScrapedProduct>()
+    try {
+      browser = await launchHeadlessBrowser()
+      for (const product of targets) {
+        if (!product.sourceItemId) continue
+        try {
+          const detail = await fetchShopProductDetail(browser, product.sourceItemId, options)
+          if (detail) detailByItemId.set(product.sourceItemId, detail)
+        } catch {
+          // 1件の失敗で全体を止めない。取得できた分だけ補完する。
+        }
+      }
+    } finally {
+      await browser?.close().catch(() => {})
+    }
+
+    return products.map((product) => {
+      const detail = product.sourceItemId ? detailByItemId.get(product.sourceItemId) : undefined
+      if (!detail) return product
+      return {
+        ...product,
+        description: detail.description || product.description,
+        category: detail.category ?? product.category,
+        condition: detail.condition ?? product.condition,
+        images: detail.images.length > 0 ? detail.images : product.images,
+      }
+    })
   }
 
   parse($: cheerio.CheerioAPI, url: string): ScrapedProduct {
-    const itemId = url.match(/\/shops\/product\/([a-zA-Z0-9]+)/)?.[1] ?? null
-
-    const title = $('[data-testid="display-name"]').first().text().trim()
-      || $('meta[property="og:title"]').attr('content')?.replace(/\s*-\s*メルカリ\s*$/, '').trim()
-      || ''
-
-    const priceText = $('[data-testid="product-price"]').first().text().trim()
-    const price = priceText ? parseInt(priceText.replace(/[^0-9]/g, ''), 10) || null : null
-
-    const description = $('[data-testid="description"]').first().text().trim()
-      || $('meta[property="og:description"]').attr('content')?.trim()
-      || ''
-
-    const condition = $('[data-testid="商品の状態"]').first().text().trim() || null
-
-    // パンくずの各階層はリンク+テキストで二重に取得されることがあるため重複除去し、
-    // 最も詳細な(末尾の)階層をカテゴリとする。
-    const categoryParts = Array.from(new Set(
-      $('[data-testid="product-detail-category"]').find('a, span')
-        .map((_, el) => $(el).text().trim())
-        .get()
-        .filter(Boolean),
-    ))
-    const category = categoryParts.length > 0 ? categoryParts[categoryParts.length - 1] : null
-
-    const images = Array.from({ length: 12 }, (_, i) => {
-      const el = $(`[data-testid="image-${i}"]`).first()
-      if (el.length === 0) return null
-      const img = el.is('img') ? el : el.find('img').first()
-      return img.attr('src') ?? null
-    }).filter((src): src is string => Boolean(src))
-
-    const fallbackImage = $('meta[property="og:image"]').attr('content')
-
-    // 実際のページで確認: 売り切れ商品はレンダリング後のHTMLで購入ボタンが
-    // <button disabled data-testid="disabled-purchase-button">に置き換わる
-    // (未ログイン状態でも表示され、在庫あり商品にはこのdata-testidは無い)。
-    const availability: ScrapedProduct['availability'] = $('[data-testid="disabled-purchase-button"]').length > 0
-      ? 'sold_out'
-      : 'available'
-
-    return {
-      sourceUrl: url,
-      sourceSite: this.siteKey,
-      sourceItemId: itemId,
-      title,
-      price,
-      description,
-      images: images.length > 0 ? images : (fallbackImage ? [fallbackImage] : []),
-      condition,
-      category,
-      sellerRatingCount: null,
-      shippingDays: null,
-      sourceUpdatedAt: null,
-      availability,
-    }
+    return parseShopProductHtml($, url, this.siteKey)
   }
 }
