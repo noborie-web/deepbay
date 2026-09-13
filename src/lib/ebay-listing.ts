@@ -13,6 +13,9 @@ const TRADING_API_VERSION = '1455'
 
 export interface DirectListingOptions extends ListingPolicies {
   categoryId: string | null
+  // 出品カテゴリー管理画面で設定した、商品状態→ConditionIDの対応。
+  // 未設定なら従来の標準マッピングを使う。
+  conditionMap?: Record<string, string> | null
 }
 
 export interface EbayListingResult {
@@ -79,7 +82,7 @@ export function buildAddFixedPriceItemXml(
     xmlElements('Country', 'JP'),
     xmlElements('Currency', 'USD'),
     xmlElements('Description', listingDescription(product)),
-    xmlElements('ConditionID', conditionIdForProduct(product, categoryId)),
+    xmlElements('ConditionID', conditionIdForProduct(product, categoryId, options.conditionMap)),
     `<PrimaryCategory>${xmlElements('CategoryID', categoryId)}</PrimaryCategory>`,
     xmlElements('ListingDuration', 'GTC'),
     xmlElements('ListingType', 'FixedPriceItem'),

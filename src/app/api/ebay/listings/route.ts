@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
   const [{ data: extraction, error: extractionError }, { data: seller, error: sellerError }] = await Promise.all([
     admin
       .from('extractions')
-      .select('id, seller_account_id, category:listing_categories(ebay_category_id)')
+      .select('id, seller_account_id, category:listing_categories(ebay_category_id, condition_map)')
       .eq('id', extractionId)
       .eq('user_id', user.id)
       .maybeSingle(),
@@ -141,8 +141,9 @@ export async function POST(request: NextRequest) {
   const failed: ListingFailure[] = productIds
     .filter((productId) => !foundIds.has(productId))
     .map((productId) => ({ productId, error: '商品が見つかりません' }))
-  const categoryRelation = extraction.category as unknown as { ebay_category_id: string | null } | null
+  const categoryRelation = extraction.category as unknown as { ebay_category_id: string | null; condition_map: Record<string, string> | null } | null
   const categoryId = categoryRelation?.ebay_category_id ?? null
+  const conditionMap = categoryRelation?.condition_map ?? null
   const validProducts = typedProducts.filter((product) => {
     if (product.listing_status !== 'draft') {
       failed.push({ productId: product.id, error: '出品中または出品済みの商品です' })
@@ -169,6 +170,7 @@ export async function POST(request: NextRequest) {
   const succeeded: ListingSuccess[] = []
   const options = {
     categoryId,
+    conditionMap,
     shippingProfileName,
     paymentProfileName,
     returnProfileName,

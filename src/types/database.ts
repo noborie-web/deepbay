@@ -34,6 +34,10 @@ export interface ListingCategory {
   ebay_category_id: string | null
   sort_order: number
   created_at: string
+  // 商品状態(日本語)→ eBay ConditionID の対応。eBayのConditionIDは
+  // カテゴリごとに有効な値が異なるため、カテゴリー単位で設定する。
+  // nullの場合は従来の標準マッピングを使う。
+  condition_map: Record<string, string> | null
 }
 
 export interface BulkEditSetting {
