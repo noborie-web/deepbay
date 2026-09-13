@@ -180,6 +180,11 @@ function toProduct(item: any, url: string): ScrapedProduct {
     sourceUpdatedAt,
     availability,
     sellerUrl,
+    // 検索結果一覧のitemはカテゴリ階層・出品者情報などを持たない簡易な
+    // オブジェクトだが、単品詳細API(items/get)から呼ばれた場合(単品
+    // ページ抽出、またはenrichImagesでの補完)はここに渡されるitemが
+    // 既にリッチな生データなので、そのまま保持する。
+    rawData: item,
   }
 }
 
@@ -482,6 +487,10 @@ export class MercariScraper {
             sellerRatingCount: sellerRatingCount ?? product.sellerRatingCount,
             sellerBadRatingCount: sellerBadRatingCount ?? product.sellerBadRatingCount,
             shippingDays: shippingDays ?? product.shippingDays,
+            // 検索結果のitemは簡易オブジェクトのため、より詳細な単品詳細
+            // レスポンスに差し替える(specifics-in向けCSV出力のjp_specで
+            // カテゴリ判定等に使う)。
+            rawData: detail,
           }
         } catch {
           // 詳細APIが404でも、Mercari CDNの連番画像を確認して全画像を補完する。

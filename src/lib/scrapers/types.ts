@@ -18,6 +18,11 @@ export interface ScrapedProduct {
   // 個別商品単位の危険セラー除外は行われない(既存の「抽出URL自体が
   // 危険セラーのページである場合」のチェックのみ有効)。
   sellerUrl?: string | null
+  // 仕入元サイトの生レスポンス(取得できるサイトのみ)。specifics-in
+  // (外部ツール)向けCSV出力(jp_spec)で、カテゴリ階層・出品者情報等を
+  // 使ったItem Specifics自動生成に必要なため保持する。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rawData?: Record<string, any> | null
 }
 
 export interface ScraperOptions {

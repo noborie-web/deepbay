@@ -40,6 +40,7 @@ function makeProduct(id: string, overrides: Partial<Product> = {}): Product {
     sold_at: null,
     seller_rating_count: null,
     seller_url: null,
+    raw_source_data: null,
     shipping_days: null,
     source_updated_at: null,
     purchase_price_jpy: null,
