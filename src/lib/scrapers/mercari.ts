@@ -501,6 +501,7 @@ export class MercariScraper {
     const normalProducts = products.filter((p) => !isShopItem(p.rawData))
 
     const shopResults = new Map<string, ScrapedProduct>()
+    const shopErrors = new Map<string, string>()
     if (shopProducts.length > 0) {
       const browser = await launchHeadlessBrowser()
       try {
@@ -518,7 +519,10 @@ export class MercariScraper {
               images: detail.images.length > 0 ? detail.images : product.images,
             })
           } catch (err) {
-            console.error('[mercari shops enrich] failed for', product.sourceItemId, err)
+            // TODO(一時診断用): #154デプロイ後も失敗が続くため再度記録する。
+            const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
+            console.error('[mercari shops enrich] failed for', product.sourceItemId, message)
+            shopErrors.set(product.sourceItemId, message)
           }
           options.onPage?.(shopResults.size, products.length)
         }
@@ -577,9 +581,21 @@ export class MercariScraper {
     )
     const finalResults = products.map((product) => {
       if (!product.sourceItemId) return product
-      return shopResults.get(product.sourceItemId)
-        ?? normalResultById.get(product.sourceItemId)
-        ?? product
+      const shopResult = shopResults.get(product.sourceItemId)
+      if (shopResult) return shopResult
+      const shopError = shopErrors.get(product.sourceItemId)
+      if (shopError) {
+        // TODO(一時診断用): #154デプロイ後も失敗が続くため再度記録する。
+        return {
+          ...product,
+          rawData: {
+            ...(product.rawData as object ?? {}),
+            __shopEnrichError: shopError,
+            __shopEnrichDeployMarker: 'round4-sequential-followup',
+          },
+        }
+      }
+      return normalResultById.get(product.sourceItemId) ?? product
     })
     if (finalResults.length === 0) {
       throw new ScraperError('商品画像を取得できませんでした', this.siteKey, url)
