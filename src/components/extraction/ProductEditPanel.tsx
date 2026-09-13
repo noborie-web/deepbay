@@ -1743,7 +1743,6 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       {priceModalOpen && (
         <PriceEditModal
           products={products}
-          pagedIds={pagedIds}
           getPurchaseJpy={getPurchaseJpy}
           onApply={applyPriceEdit}
           onClose={() => setPriceModalOpen(false)}

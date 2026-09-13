@@ -1497,12 +1497,10 @@ describe('PriceEditModal: 仕入価格未設定の処理', () => {
     })
     const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
     const products = [makeProduct('p1', { purchase_price_jpy: null, original_price: null })]
-    const pagedIds = new Set(['p1'])
 
     render(
       <PriceEditModal
         products={products}
-        pagedIds={pagedIds}
         getPurchaseJpy={() => null}
         onApply={vi.fn()}
         onClose={vi.fn()}
@@ -1527,12 +1525,10 @@ describe('PriceEditModal: 仕入価格未設定の処理', () => {
     })
     const { default: PriceEditModal } = await import('../components/extraction/PriceEditModal')
     const products = [makeProduct('p1', { purchase_price_jpy: null, original_price: null })]
-    const pagedIds = new Set(['p1'])
 
     render(
       <PriceEditModal
         products={products}
-        pagedIds={pagedIds}
         getPurchaseJpy={() => null}
         onApply={vi.fn()}
         onClose={vi.fn()}
@@ -1562,7 +1558,6 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     render(
       <PriceEditModal
         products={[product]}
-        pagedIds={new Set(['p1'])}
         getPurchaseJpy={() => 6000}
         onApply={vi.fn()}
         onClose={vi.fn()}
@@ -1591,7 +1586,6 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     render(
       <PriceEditModal
         products={[product]}
-        pagedIds={new Set(['p1'])}
         getPurchaseJpy={() => 6000}
         onApply={onApply}
         onClose={vi.fn()}
@@ -1624,7 +1618,6 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     render(
       <PriceEditModal
         products={[product]}
-        pagedIds={new Set(['p1'])}
         getPurchaseJpy={() => 6000}
         onApply={onApply}
         onClose={vi.fn()}
@@ -1669,7 +1662,6 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     render(
       <PriceEditModal
         products={[product]}
-        pagedIds={new Set(['p1'])}
         getPurchaseJpy={() => 6000}
         onApply={onApply}
         onClose={vi.fn()}
@@ -1721,7 +1713,6 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     render(
       <PriceEditModal
         products={[product]}
-        pagedIds={new Set(['p1'])}
         getPurchaseJpy={() => 6000}
         onApply={onApply}
         onClose={vi.fn()}
@@ -1751,7 +1742,6 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     render(
       <PriceEditModal
         products={[product]}
-        pagedIds={new Set(['p1'])}
         getPurchaseJpy={() => 14500}
         onApply={vi.fn()}
         onClose={vi.fn()}
@@ -1786,7 +1776,6 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     render(
       <PriceEditModal
         products={[product]}
-        pagedIds={new Set(['p1'])}
         getPurchaseJpy={() => 6000}
         onApply={vi.fn()}
         onClose={vi.fn()}
@@ -1827,7 +1816,6 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     render(
       <PriceEditModal
         products={[product]}
-        pagedIds={new Set(['p1'])}
         getPurchaseJpy={() => 6000}
         onApply={vi.fn()}
         onClose={vi.fn()}
@@ -1855,7 +1843,6 @@ describe('PriceEditModal: 自動為替と価格帯別利益額', () => {
     render(
       <PriceEditModal
         products={[product]}
-        pagedIds={new Set(['p1'])}
         getPurchaseJpy={() => 6000}
         onApply={vi.fn()}
         onClose={vi.fn()}

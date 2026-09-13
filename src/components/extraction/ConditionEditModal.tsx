@@ -12,7 +12,7 @@ interface Props {
 
 export default function ConditionEditModal({ targetCount, onApply, onClose }: Props) {
   const [condition, setCondition] = useState<string>('中古')
-  const [scope, setScope] = useState<'page' | 'all'>('page')
+  const scope: 'page' | 'all' = 'all'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
@@ -44,16 +44,8 @@ export default function ConditionEditModal({ targetCount, onApply, onClose }: Pr
           </div>
 
           {/* 適用範囲 */}
-          <div className="flex items-center gap-4">
-            <span className="text-xs text-gray-500">適用範囲:</span>
-            <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-              <input type="radio" value="page" checked={scope === 'page'} onChange={() => setScope('page')} />
-              現在のページ（{targetCount.page}件）
-            </label>
-            <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-              <input type="radio" value="all" checked={scope === 'all'} onChange={() => setScope('all')} />
-              抽出商品すべて（{targetCount.all}件）
-            </label>
+          <div className="text-xs text-gray-500">
+            適用範囲: 抽出商品すべて（{targetCount.all}件）
           </div>
         </div>
 
@@ -63,7 +55,7 @@ export default function ConditionEditModal({ targetCount, onApply, onClose }: Pr
           <button
             onClick={() => { onApply(condition, scope); onClose() }}
             className="bg-blue-500 hover:bg-blue-600 text-white rounded px-4 py-2 text-sm font-medium">
-            「{condition}」を適用 ({scope === 'page' ? targetCount.page : targetCount.all}件)
+            「{condition}」を適用 ({targetCount.all}件)
           </button>
         </div>
       </div>

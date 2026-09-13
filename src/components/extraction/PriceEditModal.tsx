@@ -46,15 +46,14 @@ async function requestExchangeRate(): Promise<{ rate: number; date: string }> {
 
 interface Props {
   products: Product[]
-  pagedIds: Set<string>
   getPurchaseJpy: (p: Product) => number | null
   onApply: (getPrice: (p: Product) => number | null, scope: 'page' | 'all') => void
   onClose: () => void
 }
 
-export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onApply, onClose }: Props) {
+export default function PriceEditModal({ products, getPurchaseJpy, onApply, onClose }: Props) {
   const [mode, setMode] = useState<PriceMode>('profit')
-  const [scope, setScope] = useState<'page' | 'all'>('page')
+  const scope: 'page' | 'all' = 'all'
 
   // fixed mode
   const [fixedPrice, setFixedPrice] = useState('')
@@ -217,9 +216,7 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
     profitJpy: parseFloat(tier.profitJpy),
   }))
 
-  const targetProducts = scope === 'page'
-    ? products.filter((p) => pagedIds.has(p.id))
-    : products
+  const targetProducts = products
 
   // 倍率・利益計算・価格帯別利益額モードでは仕入価格が必要
   const needsPurchasePrice = mode === 'rate' || mode === 'profit' || mode === 'tiered'
@@ -582,16 +579,8 @@ export default function PriceEditModal({ products, pagedIds, getPurchaseJpy, onA
           )}
 
           {/* 適用範囲 */}
-          <div className="flex items-center gap-4">
-            <span className="text-xs text-gray-500">適用範囲:</span>
-            <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-              <input type="radio" value="page" checked={scope === 'page'} onChange={() => setScope('page')} />
-              現在のページ
-            </label>
-            <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-              <input type="radio" value="all" checked={scope === 'all'} onChange={() => setScope('all')} />
-              抽出商品すべて
-            </label>
+          <div className="text-xs text-gray-500">
+            適用範囲: 抽出商品すべて
           </div>
 
           {/* 仕入価格未設定の警告 */}
