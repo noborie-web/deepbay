@@ -515,8 +515,13 @@ export class MercariScraper {
               images: detail.images.length > 0 ? detail.images : product.images,
             }
           } catch (err) {
-            console.error('[mercari shops enrich] failed for', product.sourceItemId, err)
-            return product
+            // TODO(一時診断用): 修正後も本番で失敗が続くため再度エラー内容を記録する。
+            const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+            console.error('[mercari shops enrich] failed for', product.sourceItemId, message)
+            return {
+              ...product,
+              rawData: { ...(product.rawData as object ?? {}), __shopEnrichError: message },
+            }
           }
         }
 
