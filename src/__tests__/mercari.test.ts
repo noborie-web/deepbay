@@ -253,6 +253,49 @@ describe('Mercari item images', () => {
   // これまでmin/maxとして誤ってチェックしていたバグも見つかった。
   // 画像補完のためどのみち取得している詳細レスポンスから、評価数・
   // 低評価数・発送日数も併せて補完する(追加APIコストなし)。
+  // ユーザー報告バグ: specifics-in向けCSVのjp_desc列(商品説明生成に
+  // 使われる)が空欄になっていた。検索結果一覧のitem.descriptionは常に
+  // 空文字で、商品説明は単品詳細レスポンスにしか含まれていなかったため。
+  it('検索結果には無い商品説明を、画像補完と同じ詳細APIレスポンスから補完する', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const requestUrl = String(input)
+      if (requestUrl.includes('entities:search')) {
+        return new Response(JSON.stringify({
+          items: [{
+            id: 'm1',
+            name: 'Test item',
+            price: 1000,
+            // 検索結果一覧には商品説明が含まれない
+            thumbnails: ['https://static.mercdn.net/thumb.jpg'],
+          }],
+        }), { status: 200 })
+      }
+      if (requestUrl.includes('/items/get?id=m1')) {
+        return new Response(JSON.stringify({
+          data: {
+            id: 'm1',
+            name: 'Test item',
+            price: 1000,
+            description: '実際の商品説明テキスト',
+            photos: fullImages,
+          },
+        }), { status: 200 })
+      }
+      return new Response(null, { status: 404 })
+    }
+
+    try {
+      const products = await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 1 },
+      )
+      expect(products[0].description).toBe('実際の商品説明テキスト')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   it('検索結果に無い評価数・低評価数・発送日数を、画像補完と同じ詳細APIレスポンスから補完する', async () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = async (input: RequestInfo | URL) => {
