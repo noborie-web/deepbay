@@ -680,11 +680,14 @@ describe('enrichImages() メルカリShops商品のフォールバック', () =>
     }
   })
 
-  it('複数のメルカリShops商品が同時に処理されてもヘッドレスブラウザは1回しか起動しない(実データで確認した競合状態の回帰テスト)', async () => {
-    // 実際に本番で発生した不具合: 起動チェックと代入の間にawaitが挟まる
-    // 実装だと、concurrency分の並列処理から同時に呼ばれた際に毎回起動
-    // 条件を満たしてしまい、Chromiumが複数同時起動してサーバーレス環境
-    // のメモリ上限超過で"browser has been closed"エラーになっていた。
+  it('メルカリShops商品ごとに新しいヘッドレスブラウザを起動する(実データで確認した"複数件処理後にブラウザがdisconnectedになる"不具合の回帰テスト)', async () => {
+    // 実際に本番で発生した不具合: ブラウザを使い回す実装(起動1回・
+    // 逐次newPage)にしても、メルカリShopsの単品ページは広告・
+    // トラッキングタグを大量に含む重いSPAで、2〜3件処理した時点で
+    // Chromiumプロセスのメモリ使用量がサーバーレス環境の上限を超えて
+    // crash/disconnectedになり、以降の全件が"browser has been closed"
+    // で失敗していた。ブラウザを使い回さず1件ごとに起動・終了する
+    // ことで、この蓄積を防ぐ。
     vi.resetModules()
     const launchHeadlessBrowser = vi.fn(async () => {
       // 起動に時間がかかる状況を再現し、並列呼び出し同士が競合しうる
@@ -731,7 +734,9 @@ describe('enrichImages() メルカリShops商品のフォールバック', () =>
       const results = await scraper.scrape('https://jp.mercari.com/search?keyword=test', { limit: 10 })
       expect(results).toHaveLength(5)
       results.forEach((r, i) => expect(r.description).toBe(`shop${i}の説明文`))
-      expect(launchHeadlessBrowser).toHaveBeenCalledTimes(1)
+      // ブラウザの使い回しによるメモリ蓄積クラッシュを防ぐため、
+      // Shops商品5件に対してブラウザも5回(1件ごとに1回)起動される。
+      expect(launchHeadlessBrowser).toHaveBeenCalledTimes(5)
     } finally {
       globalThis.fetch = origFetch
       vi.doUnmock('../lib/scrapers/headless-browser')
