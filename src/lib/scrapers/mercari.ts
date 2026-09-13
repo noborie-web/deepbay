@@ -491,52 +491,46 @@ export class MercariScraper {
     //    サーバーレス環境のメモリ上限を超えていた
     //    →起動処理のPromise自体をキャッシュして1回だけ起動するよう修正。
     // 2) 1)を修正しブラウザは1個だけになったが、そのブラウザに対して
-    //    Shops商品の件数分(最大concurrency=8件)が同時にnewPage()して
-    //    並列にページを読み込もうとしており、Chromiumプロセス自体が
-    //    サーバーレス環境のメモリ上限でクラッシュ・強制終了し、結局
-    //    "browser has been closed"エラーで全滅していた
-    //    →Shops商品はヘッドレスブラウザ1個を使い回しつつ1件ずつ順番に
-    //    (並列にせず)処理するよう分離する。
+    //    Shops商品の件数分が同時にnewPage()して並列にページを読み込もうと
+    //    しており、Chromiumプロセス自体がサーバーレス環境のメモリ上限で
+    //    クラッシュ・強制終了していた
+    //    →Shops商品は1件ずつ順番に処理するよう分離。
+    // 3) 2)を修正し完全に逐次処理にしても、1個のブラウザを使い回して
+    //    2〜3件処理した時点でブラウザが"disconnected"になり以降全滅する
+    //    不具合が残っていた(診断ログで実測: isConnected()が2件目までは
+    //    trueだが、3件目の直前でfalseになり'disconnected'イベントが発火)。
+    //    メルカリShopsの単品ページは広告・トラッキングタグを大量に含む
+    //    重いSPAで、page.close()してもChromiumプロセス自体のメモリ使用量が
+    //    ページをまたいで蓄積し、サーバーレス環境のメモリ上限を超えていた
+    //    とみられる。
+    //    →ブラウザを使い回さず、Shops商品1件ごとに起動・使用・終了する
+    //    ようにした。起動コストは増えるが、Shops商品は抽出全体のごく一部
+    //    (数%程度)のため許容する。
     const shopProducts = products.filter((p) => isShopItem(p.rawData))
     const normalProducts = products.filter((p) => !isShopItem(p.rawData))
 
     const shopResults = new Map<string, ScrapedProduct>()
-    const shopErrors = new Map<string, string>()
-    if (shopProducts.length > 0) {
-      // TODO(一時診断用): 起動直後の接続状態と切断理由を記録する。
-      let launchDiagnostics = ''
+    for (const product of shopProducts) {
+      if (!product.sourceItemId) continue
       const browser = await launchHeadlessBrowser()
-      browser.on?.('disconnected', () => {
-        launchDiagnostics += '\n[event] browser disconnected'
-      })
-      launchDiagnostics += `\n[launch] isConnected=${browser.isConnected?.()} version=${(() => { try { return browser.version?.() } catch (e) { return `error:${String(e)}` } })()}`
       try {
-        for (const product of shopProducts) {
-          if (!product.sourceItemId) continue
-          try {
-            launchDiagnostics += `\n[before newPage ${product.sourceItemId}] isConnected=${browser.isConnected?.()}`
-            const detail = await fetchShopProductDetail(browser, product.sourceItemId)
-            if (!detail) continue
-            shopResults.set(product.sourceItemId, {
-              ...product,
-              sourceUrl: detail.sourceUrl,
-              description: detail.description || product.description,
-              category: detail.category ?? product.category,
-              condition: detail.condition ?? product.condition,
-              images: detail.images.length > 0 ? detail.images : product.images,
-            })
-          } catch (err) {
-            // TODO(一時診断用): #154デプロイ後も失敗が続くため再度記録する。
-            const baseMessage = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
-            const message = `${baseMessage}\n--- diagnostics ---${launchDiagnostics}`
-            console.error('[mercari shops enrich] failed for', product.sourceItemId, message)
-            shopErrors.set(product.sourceItemId, message)
-          }
-          options.onPage?.(shopResults.size, products.length)
+        const detail = await fetchShopProductDetail(browser, product.sourceItemId)
+        if (detail) {
+          shopResults.set(product.sourceItemId, {
+            ...product,
+            sourceUrl: detail.sourceUrl,
+            description: detail.description || product.description,
+            category: detail.category ?? product.category,
+            condition: detail.condition ?? product.condition,
+            images: detail.images.length > 0 ? detail.images : product.images,
+          })
         }
+      } catch (err) {
+        console.error('[mercari shops enrich] failed for', product.sourceItemId, err)
       } finally {
         await browser.close().catch(() => {})
       }
+      options.onPage?.(shopResults.size, products.length)
     }
 
     const enriched: ScrapedProduct[] = []
@@ -589,21 +583,9 @@ export class MercariScraper {
     )
     const finalResults = products.map((product) => {
       if (!product.sourceItemId) return product
-      const shopResult = shopResults.get(product.sourceItemId)
-      if (shopResult) return shopResult
-      const shopError = shopErrors.get(product.sourceItemId)
-      if (shopError) {
-        // TODO(一時診断用): #154デプロイ後も失敗が続くため再度記録する。
-        return {
-          ...product,
-          rawData: {
-            ...(product.rawData as object ?? {}),
-            __shopEnrichError: shopError,
-            __shopEnrichDeployMarker: 'round5-launch-diagnostics',
-          },
-        }
-      }
-      return normalResultById.get(product.sourceItemId) ?? product
+      return shopResults.get(product.sourceItemId)
+        ?? normalResultById.get(product.sourceItemId)
+        ?? product
     })
     if (finalResults.length === 0) {
       throw new ScraperError('商品画像を取得できませんでした', this.siteKey, url)
