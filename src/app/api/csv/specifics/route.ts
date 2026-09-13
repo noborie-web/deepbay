@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createClient as createServiceClient } from '@supabase/supabase-js'
 import {
+  EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS,
   generateSpecificsCsv,
-  SPECIFICS_IN_COLUMN_COUNT,
+  specificsInColumnCount,
   specificsInFilename,
 } from '@/lib/listing-export'
+import { getCategoryItemSpecificsNames } from '@/lib/ebay-taxonomy'
 import type { Product } from '@/types/database'
 
 export async function GET(req: NextRequest) {
@@ -76,19 +79,33 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: '商品が見つかりません' }, { status: 404 })
   }
 
+  // ユーザー要望: Item Specifics(C:列)を、全カテゴリ共通の固定リスト
+  // ではなく、実際の出品先カテゴリでeBayが認識する項目に合わせたい。
+  // 取得できない場合(未対応カテゴリ・API障害等)は従来の固定リストに
+  // フォールバックする。
+  const categoryId = extraction.category?.ebay_category_id ?? null
+  const admin = createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+  const categoryAspectNames = categoryId
+    ? await getCategoryItemSpecificsNames(categoryId, admin)
+    : null
+  const itemSpecificColumns = categoryAspectNames ?? EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS
+
   const csv = generateSpecificsCsv(products as Product[], {
-    categoryId: extraction.category?.ebay_category_id ?? null,
+    categoryId,
     sellerId: seller.seller_id,
     paymentProfileName: paymentProfile,
     returnProfileName: returnProfile,
     shippingProfileName: shippingProfile,
-  })
+  }, itemSpecificColumns)
   return new NextResponse(csv, {
     headers: {
       'Content-Type': 'text/csv; charset=utf-8',
       'Cache-Control': 'private, no-store, max-age=0',
       'X-Specifics-In-Format': '45-columns-v1',
-      'X-Specifics-In-Columns': String(SPECIFICS_IN_COLUMN_COUNT),
+      'X-Specifics-In-Columns': String(specificsInColumnCount(itemSpecificColumns)),
       'X-Content-Type-Options': 'nosniff',
       'Content-Disposition': `attachment; filename="${specificsInFilename(
         seller.seller_id,

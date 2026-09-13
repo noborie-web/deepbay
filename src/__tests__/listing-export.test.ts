@@ -186,6 +186,41 @@ describe('listing export', () => {
   // これまでは数フィールドだけの簡易オブジェクトしか出力しておらず、
   // specifics-inがカテゴリを判別できず誤ったフィールドセットを生成する
   // 原因になっていた。
+  // ユーザー要望: Item Specifics(C:列)が全カテゴリ共通の固定リスト
+  // (ゲーム向け)にハードコードされており、音楽CD等の別カテゴリで
+  // 必要な項目(Artist, Record Label等)が出力されなかった。呼び出し側
+  // (eBay Taxonomy APIから取得したカテゴリ別項目名)を渡せるようにした。
+  describe('カテゴリ別のItem Specifics列(itemSpecificColumns引数)', () => {
+    it('itemSpecificColumnsを渡すと、そのカテゴリ専用の項目名でC:列を生成する', () => {
+      const cdColumns = ['Artist', 'Record Label', 'CD Grading']
+      const product = makeProduct({
+        ebay_item_specifics: { Artist: ['X JAPAN'], 'Record Label': ['Sony Music'] },
+      })
+      const csv = generateSpecificsCsv([product], OPTIONS, cdColumns)
+      const rows = parseCsv(csv)
+      expect(rows[0]).toEqual(expect.arrayContaining(['C:Artist', 'C:Record Label', 'C:CD Grading']))
+      expect(rows[0]).not.toContain('C:Game Name')
+      expect(rows[1][rows[0].indexOf('C:Artist')]).toBe('X JAPAN')
+      expect(rows[1][rows[0].indexOf('C:Record Label')]).toBe('Sony Music')
+      expect(rows[1][rows[0].indexOf('C:CD Grading')]).toBe('NA')
+    })
+
+    it('itemSpecificColumnsを省略すると、従来通り固定リスト(ゲーム向け)を使う', () => {
+      const csv = generateSpecificsCsv([makeProduct()], OPTIONS)
+      const header = csv.split('\r\n')[0]
+      expect(header).toContain('C:Game Name')
+      expect(header).toContain('C:Video Game Series')
+    })
+
+    it('generateListingCsvでも同様にitemSpecificColumnsを反映する', () => {
+      const csv = generateListingCsv([makeProduct()], OPTIONS, ['Artist', 'Record Label'])
+      const header = csv.split('\r\n')[0]
+      expect(header).toContain('C:Artist')
+      expect(header).toContain('C:Record Label')
+      expect(header).not.toContain('C:Game Name')
+    })
+  })
+
   it('raw_source_dataがあればjp_spec列にそのまま出力する(specifics-inのカテゴリ判定用)', () => {
     const rawSourceData = {
       id: 'm1',
