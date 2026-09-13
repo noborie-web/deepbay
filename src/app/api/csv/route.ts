@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createClient as createServiceClient } from '@supabase/supabase-js'
 import {
-  EBAY_UPLOAD_COLUMN_COUNT,
+  EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS,
+  ebayUploadColumnCount,
   generateListingCsv,
   getListingIssues,
   listingFilename,
 } from '@/lib/listing-export'
+import { getCategoryItemSpecificsNames } from '@/lib/ebay-taxonomy'
 import type { Product } from '@/types/database'
 
 export async function GET(req: NextRequest) {
@@ -89,13 +92,26 @@ export async function GET(req: NextRequest) {
     )
   }
 
+  // ユーザー要望: Item Specifics(C:列)を、全カテゴリ共通の固定リスト
+  // ではなく、実際の出品先カテゴリでeBayが認識する項目に合わせたい。
+  // 取得できない場合(未対応カテゴリ・API障害等)は従来の固定リストに
+  // フォールバックする。
+  const admin = createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  )
+  const categoryAspectNames = categoryId
+    ? await getCategoryItemSpecificsNames(categoryId, admin)
+    : null
+  const itemSpecificColumns = categoryAspectNames ?? EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS
+
   const csv = generateListingCsv(typedProducts, {
     categoryId,
     sellerId: seller.seller_id,
     paymentProfileName: paymentProfile,
     returnProfileName: returnProfile,
     shippingProfileName: shippingProfile,
-  })
+  }, itemSpecificColumns)
 
   return new NextResponse(csv, {
     headers: {
@@ -103,7 +119,7 @@ export async function GET(req: NextRequest) {
       'Content-Disposition': `attachment; filename="${listingFilename(seller.seller_id, 'listing')}"`,
       'Cache-Control': 'no-store, max-age=0',
       'X-Ebay-Upload-Format': '42-columns-v1',
-      'X-Ebay-Upload-Columns': String(EBAY_UPLOAD_COLUMN_COUNT),
+      'X-Ebay-Upload-Columns': String(ebayUploadColumnCount(itemSpecificColumns)),
     },
   })
 }

@@ -76,6 +76,12 @@ export const EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS = [
 
 export const EBAY_UPLOAD_COLUMN_COUNT = 42
 
+// 呼び出し側(APIルート)がレスポンスヘッダー等で実際の出力列数を知る
+// ためのヘルパー(itemSpecificColumnsがカテゴリごとに変動するため)。
+export function ebayUploadColumnCount(itemSpecificColumns: readonly string[]): number {
+  return EBAY_UPLOAD_BASE_HEADERS.length + itemSpecificColumns.length
+}
+
 function escapeCsv(value: string): string {
   if (/[",\r\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`
   return value
@@ -175,14 +181,21 @@ export function conditionIdForProduct(product: Product, categoryId?: string | nu
   return CONDITION_ID_MAP[condition] ?? '3000'
 }
 
-export function generateListingCsv(products: Product[], options: ListingExportOptions): string {
-  // eBayのCSVアップロードテンプレートは列位置で判定されるため、
-  // 添付された実運用ファイルと同じ42列を常に同じ順序で出力する。
-  const names = EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS
+// ユーザー要望: Item Specifics列(C:列)は、以前は全カテゴリ共通の固定
+// リスト(ゲーム向け)だったため、音楽CD等の別カテゴリで必要な項目
+// (Artist, Record Label等)が出力されなかった。呼び出し側(APIルート)が
+// eBay Taxonomy APIから取得したカテゴリ別の実際の項目名を渡せるように
+// し、渡されない場合は従来の固定リストにフォールバックする。
+// なお、eBayのCSVアップロード・specifics-inの取込はC:列を列名で
+// マッチングするため、列数がカテゴリごとに変動しても問題ない
+// (先頭の基本列群のみ位置依存)。
+export function generateListingCsv(
+  products: Product[],
+  options: ListingExportOptions,
+  itemSpecificColumns: readonly string[] = EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS,
+): string {
+  const names = itemSpecificColumns
   const headers = [...EBAY_UPLOAD_BASE_HEADERS, ...names.map((name) => `C:${name}`)]
-  if (headers.length !== EBAY_UPLOAD_COLUMN_COUNT) {
-    throw new Error(`eBay出品CSVヘッダーは${EBAY_UPLOAD_COLUMN_COUNT}列である必要があります`)
-  }
   const rows = products.map((product, index) => {
     const specifics = productSpecifics(product)
     const category = product.ebay_category_id ?? options.categoryId ?? ''
@@ -219,9 +232,9 @@ export function generateListingCsv(products: Product[], options: ListingExportOp
       country,
       ...names.map((name) => (specifics[name] ?? []).join('|') || 'NA'),
     ]
-    if (row.length !== EBAY_UPLOAD_COLUMN_COUNT) {
+    if (row.length !== headers.length) {
       throw new Error(
-        `eBay出品CSVの${index + 2}行目が${row.length}列です（必要: ${EBAY_UPLOAD_COLUMN_COUNT}列）`,
+        `eBay出品CSVの${index + 2}行目が${row.length}列です（必要: ${headers.length}列）`,
       )
     }
     return row.map((value) => escapeCsv(String(value))).join(',')
@@ -294,14 +307,23 @@ const SPECIFICS_IN_HEADERS = [
 
 export const SPECIFICS_IN_COLUMN_COUNT = 45
 
-export function generateSpecificsCsv(products: Product[], options: ListingExportOptions): string {
-  // Specifics-INの取込テンプレートは列位置で判定するため、商品データや
-  // カテゴリの有無にかかわらず必ず同じ45列を出力する。
-  const names = EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS
+// 呼び出し側(APIルート)がレスポンスヘッダー等で実際の出力列数を知る
+// ためのヘルパー(itemSpecificColumnsがカテゴリごとに変動するため)。
+export function specificsInColumnCount(itemSpecificColumns: readonly string[]): number {
+  return SPECIFICS_IN_HEADERS.length + itemSpecificColumns.length
+}
+
+// itemSpecificColumnsが渡された場合(eBay Taxonomy APIから取得したカテゴリ
+// 別の実際の項目名)はそちらを使い、渡されない場合は従来の固定リストに
+// フォールバックする。Specifics-INの取込はC:列を列名でマッチングするため
+// 列数がカテゴリごとに変動しても問題ない(先頭の基本列群のみ位置依存)。
+export function generateSpecificsCsv(
+  products: Product[],
+  options: ListingExportOptions,
+  itemSpecificColumns: readonly string[] = EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS,
+): string {
+  const names = itemSpecificColumns
   const headers = [...SPECIFICS_IN_HEADERS, ...names.map((name) => `C:${name}`)]
-  if (headers.length !== SPECIFICS_IN_COLUMN_COUNT) {
-    throw new Error(`Specifics-INヘッダーは${SPECIFICS_IN_COLUMN_COUNT}列である必要があります`)
-  }
 
   const rows = products.map((product, index) => {
     const specifics = productSpecifics(product)
@@ -342,9 +364,9 @@ export function generateSpecificsCsv(products: Product[], options: ListingExport
       sourceSnapshot(product),
       ...names.map((name) => (specifics[name] ?? []).join('|') || 'NA'),
     ]
-    if (row.length !== SPECIFICS_IN_COLUMN_COUNT) {
+    if (row.length !== headers.length) {
       throw new Error(
-        `Specifics-INの${index + 2}行目が${row.length}列です（必要: ${SPECIFICS_IN_COLUMN_COUNT}列）`,
+        `Specifics-INの${index + 2}行目が${row.length}列です（必要: ${headers.length}列）`,
       )
     }
     return row.map((value) => escapeCsv(String(value))).join(',')
