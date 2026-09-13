@@ -247,18 +247,22 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
         const json = await response.json().catch(() => ({}))
         throw new Error(json.error ?? 'CSV出力に失敗しました')
       }
+      // ユーザー要望: Item Specifics(C:列)を、eBay Taxonomy APIから取得
+      // したカテゴリ別の実際の項目数に応じて出力するようにしたため、
+      // 列数はカテゴリごとに変動する(例: 音楽CDカテゴリでは45列より
+      // 多くなる)。以前は「列数が42/45ちょうどでなければ旧形式とみなす」
+      // 判定だったが、これだと正しい新しいCSVまで誤って弾かれてしまう
+      // ため、フォーマットマーカー(バージョン文字列)のみで判定する。
       if (kind === 'listing') {
         const format = response.headers.get('X-Ebay-Upload-Format')
-        const columns = response.headers.get('X-Ebay-Upload-Columns')
-        if (format !== '42-columns-v1' || columns !== '42') {
+        if (format !== '42-columns-v1') {
           throw new Error(
             '旧形式の出品CSVが返されたためダウンロードを中止しました。画面を再読み込みしてください。',
           )
         }
       } else {
         const format = response.headers.get('X-Specifics-In-Format')
-        const columns = response.headers.get('X-Specifics-In-Columns')
-        if (format !== '45-columns-v1' || columns !== '45') {
+        if (format !== '45-columns-v1') {
           throw new Error(
             '旧形式のCSVが返されたためダウンロードを中止しました。画面を再読み込みしてください。',
           )
