@@ -1,4 +1,3 @@
-import type { Browser } from 'playwright-core'
 import { ScraperError } from './types'
 import type { ScrapedProduct, ScraperOptions } from './types'
 import { launchHeadlessBrowser } from './headless-browser'
@@ -481,60 +480,59 @@ export class MercariScraper {
     url: string,
     options: ScraperOptions = {},
   ): Promise<ScrapedProduct[]> {
-    const enriched: ScrapedProduct[] = []
-    const concurrency = 8
-
     // メルカリShops商品はitems/getが404/400になるため単品詳細を取得できず、
     // 従来は画像連番プローブのみのフォールバックで説明・カテゴリー・状態が
-    // 空欄になっていた。Shops商品向けのヘッドレスブラウザは起動コストが
-    // 高いため、混在検索結果に1件でもShops商品があるときだけ遅延起動し、
-    // このenrichImages呼び出し全体で使い回す。
-    // 実データで確認済みの不具合: 起動処理を`if (!shopBrowser) shopBrowser =
-    // await launchHeadlessBrowser()`と書くと、チェックと代入の間にawaitが
-    // 挟まるため、concurrency分の並列処理から同時に呼ばれた場合に毎回
-    // 起動条件を満たしてしまい、Chromiumが複数同時起動してサーバーレス
-    // 環境のメモリ上限を超え"browser has been closed"エラーで全滅していた。
-    // Promise自体をキャッシュすることで、最初の呼び出しだけが起動し、
-    // 以降の並列呼び出しは同じ起動処理(Promise)を待つようにする。
-    let shopBrowserPromise: Promise<Browser> | undefined
-    const getShopBrowser = (): Promise<Browser> => {
-      if (!shopBrowserPromise) shopBrowserPromise = launchHeadlessBrowser()
-      return shopBrowserPromise
-    }
+    // 空欄になっていた。
+    //
+    // 実データで確認済みの不具合の経緯:
+    // 1) ブラウザ起動処理を`if (!shopBrowser) shopBrowser = await
+    //    launchHeadlessBrowser()`と書くと、チェックと代入の間にawaitが
+    //    挟まるため並列呼び出し同士が競合し、Chromiumが複数同時起動して
+    //    サーバーレス環境のメモリ上限を超えていた
+    //    →起動処理のPromise自体をキャッシュして1回だけ起動するよう修正。
+    // 2) 1)を修正しブラウザは1個だけになったが、そのブラウザに対して
+    //    Shops商品の件数分(最大concurrency=8件)が同時にnewPage()して
+    //    並列にページを読み込もうとしており、Chromiumプロセス自体が
+    //    サーバーレス環境のメモリ上限でクラッシュ・強制終了し、結局
+    //    "browser has been closed"エラーで全滅していた
+    //    →Shops商品はヘッドレスブラウザ1個を使い回しつつ1件ずつ順番に
+    //    (並列にせず)処理するよう分離する。
+    const shopProducts = products.filter((p) => isShopItem(p.rawData))
+    const normalProducts = products.filter((p) => !isShopItem(p.rawData))
 
-    try {
-    for (let index = 0; index < products.length; index += concurrency) {
-      const chunk = products.slice(index, index + concurrency)
-      const results = await Promise.all(chunk.map(async (product) => {
-        if (!product.sourceItemId) return product
-
-        if (isShopItem(product.rawData)) {
+    const shopResults = new Map<string, ScrapedProduct>()
+    if (shopProducts.length > 0) {
+      const browser = await launchHeadlessBrowser()
+      try {
+        for (const product of shopProducts) {
+          if (!product.sourceItemId) continue
           try {
-            const browser = await getShopBrowser()
             const detail = await fetchShopProductDetail(browser, product.sourceItemId)
-            if (!detail) return product
-            return {
+            if (!detail) continue
+            shopResults.set(product.sourceItemId, {
               ...product,
               sourceUrl: detail.sourceUrl,
               description: detail.description || product.description,
               category: detail.category ?? product.category,
               condition: detail.condition ?? product.condition,
               images: detail.images.length > 0 ? detail.images : product.images,
-            }
+            })
           } catch (err) {
-            // TODO(一時診断用): #152デプロイ後も失敗が続くため再度エラー内容を記録する。
-            const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
-            console.error('[mercari shops enrich] failed for', product.sourceItemId, message)
-            return {
-              ...product,
-              rawData: {
-                ...(product.rawData as object ?? {}),
-                __shopEnrichError: message,
-                __shopEnrichDeployMarker: 'round3-b2cdea7-followup',
-              },
-            }
+            console.error('[mercari shops enrich] failed for', product.sourceItemId, err)
           }
+          options.onPage?.(shopResults.size, products.length)
         }
+      } finally {
+        await browser.close().catch(() => {})
+      }
+    }
+
+    const enriched: ScrapedProduct[] = []
+    const concurrency = 8
+    for (let index = 0; index < normalProducts.length; index += concurrency) {
+      const chunk = normalProducts.slice(index, index + concurrency)
+      const results = await Promise.all(chunk.map(async (product) => {
+        if (!product.sourceItemId) return product
 
         try {
           const detail = await this.fetchItemDetail(product.sourceItemId)
@@ -570,16 +568,23 @@ export class MercariScraper {
         }
       }))
       enriched.push(...results)
-      options.onPage?.(enriched.length, products.length)
-    }
-    } finally {
-      await shopBrowserPromise?.then((b) => b.close()).catch(() => {})
+      options.onPage?.(shopResults.size + enriched.length, products.length)
     }
 
-    if (enriched.length === 0) {
+    // 元のproducts配列の並び順を保ったまま結果を組み立てる。
+    const normalResultById = new Map(
+      enriched.filter((p) => p.sourceItemId).map((p) => [p.sourceItemId as string, p]),
+    )
+    const finalResults = products.map((product) => {
+      if (!product.sourceItemId) return product
+      return shopResults.get(product.sourceItemId)
+        ?? normalResultById.get(product.sourceItemId)
+        ?? product
+    })
+    if (finalResults.length === 0) {
       throw new ScraperError('商品画像を取得できませんでした', this.siteKey, url)
     }
-    return enriched
+    return finalResults
   }
 
   private async scrapeItemPage(itemId: string, url: string): Promise<ScrapedProduct> {
