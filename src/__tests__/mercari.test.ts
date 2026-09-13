@@ -679,6 +679,66 @@ describe('enrichImages() メルカリShops商品のフォールバック', () =>
       vi.resetModules()
     }
   })
+
+  it('複数のメルカリShops商品が同時に処理されてもヘッドレスブラウザは1回しか起動しない(実データで確認した競合状態の回帰テスト)', async () => {
+    // 実際に本番で発生した不具合: 起動チェックと代入の間にawaitが挟まる
+    // 実装だと、concurrency分の並列処理から同時に呼ばれた際に毎回起動
+    // 条件を満たしてしまい、Chromiumが複数同時起動してサーバーレス環境
+    // のメモリ上限超過で"browser has been closed"エラーになっていた。
+    vi.resetModules()
+    const launchHeadlessBrowser = vi.fn(async () => {
+      // 起動に時間がかかる状況を再現し、並列呼び出し同士が競合しうる
+      // タイミングを作る。
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      return { close: vi.fn(async () => {}) }
+    })
+    vi.doMock('../lib/scrapers/headless-browser', () => ({ launchHeadlessBrowser }))
+    vi.doMock('../lib/scrapers/mercari_shops', () => ({
+      fetchShopProductDetail: vi.fn(async (_browser: unknown, itemId: string) => ({
+        sourceUrl: `https://jp.mercari.com/shops/product/${itemId}`,
+        sourceSite: 'mercari_shops',
+        sourceItemId: itemId,
+        title: 'Shops商品',
+        price: 3000,
+        description: `${itemId}の説明文`,
+        images: ['https://example.com/shop.jpg'],
+        condition: '新品、未使用',
+        category: '邦楽',
+        sellerRatingCount: null,
+        shippingDays: null,
+        sourceUpdatedAt: null,
+        availability: 'available' as const,
+      })),
+    }))
+
+    const origFetch = globalThis.fetch
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input.toString()
+      if (urlStr.includes('entities:search')) {
+        return new Response(JSON.stringify({
+          items: Array.from({ length: 5 }, (_, i) => ({
+            id: `shop${i}`, name: `Shops商品${i}`, price: 3000, shop: { id: `shopSeller${i}` },
+          })),
+          meta: {},
+        }), { status: 200 })
+      }
+      return new Response('', { status: 400 })
+    }
+
+    try {
+      const { MercariScraper } = await import('../lib/scrapers/mercari')
+      const scraper = new MercariScraper()
+      const results = await scraper.scrape('https://jp.mercari.com/search?keyword=test', { limit: 10 })
+      expect(results).toHaveLength(5)
+      results.forEach((r, i) => expect(r.description).toBe(`shop${i}の説明文`))
+      expect(launchHeadlessBrowser).toHaveBeenCalledTimes(1)
+    } finally {
+      globalThis.fetch = origFetch
+      vi.doUnmock('../lib/scrapers/headless-browser')
+      vi.doUnmock('../lib/scrapers/mercari_shops')
+      vi.resetModules()
+    }
+  })
 })
 
 describe('MercariScraper セラーページ抽出', () => {
