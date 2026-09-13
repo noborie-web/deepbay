@@ -359,4 +359,47 @@ describe('ListingModal', () => {
     expect(String(requestUrl)).toContain('requestId=')
     expect(requestInit).toEqual({ cache: 'no-store' })
   })
+
+  // ユーザー報告バグの回帰テスト: eBay Taxonomy API連携でItem Specifics
+  // 列がカテゴリごとに変動するようになったところ、「列数が42/45ちょうど
+  // でなければ旧形式とみなす」チェックのせいで、音楽CDカテゴリ等の
+  // 正しい(列数が多い)新しいCSVまで誤って「旧形式」としてダウンロード
+  // が中止されてしまっていた。フォーマットマーカーだけで判定し、列数の
+  // 変動では弾かないことを確認する。
+  it('列数がカテゴリに応じて変動していても、フォーマットマーカーが正しければダウンロードする(specifics-in)', async () => {
+    const createObjectURL = vi.fn(() => 'blob:mock-url')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL })
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [makeProduct()],
+      })
+      .mockResolvedValueOnce(new Response('CustomLabel,...,C:Artist,C:Record Label,C:CD Grading', {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/csv',
+          'X-Specifics-In-Format': '45-columns-v1',
+          // 音楽CDカテゴリはゲーム向け固定リストより項目数が多いため、
+          // 実際の列数は45を超える。
+          'X-Specifics-In-Columns': '59',
+        },
+      }))
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    try {
+      render(<ListingModal extraction={extraction} sellers={sellers} onClose={vi.fn()} />)
+      const button = await screen.findByRole('button', { name: 'SPECIFICS-IN 45列CSV出力' })
+      await waitFor(() => expect(button).toBeEnabled())
+      await userEvent.click(button)
+
+      await waitFor(() => expect(createObjectURL).toHaveBeenCalled())
+      expect(clickSpy).toHaveBeenCalled()
+      expect(screen.queryByRole('alert')).toBeNull()
+    } finally {
+      clickSpy.mockRestore()
+    }
+  })
 })
