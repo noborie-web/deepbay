@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { endItem, reviseQuantityToZero, revisePrice, addFixedPriceItem } from '@/lib/ebay-actions'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
-import { getDelistCutoffIso } from '@/lib/inventory-delist'
+import { getDelistCutoffIso, isDelistByAgeEnabled } from '@/lib/inventory-delist'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { syncInventoryListings } from '@/lib/inventory-sync'
 import { checkSupplierListings } from '@/lib/inventory-supplier-check'
@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
   // Vercel側で日次スケジュールを制御するため、ユーザー別の時刻照合は行わない
   const { data: allSettings } = await db
     .from('inventory_settings')
-    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, payment_profile_name, return_profile_name, shipping_profile_name')
+    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, payment_profile_name, return_profile_name, shipping_profile_name')
     .eq('sync_enabled', true)
 
   const results: Record<string, unknown>[] = []
@@ -127,7 +127,8 @@ export async function GET(req: NextRequest) {
     await runSupplierCheck()
 
     // 取り下げ
-    if (settings.auto_delist) {
+    // ユーザー要望: 「N日経過取り下げ」がOFFのときは自動取り下げを行わない。
+    if (settings.auto_delist && isDelistByAgeEnabled(settings)) {
       // ユーザー要望: 他ツールで在庫管理中の出品を誤って取り下げないよう、
       // Kakehashiの商品に紐付いている出品だけを対象にする。
       const { data: listings } = await db

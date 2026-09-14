@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { endItem, reviseQuantityToZero } from '@/lib/ebay-actions'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
-import { getDelistCutoffIso } from '@/lib/inventory-delist'
+import { getDelistCutoffIso, isDelistByAgeEnabled } from '@/lib/inventory-delist'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 
 function admin() {
@@ -19,11 +19,16 @@ export async function GET() {
   const db = admin()
   const { data: settings, error: settingsError } = await db
     .from('inventory_settings')
-    .select('days_until_delist')
+    .select('days_until_delist, delist_by_age_enabled')
     .eq('user_id', user.id)
     .maybeSingle()
 
   if (settingsError) return NextResponse.json({ error: settingsError.message }, { status: 500 })
+
+  // 「N日経過取り下げ」がOFFのときは取り下げ対象なし
+  if (!isDelistByAgeEnabled(settings)) {
+    return NextResponse.json({ items: [], count: 0, disabled: true })
+  }
 
   const cutoff = getDelistCutoffIso(settings?.days_until_delist)
   const { data: listings, error: listingsError } = await db
@@ -61,11 +66,14 @@ export async function POST(req: NextRequest) {
 
   const { data: settings, error: settingsError } = await db
     .from('inventory_settings')
-    .select('ebay_token, ebay_refresh_token, ebay_token_expires_at, days_until_delist')
+    .select('ebay_token, ebay_refresh_token, ebay_token_expires_at, days_until_delist, delist_by_age_enabled')
     .eq('user_id', user.id)
     .maybeSingle()
 
   if (settingsError) return NextResponse.json({ error: settingsError.message }, { status: 500 })
+  if (!isDelistByAgeEnabled(settings)) {
+    return NextResponse.json({ error: 'N日経過取り下げがOFFのため取り下げは実行できません' }, { status: 409 })
+  }
   const cutoff = getDelistCutoffIso(settings?.days_until_delist)
   const { data: listings, error: listingsError } = await db
     .from('inventory_active_listings')

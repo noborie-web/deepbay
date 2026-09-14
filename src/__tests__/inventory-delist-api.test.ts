@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
-import { getDelistCutoffIso, normalizeDaysUntilDelist } from '@/lib/inventory-delist'
+import { getDelistCutoffIso, isDelistByAgeEnabled, normalizeDaysUntilDelist } from '@/lib/inventory-delist'
 
 let mockUser: { id: string } | null = { id: 'user-1' }
 let mockListings: Array<{ ebay_item_id: string; product_id: string | null; quantity: number; start_time: string }> = []
+let mockDelistByAgeEnabled: boolean | undefined = true
 const mockIn = vi.fn()
 const mockLte = vi.fn()
 const mockEndItem = vi.fn()
@@ -36,7 +37,7 @@ vi.mock('@supabase/supabase-js', () => ({
           select: vi.fn().mockReturnThis(),
           eq: vi.fn().mockReturnThis(),
           maybeSingle: vi.fn(async () => ({
-            data: { ebay_token: 'token', ebay_refresh_token: null, ebay_token_expires_at: null, days_until_delist: 29 },
+            data: { ebay_token: 'token', ebay_refresh_token: null, ebay_token_expires_at: null, days_until_delist: 29, delist_by_age_enabled: mockDelistByAgeEnabled },
             error: null,
           })),
         }
@@ -61,6 +62,7 @@ describe('/api/inventory/actions/delist', () => {
   beforeEach(() => {
     mockUser = { id: 'user-1' }
     mockListings = []
+    mockDelistByAgeEnabled = true
     mockIn.mockClear()
     mockLte.mockClear()
     mockEndItem.mockReset()
@@ -87,6 +89,31 @@ describe('/api/inventory/actions/delist', () => {
     expect(res.status).toBe(200)
     expect(json).toMatchObject({ count: 1 })
     expect(mockLte).toHaveBeenCalledWith('start_time', '2026-07-12T00:00:00.000Z')
+  })
+
+  // ユーザー要望: 「N日経過取り下げ」をOFFにしたら経過日数による取り下げを
+  // 中止する(売り切れ商品を即取り下げるのではなく、取り下げ自体を行わない)。
+  it('N日経過取り下げがOFFならプレビューは対象0件を返し、一覧を問い合わせない', async () => {
+    mockDelistByAgeEnabled = false
+    mockListings = [{ ebay_item_id: 'item-1', product_id: null, quantity: 0, start_time: '2026-07-01T00:00:00.000Z' }]
+    const { GET } = await import('@/app/api/inventory/actions/delist/route')
+    const res = await GET()
+    const json = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(json).toMatchObject({ count: 0, items: [], disabled: true })
+    expect(mockLte).not.toHaveBeenCalled()
+  })
+
+  it('N日経過取り下げがOFFなら実行を拒否し、eBayへ一切アクセスしない', async () => {
+    mockDelistByAgeEnabled = false
+    const { POST } = await import('@/app/api/inventory/actions/delist/route')
+    const res = await POST(request({ item_ids: ['item-1'] }))
+
+    expect(res.status).toBe(409)
+    expect(mockResolveAccessToken).not.toHaveBeenCalled()
+    expect(mockEndItem).not.toHaveBeenCalled()
+    expect(mockReviseQuantityToZero).not.toHaveBeenCalled()
   })
 
   it('rejects execution without previewed item IDs', async () => {
@@ -147,6 +174,20 @@ describe('/api/inventory/actions/delist', () => {
       status: 'failed',
       error_message: '1/2件失敗: eBay rejected the action',
     }))
+  })
+})
+
+describe('isDelistByAgeEnabled', () => {
+  it('未設定・nullは従来どおりONとして扱う', () => {
+    expect(isDelistByAgeEnabled(undefined)).toBe(true)
+    expect(isDelistByAgeEnabled(null)).toBe(true)
+    expect(isDelistByAgeEnabled({})).toBe(true)
+    expect(isDelistByAgeEnabled({ delist_by_age_enabled: null })).toBe(true)
+  })
+
+  it('明示的にfalseのときだけOFFになる', () => {
+    expect(isDelistByAgeEnabled({ delist_by_age_enabled: false })).toBe(false)
+    expect(isDelistByAgeEnabled({ delist_by_age_enabled: true })).toBe(true)
   })
 })
 
