@@ -178,5 +178,7 @@ export async function POST(request: Request) {
       page: syncResult.lastFetchedPage,
       totalPages: syncResult.totalPages,
     },
+    truncated: syncResult.truncated,
+    ebayTotalPages: syncResult.ebayTotalPages,
   })
 }
