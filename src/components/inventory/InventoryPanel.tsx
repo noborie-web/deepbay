@@ -1024,17 +1024,23 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           {/* 手動データ取得 */}
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-2">データ取得</h3>
-            <p className="text-xs text-gray-500 mb-3">eBayのactiveリストを最新状態に更新します。自動同期がONの場合は毎朝9時に自動実行されます。</p>
-            <div className="flex items-center gap-3 flex-wrap">
-              <button onClick={handleSync} disabled={syncing || !settings.has_token}
-                className={`px-4 py-2 text-sm rounded flex items-center gap-2 ${syncing || !settings.has_token ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
-                {syncing ? `同期中...${syncProgress ? ` (${syncProgress})` : ''}` : '🔄 eBay同期を今すぐ実行'}
-              </button>
-              <label className={`flex items-center gap-2 border rounded px-3 py-2 text-sm cursor-pointer ${uploading ? 'opacity-50 pointer-events-none bg-gray-50' : 'bg-white hover:bg-gray-50'}`}>
-                <input type="file" accept=".csv,text/csv" className="hidden" ref={fileRef} onChange={handleUpload} disabled={uploading} />
-                <span>📎</span>
-                <span className="text-gray-600">{uploading ? 'アップロード中...' : 'activeファイルをアップロード'}</span>
-              </label>
+            <p className="text-xs text-gray-500 mb-3">eBayのactiveリストを最新状態に更新します。どちらか一方を実行すれば十分です（自動同期がONの場合は毎朝9時に①が自動実行されます）。</p>
+            <div className="flex items-stretch gap-3 flex-wrap">
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-gray-700">① APIで同期する（推奨）</span>
+                <button onClick={handleSync} disabled={syncing || !settings.has_token}
+                  className={`px-4 py-2 text-sm rounded flex items-center gap-2 ${syncing || !settings.has_token ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+                  {syncing ? `同期中...${syncProgress ? ` (${syncProgress})` : ''}` : '🔄 eBay同期を今すぐ実行'}
+                </button>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium text-gray-500">② CSVファイルで取り込む（代替）</span>
+                <label className={`flex items-center gap-2 border rounded px-3 py-2 text-sm cursor-pointer ${uploading ? 'opacity-50 pointer-events-none bg-gray-50' : 'bg-white hover:bg-gray-50'}`}>
+                  <input type="file" accept=".csv,text/csv" className="hidden" ref={fileRef} onChange={handleUpload} disabled={uploading} />
+                  <span>📎</span>
+                  <span className="text-gray-600">{uploading ? 'アップロード中...' : 'activeファイルを選択して取り込む'}</span>
+                </label>
+              </div>
             </div>
             {uploading && <div className="mt-3 max-w-xl rounded border border-blue-100 bg-blue-50 p-3 text-xs text-blue-800" role="status" aria-live="polite">
               <div className="flex items-center justify-between gap-3"><span>{uploadStatusText}</span><span>画面を閉じずにお待ちください</span></div>
@@ -1182,18 +1188,34 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           </div>
           <hr />
           <div>
-            <h3 className="text-sm font-semibold text-gray-800 mb-1">eBay Activeファイルアップロード</h3>
-            <p className="text-xs text-gray-500 mb-3">eBay Seller Hub &gt; Reports &gt; Downloads からダウンロードしたactiveファイルをアップロードします。</p>
-            <div className="flex items-center gap-3">
-              <label className={`flex items-center gap-2 border rounded px-3 py-2 text-sm cursor-pointer ${uploading ? 'opacity-50 pointer-events-none bg-gray-50' : 'bg-white hover:bg-gray-50'}`}>
-                <input type="file" accept=".csv,text/csv" className="hidden" ref={fileRef} onChange={handleUpload} disabled={uploading} />
-                <span className="text-gray-400">📎</span>
-                <span className="text-gray-600">{uploading ? 'アップロード中...' : 'eBayからダウンロードしたactiveファイルを選択'}</span>
-              </label>
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">eBay出品の手動取り込み</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              どちらか一方を実行すればeBayのactive出品が取り込まれます（両方行う必要はありません）。
+              Kakehashiで出品した商品だけが在庫管理の対象になります。
+            </p>
+
+            {/* ① APIで同期(推奨) */}
+            <div className="border rounded-lg p-3 mb-3 bg-blue-50/40 border-blue-200">
+              <p className="text-sm font-medium text-gray-800 mb-1">① APIで同期する（推奨）</p>
+              <p className="text-xs text-gray-500 mb-2">接続済みのeBayアカウントから直接取得します。ファイルの準備は不要です。</p>
               <button onClick={handleSync} disabled={syncing || !settings.has_token}
                 className={`px-4 py-2 text-sm rounded ${syncing || !settings.has_token ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
                 {syncing ? `eBay同期中...${syncProgress ? ` (${syncProgress})` : ''}` : 'eBay同期を今すぐ実行'}
               </button>
+              {!settings.has_token && <p className="text-xs text-red-500 mt-2">eBayトークンが設定されていないため、②のCSV取り込みをご利用ください。</p>}
+            </div>
+
+            {/* ② CSVファイルで取り込む(代替) */}
+            <div className="border rounded-lg p-3">
+              <p className="text-sm font-medium text-gray-800 mb-1">② CSVファイルで取り込む（代替）</p>
+              <p className="text-xs text-gray-500 mb-2">
+                API連携が使えない場合の代替手段です。eBay Seller Hub &gt; Reports &gt; Downloads からダウンロードしたactiveファイルを選択すると、すぐに取り込みが始まります。
+              </p>
+              <label className={`inline-flex items-center gap-2 border rounded px-3 py-2 text-sm cursor-pointer ${uploading ? 'opacity-50 pointer-events-none bg-gray-50' : 'bg-white hover:bg-gray-50'}`}>
+                <input type="file" accept=".csv,text/csv" className="hidden" ref={fileRef} onChange={handleUpload} disabled={uploading} />
+                <span className="text-gray-400">📎</span>
+                <span className="text-gray-600">{uploading ? 'アップロード中...' : 'activeファイルを選択して取り込む'}</span>
+              </label>
             </div>
           </div>
           <hr />
