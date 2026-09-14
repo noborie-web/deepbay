@@ -73,7 +73,12 @@ const COLUMN_ALIASES: Record<string, string> = {
   'Current price': 'currentPrice',
   'StartPrice': 'currentPrice',
   'Quantity': 'quantity',
+  // 実データで確認: 現在のeBay Seller Hubの「Active listings」レポートは
+  // 在庫数を「Available quantity」、売れた数を「Sold quantity」という列名で
+  // 出力する。対応表に無かったため、CSV取込で在庫数が常にnullになっていた。
+  'Available quantity': 'quantity',
   'Quantity sold': 'quantitySold',
+  'Sold quantity': 'quantitySold',
   'QuantitySold': 'quantitySold',
   'Listing status': 'listingStatus',
   'ListingStatus': 'listingStatus',

@@ -88,6 +88,25 @@ describe('parseEbayActiveListingsCsv', () => {
     })
   })
 
+  it('現在のeBay Seller Hubレポートの列名(Available quantity / Sold quantity)から在庫数を読み取る', () => {
+    // 実データで確認: 2026-09時点のActive listingsレポートの実際のヘッダー。
+    // 以前は対応表に無く、在庫数・売れた数が常にnullで取り込まれていた。
+    const csv = [
+      'Item number,Title,Variation details,Custom label (SKU),Available quantity,Format,Currency,Start price,Auction Buy It Now price,Reserve price,Current price,Sold quantity,Watchers,Bids,Start date,End date,eBay category 1 name,eBay category 1 number,Condition,Listing site',
+      '318865179224 ,Rare SHISHAMO Demo CD,,kakehashi_01322a70_5658_4cf7_bc5e_2ee74b8e2799,1,FIXED_PRICE,USD,465.65,,,465.65,0,,,Sep-13-26 04:55:59 PDT,Oct-13-26 04:55:59 PDT,CDs,176984,Very Good,US',
+    ].join('\n')
+    const result = parseEbayActiveListingsCsv(csv)
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({
+      ebayItemId: '318865179224',
+      customLabel: 'kakehashi_01322a70_5658_4cf7_bc5e_2ee74b8e2799',
+      currentPrice: 465.65,
+      quantity: 1,
+      quantitySold: 0,
+      startTime: 'Sep-13-26 04:55:59 PDT',
+    })
+  })
+
   it('handles quoted fields with commas', () => {
     const csv = makecsv(['110987654321,SKU-001,"Title, with comma",15.00,1,0,Active,,'])
     const result = parseEbayActiveListingsCsv(csv)
