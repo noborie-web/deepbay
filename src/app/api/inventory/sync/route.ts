@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { expireStaleInventorySyncRuns } from '@/lib/inventory-run'
-import { syncInventoryListingBatch } from '@/lib/inventory-sync'
+import { syncKnownInventoryListingBatch } from '@/lib/inventory-sync'
 import { createInventorySyncCursor, parseInventorySyncCursor } from '@/lib/inventory-sync-cursor'
 
 // 実データで確認した不具合: maxDuration未設定のためVercelのデフォルト上限で
@@ -14,7 +14,9 @@ import { createInventorySyncCursor, parseInventorySyncCursor } from '@/lib/inven
 export const maxDuration = 60
 
 const ROUTE_TIMEOUT_MS = 40_000
-const PAGES_PER_REQUEST = 4
+// ユーザー要望: Kakehashiが出品したItemIDだけをGetItemで個別照会する。
+// 1リクエストで照会する件数(同時4件で1件あたり約1秒 → 15秒前後)。
+const ITEMS_PER_REQUEST = 60
 
 function admin() {
   return createServiceClient(
@@ -42,8 +44,7 @@ export async function POST(request: Request) {
   if (settingsError) return NextResponse.json({ error: settingsError.message }, { status: 500 })
 
   let runId: string
-  let startPage = 1
-  let previousTotal = 0
+  let startBatch = 1
   let previousMatched = 0
 
   if (cursorValue) {
@@ -68,8 +69,7 @@ export async function POST(request: Request) {
     }
 
     runId = existingRun.id
-    startPage = cursor.nextPage
-    previousTotal = existingRun.items_total ?? 0
+    startBatch = cursor.nextPage
     previousMatched = existingRun.items_matched ?? 0
   } else {
     try {
@@ -106,30 +106,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: `トークン更新失敗: ${msg}` }, { status: 500 })
   }
 
-  if (!cursorValue) {
-    // eBay active results are a complete snapshot. Clear the previous
-    // snapshot once at the start of a new resumable sync, after auth/token
-    // validation succeeds.
-    const { error: clearError } = await db
-      .from('inventory_active_listings')
-      .delete()
-      .eq('user_id', user.id)
-    if (clearError) return NextResponse.json({ error: `既存の在庫スナップショットを更新できません: ${clearError.message}` }, { status: 500 })
-  }
-
-  let syncResult: Awaited<ReturnType<typeof syncInventoryListingBatch>>
+  // 個別照会方式では在庫一覧のItemIDが照会対象そのものなので、同期開始時に
+  // 一覧を消してはいけない(従来の全件走査方式のスナップショット全削除は撤廃)。
+  // 終了済みの出品は照会結果に基づいて個別に除外する。
+  let syncResult: Awaited<ReturnType<typeof syncKnownInventoryListingBatch>>
   const syncController = new AbortController()
   const routeTimeout = setTimeout(() => {
     syncController.abort(new Error(`在庫同期が${ROUTE_TIMEOUT_MS / 1000}秒を超えたため終了しました`))
   }, ROUTE_TIMEOUT_MS)
   try {
     syncResult = await Promise.race([
-      syncInventoryListingBatch(
+      syncKnownInventoryListingBatch(
         db,
         user.id,
         accessToken,
-        startPage,
-        PAGES_PER_REQUEST,
+        startBatch,
+        ITEMS_PER_REQUEST,
         { signal: syncController.signal },
       ),
       new Promise<never>((_, reject) => {
@@ -148,20 +140,16 @@ export async function POST(request: Request) {
     clearTimeout(routeTimeout)
   }
 
-  const fetchedTotal = previousTotal + syncResult.total
-  const matched = previousMatched + syncResult.matched
-  const done = syncResult.nextPage === null
-  let total = fetchedTotal
+  const matched = previousMatched + syncResult.updated + syncResult.discovered
+  const done = syncResult.nextBatch === null
+  let total = syncResult.totalItems
 
   if (done) {
     const { count: storedTotal, error: countError } = await db
       .from('inventory_active_listings')
       .select('id', { count: 'exact', head: true })
       .eq('user_id', user.id)
-
-    // The eBay result pages can overlap while listings are changing. The
-    // stored table is unique by user and eBay item ID, so use its exact count
-    // for the completed run instead of the inflated sum of fetched pages.
+    // 完了時は在庫一覧の実件数(終了済みを除外した後)を総数として記録する
     if (!countError && storedTotal !== null) total = storedTotal
   }
 
@@ -178,13 +166,13 @@ export async function POST(request: Request) {
     ok: true,
     total,
     matched,
+    ended: syncResult.ended,
+    discovered: syncResult.discovered,
     done,
-    cursor: done ? null : createInventorySyncCursor(runId, syncResult.nextPage!, cursorSecret),
+    cursor: done ? null : createInventorySyncCursor(runId, syncResult.nextBatch!, cursorSecret),
     progress: {
-      page: syncResult.lastFetchedPage,
-      totalPages: syncResult.totalPages,
+      processed: syncResult.processedItems,
+      total: syncResult.totalItems,
     },
-    truncated: syncResult.truncated,
-    ebayTotalPages: syncResult.ebayTotalPages,
   })
 }

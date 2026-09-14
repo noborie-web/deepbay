@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { fetchActiveListingsBatch, fetchAllActiveListings } from './ebay-inventory'
+import { fetchActiveListingsBatch, fetchAllActiveListings, fetchListingsByItemIds } from './ebay-inventory'
 import {
   extractProductIdFromCustomLabel,
   extractSourceLookupKeys,
@@ -210,4 +210,178 @@ export async function syncInventoryListings(
   const stored = await storeInventoryListings(db, userId, listings, options)
   await purgeUnmanagedListings(db, userId)
   return stored
+}
+
+// ---------------------------------------------------------------------------
+// Kakehashiが出品したItemIDだけを個別照会する同期
+//
+// ユーザー要望・実データで確認した不具合: eBayアカウント上には他ツールで
+// 出品中の商品が約1万件あり、全active出品を走査する従来方式では上限・
+// 実行時間の制約で最後まで走り切れず、Kakehashiで出品した149件が1件も
+// 同期できなかった。Kakehashiが把握しているItemID(在庫一覧に登録済みの
+// 出品 + 直接出品で得たebay_item_id)だけをGetItemで個別に照会する方式に
+// 変更し、他ツールの出品数に左右されないようにする。
+//
+// 新しく出品された商品の発見: eBay側の全active出品を新しい順に並べた
+// 先頭2ページ(400件)だけを追加で確認し、Kakehashiの商品に紐付く出品が
+// あれば取り込む(Kakehashiの出品は直近のものが多いため、ここに含まれる
+// 可能性が高い。含まれない場合はCSV取込で登録できる)。
+// ---------------------------------------------------------------------------
+
+const DISCOVERY_PAGES = 2
+
+export interface KnownInventorySyncBatchResult {
+  // 照会対象のKakehashi出品の総数
+  totalItems: number
+  // このバッチまでに照会し終えた件数
+  processedItems: number
+  // このバッチで最新情報に更新した件数
+  updated: number
+  // このバッチで終了済みとして在庫一覧から除外した件数
+  ended: number
+  // 新規に発見して取り込んだ件数(最初のバッチのみ)
+  discovered: number
+  nextBatch: number | null
+  totalBatches: number
+}
+
+export interface KnownInventorySyncResult {
+  total: number
+  matched: number
+  ended: number
+  discovered: number
+}
+
+// Kakehashiが把握しているeBay ItemIDを集める(在庫一覧 + 商品テーブル)。
+async function collectKnownItemIds(db: SupabaseClient, userId: string): Promise<string[]> {
+  const ids = new Set<string>()
+
+  const { data: listings, error: listingError } = await db
+    .from('inventory_active_listings')
+    .select('ebay_item_id')
+    .eq('user_id', userId)
+    .not('product_id', 'is', null)
+  if (listingError) throw new Error(`Known listing lookup failed: ${listingError.message}`)
+  for (const row of listings ?? []) if (row.ebay_item_id) ids.add(String(row.ebay_item_id))
+
+  const { data: products, error: productError } = await db
+    .from('products')
+    .select('ebay_item_id')
+    .eq('user_id', userId)
+    .not('ebay_item_id', 'is', null)
+  if (productError) throw new Error(`Product listing lookup failed: ${productError.message}`)
+  for (const row of products ?? []) if (row.ebay_item_id) ids.add(String(row.ebay_item_id))
+
+  return Array.from(ids).sort()
+}
+
+// 新しい順の先頭数ページだけを見て、Kakehashiの商品に紐付く新規出品を取り込む。
+// 発見処理の失敗で同期全体を止めない(既知の出品の更新は続行する)。
+async function discoverNewListings(
+  db: SupabaseClient,
+  userId: string,
+  accessToken: string,
+  options: InventorySyncOptions,
+): Promise<number> {
+  try {
+    const batch = await fetchActiveListingsBatch(
+      { accessToken },
+      1,
+      DISCOVERY_PAGES,
+      { signal: options.signal },
+    )
+    const stored = await storeInventoryListings(db, userId, batch.items, options)
+    return stored.matched
+  } catch (error) {
+    if (options.signal?.aborted) throw error
+    console.warn('[inventory-sync] discovery of new listings failed:', error instanceof Error ? error.message : error)
+    return 0
+  }
+}
+
+async function removeEndedListings(db: SupabaseClient, userId: string, itemIds: string[]): Promise<void> {
+  if (itemIds.length === 0) return
+  for (let index = 0; index < itemIds.length; index += DB_CHUNK_SIZE) {
+    const chunk = itemIds.slice(index, index + DB_CHUNK_SIZE)
+    const { error } = await db
+      .from('inventory_active_listings')
+      .delete()
+      .eq('user_id', userId)
+      .in('ebay_item_id', chunk)
+    if (error) throw new Error(`Ended listing cleanup failed: ${error.message}`)
+  }
+}
+
+/**
+ * Kakehashiが把握している出品を、batchSize件ずつGetItemで個別照会して更新する
+ * (手動同期用。1リクエストで1バッチを処理し、cursorで続きを再開できる)。
+ */
+export async function syncKnownInventoryListingBatch(
+  db: SupabaseClient,
+  userId: string,
+  accessToken: string,
+  batchIndex: number,
+  batchSize: number,
+  options: InventorySyncOptions = {},
+): Promise<KnownInventorySyncBatchResult> {
+  if (!Number.isInteger(batchIndex) || batchIndex < 1) throw new Error(`Invalid inventory sync batch: ${batchIndex}`)
+  if (!Number.isInteger(batchSize) || batchSize < 1) throw new Error(`Invalid inventory sync batch size: ${batchSize}`)
+
+  const discovered = batchIndex === 1
+    ? await discoverNewListings(db, userId, accessToken, options)
+    : 0
+
+  const knownIds = await collectKnownItemIds(db, userId)
+  const totalBatches = Math.max(1, Math.ceil(knownIds.length / batchSize))
+  const start = (batchIndex - 1) * batchSize
+  const targetIds = knownIds.slice(start, start + batchSize)
+
+  const fetched = await fetchListingsByItemIds(
+    { accessToken },
+    targetIds,
+    { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
+  )
+  const stored = await storeInventoryListings(db, userId, fetched.items, options)
+  await removeEndedListings(db, userId, fetched.endedItemIds)
+  await purgeUnmanagedListings(db, userId)
+
+  const processedItems = Math.min(knownIds.length, start + targetIds.length)
+  return {
+    totalItems: knownIds.length,
+    processedItems,
+    updated: stored.matched,
+    ended: fetched.endedItemIds.length,
+    discovered,
+    nextBatch: batchIndex < totalBatches ? batchIndex + 1 : null,
+    totalBatches,
+  }
+}
+
+/**
+ * Kakehashiが把握している出品をすべて個別照会して更新する(日次cron用)。
+ */
+export async function syncKnownInventoryListings(
+  db: SupabaseClient,
+  userId: string,
+  accessToken: string,
+  options: InventorySyncOptions = {},
+): Promise<KnownInventorySyncResult> {
+  const discovered = await discoverNewListings(db, userId, accessToken, options)
+  const knownIds = await collectKnownItemIds(db, userId)
+
+  const fetched = await fetchListingsByItemIds(
+    { accessToken },
+    knownIds,
+    { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
+  )
+  const stored = await storeInventoryListings(db, userId, fetched.items, options)
+  await removeEndedListings(db, userId, fetched.endedItemIds)
+  await purgeUnmanagedListings(db, userId)
+
+  return {
+    total: knownIds.length,
+    matched: stored.matched,
+    ended: fetched.endedItemIds.length,
+    discovered,
+  }
 }
