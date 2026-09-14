@@ -18,8 +18,12 @@ const FILTERS: { key: FilterKey; label: string; color: string; match?: (p: Produ
 // 「下書き」の2つは、表示中の商品をチェックして一括削除できるように
 // してほしい(出品中・売却済みは、既存の削除APIが出品済み商品の削除を
 // ブロックする仕様のため、選択削除の対象外とする)。
-export default function InventoryProductsSection({ items, listings, listingCount, hasToken }: {
+export type StatusCounts = Record<FilterKey, number>
+
+export default function InventoryProductsSection({ items, listings, listingCount, statusCounts, hasToken }: {
   items: Product[]
+  // 集計カード用の件数(DBの全件カウント。itemsは表示用に直近100件のみ)
+  statusCounts: StatusCounts
   // eBay在庫管理パネル(InventoryPanel)は絞り込み条件(filter)を
   // statusFilterとして受け取り、「eBay商品一覧」タブも同じ条件で絞り込む。
   // page.tsx(サーバーコンポーネント)からInventoryPanelを関数として
@@ -34,12 +38,7 @@ export default function InventoryProductsSection({ items, listings, listingCount
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [deleting, setDeleting] = useState(false)
 
-  const counts = {
-    total: productList.length,
-    draft: productList.filter((p) => p.listing_status === 'draft').length,
-    listed: productList.filter((p) => p.listing_status === 'listed').length,
-    sold: productList.filter((p) => p.listing_status === 'sold').length,
-  }
+  const [counts, setCounts] = useState<StatusCounts>(statusCounts)
 
   const activeFilterDef = FILTERS.find((f) => f.key === filter)!
   const filtered = activeFilterDef.match ? productList.filter(activeFilterDef.match) : productList
@@ -94,6 +93,13 @@ export default function InventoryProductsSection({ items, listings, listingCount
 
       if (succeededIds.length > 0) {
         setProductList((prev) => prev.filter((p) => !succeededIds.includes(p.id)))
+        const removed = targets.filter((p) => succeededIds.includes(p.id))
+        setCounts((prev) => ({
+          total: prev.total - removed.length,
+          draft: prev.draft - removed.filter((p) => p.listing_status === 'draft').length,
+          listed: prev.listed - removed.filter((p) => p.listing_status === 'listed').length,
+          sold: prev.sold - removed.filter((p) => p.listing_status === 'sold').length,
+        }))
       }
       setSelected(new Set())
 

@@ -13,7 +13,12 @@ vi.mock('@/lib/supabase/client', () => ({
 // InventoryProductsSectionはInventoryPanel(eBay商品一覧タブ等)を内部で
 // 描画するため、その分のpropsも渡す。このテストファイルでは商品テーブル側
 // の挙動のみを検証する。
-const panelProps = { listings: [], listingCount: 0, hasToken: false }
+const panelProps = {
+  listings: [],
+  listingCount: 0,
+  hasToken: false,
+  statusCounts: { total: 3, draft: 1, listed: 1, sold: 1 },
+}
 
 function makeProduct(overrides: Partial<Product> = {}): Product {
   return {
@@ -144,5 +149,22 @@ describe('InventoryProductsSection: 集計カードの絞り込みと選択削�
 
     await userEvent.click(screen.getByLabelText(/このページの総商品数を全選択/))
     expect(screen.getByRole('button', { name: '選択した2件を削除' })).toBeInTheDocument()
+  })
+})
+
+describe('集計カードの件数', () => {
+  it('表示中の商品ではなくDBの件数(statusCounts)を表示する', () => {
+    // 実データで確認した不具合: 表示用の直近100件だけを数えていたため
+    // 総商品数が100で頭打ちになり、出品中も実際の件数と合わなかった。
+    const items = [makeProduct({ id: 'p1', listing_status: 'draft' })]
+    render(
+      <InventoryProductsSection
+        items={items}
+        {...panelProps}
+        statusCounts={{ total: 158, draft: 10, listed: 148, sold: 0 }}
+      />,
+    )
+    expect(screen.getByText('総商品数').nextElementSibling).toHaveTextContent('158')
+    expect(screen.getByText('出品中').nextElementSibling).toHaveTextContent('148')
   })
 })

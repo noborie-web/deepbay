@@ -18,10 +18,21 @@ export default async function InventoryPage() {
   if (!user) redirect('/login')
 
   const db = admin()
-  const [productsResult, listingsResult, settingsResult] = await Promise.all([
+  // 実データで確認した不具合: 集計カードは表示用に取得した直近100件だけを
+  // 数えていたため、総商品数が100で頭打ちになっていた。集計はDBの件数で行う。
+  const countByStatus = (status?: string) => {
+    let query = supabase.from('products').select('id', { count: 'exact', head: true }).eq('user_id', user.id)
+    if (status) query = query.eq('listing_status', status)
+    return query
+  }
+  const [productsResult, listingsResult, settingsResult, totalCount, draftCount, listedCount, soldCount] = await Promise.all([
     supabase.from('products').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(100),
     db.from('inventory_active_listings').select('*', { count: 'exact' }).eq('user_id', user.id).order('fetched_at', { ascending: false }).limit(50),
     db.from('inventory_settings').select('ebay_token').eq('user_id', user.id).maybeSingle(),
+    countByStatus(),
+    countByStatus('draft'),
+    countByStatus('listed'),
+    countByStatus('sold'),
   ])
 
   const items = (productsResult.data ?? []) as Product[]
@@ -42,6 +53,12 @@ export default async function InventoryPage() {
         items={items}
         listings={activeListings}
         listingCount={listingsResult.count ?? activeListings.length}
+        statusCounts={{
+          total: totalCount.count ?? items.length,
+          draft: draftCount.count ?? 0,
+          listed: listedCount.count ?? 0,
+          sold: soldCount.count ?? 0,
+        }}
         hasToken={hasToken}
       />
     </div>

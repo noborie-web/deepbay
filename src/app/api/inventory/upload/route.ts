@@ -8,6 +8,7 @@ import {
   parseEbayActiveListingsCsv,
   resolveInventoryProductId,
 } from '@/lib/inventory'
+import { applyListingStateToProducts } from '@/lib/inventory-sync'
 
 function admin() {
   return createServiceClient(
@@ -176,6 +177,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: upsertErr.message }, { status: 500 })
     }
   }
+
+  await applyListingStateToProducts(db, user.id, rows.map(row => ({
+    product_id: row.product_id,
+    ebay_item_id: row.ebay_item_id,
+    quantity: row.quantity,
+  })))
 
   await db.from('inventory_runs').update({
     status: 'completed',
