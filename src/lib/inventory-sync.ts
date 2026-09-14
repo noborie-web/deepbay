@@ -91,8 +91,12 @@ async function storeInventoryListings(
     }
   }
 
-  let matched = 0
-  const rows = uniqueListings.map(listing => {
+  // ユーザー要望: eBayアカウント上には他ツール(公式の既存ツール)で出品・
+  // 在庫管理中の商品が約5,000件あり、それらをKakehashiの在庫管理に混在
+  // させると運用が混乱する。Kakehashiで出品した商品(CustomLabelの
+  // kakehashi_{商品ID}等から商品に紐付くもの)だけを在庫管理の対象とし、
+  // 紐付かない出品は保存しない。
+  const rows = uniqueListings.flatMap(listing => {
     const directProductId = extractProductIdFromCustomLabel(listing.customLabel)
     const sourceProductIds = extractSourceLookupKeys(listing.customLabel)
       .flatMap(key => Array.from(sourceProductLookup.get(key) ?? []))
@@ -101,9 +105,9 @@ async function storeInventoryListings(
       productLookup.get(`ebay:${listing.ebayItemId}`),
       sourceProductIds,
     )
-    if (productId) matched++
+    if (!productId) return []
 
-    return {
+    return [{
       user_id: userId,
       ebay_item_id: listing.ebayItemId,
       custom_label: listing.customLabel,
@@ -118,8 +122,9 @@ async function storeInventoryListings(
       product_id: productId,
       fetched_at: now,
       updated_at: now,
-    }
+    }]
   })
+  const matched = rows.length
 
   const chunks = Array.from(
     { length: Math.ceil(rows.length / DB_CHUNK_SIZE) },
@@ -149,6 +154,17 @@ async function storeInventoryListings(
   return { total: uniqueListings.length, matched }
 }
 
+// 以前の仕様では紐付かない出品も保存していたため、他ツールの出品が
+// 在庫一覧に残っている。Kakehashi管理外の行を同期のたびに取り除く。
+export async function purgeUnmanagedListings(db: SupabaseClient, userId: string): Promise<void> {
+  const { error } = await db
+    .from('inventory_active_listings')
+    .delete()
+    .eq('user_id', userId)
+    .is('product_id', null)
+  if (error) throw new Error(`Unmanaged listing cleanup failed: ${error.message}`)
+}
+
 export async function syncInventoryListingBatch(
   db: SupabaseClient,
   userId: string,
@@ -164,6 +180,7 @@ export async function syncInventoryListingBatch(
     { signal: options.signal },
   )
   const stored = await storeInventoryListings(db, userId, batch.items, options)
+  await purgeUnmanagedListings(db, userId)
 
   return {
     ...stored,
@@ -183,5 +200,7 @@ export async function syncInventoryListings(
     { accessToken },
     { signal: options.signal },
   )
-  return storeInventoryListings(db, userId, listings, options)
+  const stored = await storeInventoryListings(db, userId, listings, options)
+  await purgeUnmanagedListings(db, userId)
+  return stored
 }
