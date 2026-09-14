@@ -9,6 +9,9 @@ export interface ListingPolicies {
 export interface ListingExportOptions extends ListingPolicies {
   categoryId: string | null
   sellerId: string
+  // 出品カテゴリー管理画面で設定した、商品状態→ConditionIDの対応。
+  // 未設定(null/undefined)なら従来の標準マッピングを使う。
+  conditionMap?: Record<string, string> | null
 }
 
 const CONDITION_ID_MAP: Record<string, string> = {
@@ -25,6 +28,52 @@ const CONDITION_ID_MAP: Record<string, string> = {
   'ジャンク': '7000',
   '全体的に状態が悪い': '7000',
 }
+
+// カテゴリー別ConditionID設定UIが対応すべき商品状態の一覧。
+// 前半6つは商品編集画面で選択できるeBay側の状態(pricing.tsのallow-list)、
+// 後半6つはメルカリ等のスクレイパーがoriginal_conditionに入れる状態。
+export const CONDITION_GRADES = [
+  '新品', '新品同様', '良い', '普通', '中古', 'ジャンク',
+  '新品、未使用', '未使用に近い', '目立った傷や汚れなし',
+  'やや傷や汚れあり', '傷や汚れあり', '全体的に状態が悪い',
+] as const
+
+// eBayのConditionID一覧(公式のCondition ID値)。カテゴリによって使える
+// 値が異なるため、どれを使うかはカテゴリーごとに設定できるようにする。
+export const EBAY_CONDITION_OPTIONS: { id: string; label: string }[] = [
+  { id: '1000', label: '1000 / New(新品)' },
+  { id: '1500', label: '1500 / New other(新品・その他)' },
+  { id: '1750', label: '1750 / New with defects(新品・難あり)' },
+  { id: '2000', label: '2000 / Manufacturer refurbished' },
+  { id: '2500', label: '2500 / Seller refurbished' },
+  { id: '2750', label: '2750 / Like New(未使用に近い)' },
+  { id: '3000', label: '3000 / Used(中古)' },
+  { id: '4000', label: '4000 / Very Good(良い)' },
+  { id: '5000', label: '5000 / Good(普通)' },
+  { id: '6000', label: '6000 / Acceptable(可)' },
+  { id: '7000', label: '7000 / For parts or not working(ジャンク)' },
+]
+
+// 実データで確認済み: eBayのCD(176984)等メディア系カテゴリは3000(Used)を
+// 受け付けず、アップロードが "The provided condition id is invalid for the
+// selected primary category id." で失敗する。メディア系はNew / Like New /
+// Very Good / Good / Acceptable の階層を使う。設定UIのプリセットとして使う。
+export const MEDIA_CONDITION_MAP: Record<string, string> = {
+  '新品': '2750',
+  '新品同様': '2750',
+  '良い': '4000',
+  '普通': '5000',
+  '中古': '5000',
+  'ジャンク': '6000',
+  '新品、未使用': '2750',
+  '未使用に近い': '2750',
+  '目立った傷や汚れなし': '4000',
+  'やや傷や汚れあり': '5000',
+  '傷や汚れあり': '6000',
+  '全体的に状態が悪い': '6000',
+}
+
+export const STANDARD_CONDITION_MAP: Record<string, string> = { ...CONDITION_ID_MAP }
 
 const EBAY_UPLOAD_BASE_HEADERS = [
   'Action(CC=Cp1252)',
@@ -168,9 +217,21 @@ export function getDirectListingIssues(product: Product, fallbackCategoryId: str
   return issues
 }
 
-export function conditionIdForProduct(product: Product, categoryId?: string | null): string {
+// eBayのConditionIDはカテゴリ依存で、カテゴリによっては特定のIDを
+// 受け付けない(実データ確認: CD=176984 は3000を拒否)。そのため
+// 出品カテゴリー管理画面でカテゴリごとに設定したマッピング
+// (listing_categories.condition_map)があればそれを最優先で使う。
+export function conditionIdForProduct(
+  product: Product,
+  categoryId?: string | null,
+  conditionMap?: Record<string, string> | null,
+): string {
   const condition = product.ebay_condition ?? product.original_condition ?? ''
-  // eBayのコンディションIDはカテゴリ依存。添付テンプレートの
+
+  const configured = conditionMap?.[condition]
+  if (configured) return configured
+
+  // カテゴリー別設定が無い場合の従来動作。添付テンプレートの
   // Video Games（139973）では中古品が5000として定義される。
   if (
     categoryId === '139973'
@@ -207,7 +268,7 @@ export function generateListingCsv(
       'Add',
       productCustomLabel(product),
       Number.isFinite(price) && price > 0 ? price.toFixed(2) : '',
-      conditionIdForProduct(product, category),
+      conditionIdForProduct(product, category, options.conditionMap),
       (product.ebay_title ?? product.original_title).slice(0, 80),
       listingCsvDescription(product),
       brand,
@@ -327,7 +388,7 @@ export function generateSpecificsCsv(
 
   const rows = products.map((product, index) => {
     const specifics = productSpecifics(product)
-    const condition = product.ebay_condition ?? product.original_condition ?? ''
+    const category = product.ebay_category_id ?? options.categoryId ?? ''
     const brand = product.ebay_brand?.trim() || specifics.Brand?.join('|') || 'NA'
     const country = specifics.Country?.join('|') || 'Japan'
     const upc = specifics.UPC?.join('|') || 'NA'
@@ -336,13 +397,13 @@ export function generateSpecificsCsv(
       'Add',
       productCustomLabel(product),
       Number.isFinite(price) && price > 0 ? price.toFixed(2) : '',
-      CONDITION_ID_MAP[condition] ?? '3000',
+      conditionIdForProduct(product, category, options.conditionMap),
       (product.ebay_title ?? product.original_title).slice(0, 80),
       listingDescription(product),
       brand,
       productImages(product).slice(0, 24).join('|'),
       upc,
-      product.ebay_category_id ?? options.categoryId ?? '',
+      category,
       '1',
       'payAddress',
       options.paymentProfileName,

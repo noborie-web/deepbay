@@ -4,6 +4,12 @@ import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { EBAY_CATEGORIES } from '@/data/ebay-categories'
+import {
+  CONDITION_GRADES,
+  EBAY_CONDITION_OPTIONS,
+  MEDIA_CONDITION_MAP,
+  STANDARD_CONDITION_MAP,
+} from '@/lib/listing-export'
 import type { ListingCategory } from '@/types/database'
 
 interface EbayCategory { id: string; name: string; level?: number }
@@ -19,6 +25,9 @@ export default function CategoriesPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftMap, setDraftMap] = useState<Record<string, string>>({})
+  const [savingMap, setSavingMap] = useState(false)
 
   const [supabase] = useState(createClient)
 
@@ -107,6 +116,41 @@ export default function CategoriesPage() {
     if (!confirm('このカテゴリを削除しますか？')) return
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (supabase as any).from('listing_categories').delete().eq('id', id)
+    fetchCategories()
+  }
+
+  // ---- 商品状態→ConditionIDのカテゴリー別設定 ----
+  // eBayのConditionIDはカテゴリごとに有効な値が違い、例えばCD(176984)は
+  // 3000(Used)を受け付けずアップロードが全件失敗する。カテゴリ単位で
+  // 対応表を設定できるようにする。
+  function openConditionEditor(cat: ListingCategory) {
+    setEditingId(cat.id)
+    setDraftMap({ ...STANDARD_CONDITION_MAP, ...(cat.condition_map ?? {}) })
+  }
+
+  async function saveConditionMap(id: string) {
+    setSavingMap(true)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { error: err } = await (supabase as any)
+      .from('listing_categories')
+      .update({ condition_map: draftMap })
+      .eq('id', id)
+    setSavingMap(false)
+    if (err) {
+      setError(`保存に失敗しました: ${err.message}`)
+      return
+    }
+    setEditingId(null)
+    setSuccessMsg('商品状態の設定を保存しました')
+    setTimeout(() => setSuccessMsg(''), 3000)
+    fetchCategories()
+  }
+
+  async function clearConditionMap(id: string) {
+    if (!confirm('このカテゴリの設定を解除して標準マッピングに戻しますか？')) return
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (supabase as any).from('listing_categories').update({ condition_map: null }).eq('id', id)
+    setEditingId(null)
     fetchCategories()
   }
 
@@ -233,24 +277,103 @@ export default function CategoriesPage() {
 
       {tab === 'manage' && (
         <div className="border rounded">
-          <div className="grid grid-cols-[100px_1fr_80px] gap-3 px-4 py-2 bg-gray-50 border-b text-xs font-medium text-gray-500">
+          <div className="grid grid-cols-[100px_1fr_120px_130px_50px] gap-3 px-4 py-2 bg-gray-50 border-b text-xs font-medium text-gray-500">
             <span>カテゴリID</span>
             <span>識別名</span>
+            <span>商品状態の設定</span>
+            <span></span>
             <span></span>
           </div>
           {categories.length === 0 ? (
             <div className="py-8 text-center text-sm text-gray-400">登録済みカテゴリがありません</div>
           ) : (
             categories.map((cat) => (
-              <div key={cat.id} className="grid grid-cols-[100px_1fr_80px] gap-3 px-4 py-3 border-b last:border-0 items-center text-sm">
-                <span className="text-gray-600 font-mono text-xs">{cat.ebay_category_id}</span>
-                <span className="text-gray-700">{cat.name}</span>
-                <button
-                  onClick={() => handleDelete(cat.id)}
-                  className="text-xs text-red-500 hover:text-red-700 text-right"
-                >
-                  削除
-                </button>
+              <div key={cat.id} className="border-b last:border-0">
+                <div className="grid grid-cols-[100px_1fr_120px_130px_50px] gap-3 px-4 py-3 items-center text-sm">
+                  <span className="text-gray-600 font-mono text-xs">{cat.ebay_category_id}</span>
+                  <span className="text-gray-700">{cat.name}</span>
+                  <span className={`text-xs ${cat.condition_map ? 'text-green-600' : 'text-gray-400'}`}>
+                    {cat.condition_map ? '設定済み' : '標準マッピング'}
+                  </span>
+                  <button
+                    onClick={() => (editingId === cat.id ? setEditingId(null) : openConditionEditor(cat))}
+                    className="text-xs border rounded px-2 py-1 text-gray-600 hover:bg-gray-50"
+                  >
+                    {editingId === cat.id ? '閉じる' : 'ConditionID設定'}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(cat.id)}
+                    className="text-xs text-red-500 hover:text-red-700 text-right"
+                  >
+                    削除
+                  </button>
+                </div>
+
+                {editingId === cat.id && (
+                  <div className="px-4 pb-4 bg-gray-50 border-t">
+                    <p className="text-xs text-gray-500 pt-3 pb-2">
+                      eBayのConditionIDはカテゴリごとに有効な値が異なります
+                      （例: CD・DVD等のメディア系カテゴリは 3000 / Used を受け付けません）。
+                      このカテゴリで出品するときに、商品状態をどのConditionIDに変換するか設定します。
+                    </p>
+
+                    <div className="flex flex-wrap gap-2 pb-3">
+                      <button
+                        onClick={() => setDraftMap({ ...MEDIA_CONDITION_MAP })}
+                        className="text-xs border rounded px-2.5 py-1 bg-white hover:bg-gray-100"
+                      >
+                        メディア系プリセット（CD・DVD・ゲーム）
+                      </button>
+                      <button
+                        onClick={() => setDraftMap({ ...STANDARD_CONDITION_MAP })}
+                        className="text-xs border rounded px-2.5 py-1 bg-white hover:bg-gray-100"
+                      >
+                        標準プリセット
+                      </button>
+                      {cat.condition_map && (
+                        <button
+                          onClick={() => clearConditionMap(cat.id)}
+                          className="text-xs border rounded px-2.5 py-1 bg-white text-red-600 hover:bg-red-50"
+                        >
+                          設定を解除（標準に戻す）
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                      {CONDITION_GRADES.map((grade) => (
+                        <label key={grade} className="flex items-center gap-2 text-xs">
+                          <span className="w-32 shrink-0 text-gray-600">{grade}</span>
+                          <select
+                            value={draftMap[grade] ?? ''}
+                            onChange={(e) => setDraftMap((prev) => ({ ...prev, [grade]: e.target.value }))}
+                            className="flex-1 border rounded px-2 py-1 bg-white"
+                          >
+                            {EBAY_CONDITION_OPTIONS.map((opt) => (
+                              <option key={opt.id} value={opt.id}>{opt.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ))}
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-3">
+                      <button
+                        onClick={() => setEditingId(null)}
+                        className="text-xs border rounded px-3 py-1.5 text-gray-600 bg-white hover:bg-gray-100"
+                      >
+                        キャンセル
+                      </button>
+                      <button
+                        onClick={() => saveConditionMap(cat.id)}
+                        disabled={savingMap}
+                        className="text-xs bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white rounded px-3 py-1.5"
+                      >
+                        {savingMap ? '保存中...' : '設定を保存'}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))
           )}

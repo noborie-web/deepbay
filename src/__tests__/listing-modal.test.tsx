@@ -53,6 +53,7 @@ const extraction: Extraction = {
     ebay_category_id: '139973',
     sort_order: 0,
     created_at: '2026-07-25T00:00:00.000Z',
+    condition_map: null,
   },
 }
 

@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
 
   const { data: extractionData } = await supabase
     .from('extractions')
-    .select('id, seller_account_id, category:listing_categories(ebay_category_id)')
+    .select('id, seller_account_id, category:listing_categories(ebay_category_id, condition_map)')
     .eq('id', extractionId)
     .eq('user_id', user.id)
     .single()
@@ -52,7 +52,7 @@ export async function GET(req: NextRequest) {
   const extraction = extractionData as unknown as {
     id: string
     seller_account_id: string | null
-    category: { ebay_category_id: string | null } | null
+    category: { ebay_category_id: string | null; condition_map: Record<string, string> | null } | null
   } | null
   const registeredSeller = sellerData as unknown as { id: string; seller_id: string } | null
   const seller = registeredSeller ?? (
@@ -81,6 +81,8 @@ export async function GET(req: NextRequest) {
   }
 
   const categoryId = extraction.category?.ebay_category_id ?? null
+  // 出品カテゴリー管理で設定した商品状態→ConditionIDの対応(未設定ならnull)。
+  const conditionMap = extraction.category?.condition_map ?? null
   const typedProducts = products as Product[]
   const invalid = typedProducts
     .map((product) => ({ productId: product.id, issues: getListingIssues(product, categoryId) }))
@@ -107,6 +109,7 @@ export async function GET(req: NextRequest) {
 
   const csv = generateListingCsv(typedProducts, {
     categoryId,
+    conditionMap,
     sellerId: seller.seller_id,
     paymentProfileName: paymentProfile,
     returnProfileName: returnProfile,

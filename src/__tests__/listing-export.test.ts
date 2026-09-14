@@ -327,3 +327,59 @@ describe('listing export', () => {
     expect(getListingIssues(makeProduct({ ebay_category_id: null }), '139973')).toEqual([])
   })
 })
+
+// 実データで確認した不具合: eBayのConditionIDはカテゴリごとに有効な値が
+// 異なる。CDカテゴリ(176984)へアップロードしたところ、ConditionID=3000
+// (Used)の138件が全て "The provided condition id is invalid for the
+// selected primary category id.|3000|CDs|CONDITION_ID|" で失敗した。
+// 出品カテゴリー管理画面でカテゴリごとに設定したマッピングを使えるようにする。
+describe('カテゴリー別ConditionIDマッピング', () => {
+  const MEDIA_MAP = { '中古': '5000', '未使用に近い': '2750', '新品、未使用': '2750' }
+  const CONDITION_COLUMN = 3
+
+  it('カテゴリー別設定があれば出品CSVのConditionIDにそれを使う', () => {
+    const csv = generateListingCsv(
+      [makeProduct({ ebay_condition: '中古' })],
+      { ...OPTIONS, categoryId: '176984', conditionMap: MEDIA_MAP },
+    )
+    expect(parseCsv(csv)[1][CONDITION_COLUMN]).toBe('5000')
+  })
+
+  it('カテゴリー別設定が無ければ従来の標準マッピングを使う', () => {
+    const csv = generateListingCsv(
+      [makeProduct({ ebay_condition: '中古' })],
+      { ...OPTIONS, categoryId: '176984' },
+    )
+    expect(parseCsv(csv)[1][CONDITION_COLUMN]).toBe('3000')
+  })
+
+  it('specifics-in用CSVでもカテゴリー別設定を反映する(従来は固定マップを直接参照しており、カテゴリ別ルールが効かない不具合があった)', () => {
+    const csv = generateSpecificsCsv(
+      [makeProduct({ ebay_condition: '中古' })],
+      { ...OPTIONS, categoryId: '176984', conditionMap: MEDIA_MAP },
+    )
+    expect(parseCsv(csv)[1][CONDITION_COLUMN]).toBe('5000')
+  })
+
+  it('specifics-in用CSVでもVideo Games(139973)の従来ルールが効く', () => {
+    const csv = generateSpecificsCsv([makeProduct({ ebay_condition: '中古' })], OPTIONS)
+    expect(parseCsv(csv)[1][CONDITION_COLUMN]).toBe('5000')
+  })
+
+  it('スクレイパー由来の状態(メルカリ表記)にもカテゴリー別設定が効く', () => {
+    const csv = generateListingCsv(
+      [makeProduct({ ebay_condition: null, original_condition: '新品、未使用' })],
+      { ...OPTIONS, categoryId: '176984', conditionMap: MEDIA_MAP },
+    )
+    // 知的財産警告を避けるため新品(1000)ではなくLike New(2750)を使える
+    expect(parseCsv(csv)[1][CONDITION_COLUMN]).toBe('2750')
+  })
+
+  it('設定に無い状態は従来のマッピングにフォールバックする', () => {
+    const csv = generateListingCsv(
+      [makeProduct({ ebay_condition: 'ジャンク' })],
+      { ...OPTIONS, categoryId: '176984', conditionMap: MEDIA_MAP },
+    )
+    expect(parseCsv(csv)[1][CONDITION_COLUMN]).toBe('7000')
+  })
+})
