@@ -94,7 +94,8 @@ export async function GET(req: NextRequest) {
     if (settings.ebay_auto_sync) {
       const startedAt = new Date().toISOString()
       try {
-        const syncResult = await syncInventoryListings(db, userId, accessToken)
+        // active出品が数千件(数十ページ)あるため、既定の45秒では取得しきれない
+        const syncResult = await syncInventoryListings(db, userId, accessToken, { fetchTotalTimeoutMs: 240_000 })
         userResult.sync = syncResult
         await db.from('inventory_runs').insert({
           user_id: userId,

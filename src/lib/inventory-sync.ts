@@ -15,6 +15,9 @@ export interface InventorySyncResult {
 export interface InventorySyncOptions {
   signal?: AbortSignal
   writeConcurrency?: number
+  // eBayからの全ページ取得に許容する合計時間。日次cron(maxDuration=300秒)
+  // では既定の45秒だと数十ページの取得に足りないため引き上げて渡す。
+  fetchTotalTimeoutMs?: number
 }
 
 export interface InventorySyncBatchResult extends InventorySyncResult {
@@ -202,7 +205,7 @@ export async function syncInventoryListings(
 ): Promise<InventorySyncResult> {
   const listings = await fetchAllActiveListings(
     { accessToken },
-    { signal: options.signal },
+    { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
   )
   const stored = await storeInventoryListings(db, userId, listings, options)
   await purgeUnmanagedListings(db, userId)
