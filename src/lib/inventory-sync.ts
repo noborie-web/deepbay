@@ -21,6 +21,8 @@ export interface InventorySyncBatchResult extends InventorySyncResult {
   nextPage: number | null
   totalPages: number
   lastFetchedPage: number
+  truncated: boolean
+  ebayTotalPages: number
 }
 
 const DB_CHUNK_SIZE = 100
@@ -187,6 +189,8 @@ export async function syncInventoryListingBatch(
     nextPage: batch.nextPage,
     totalPages: batch.totalPages,
     lastFetchedPage: batch.lastFetchedPage,
+    truncated: batch.truncated,
+    ebayTotalPages: batch.ebayTotalPages,
   }
 }
 

@@ -472,8 +472,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     try {
       let cursor: string | null = null
       let completed: { total: number; matched: number } | null = null
+      let truncatedPages: number | null = null
 
-      for (let requestNumber = 1; requestNumber <= 10; requestNumber++) {
+      // 1回のリクエストで4ページ(800件)取得するため、取得上限の50ページ
+      // (10,000件)を処理しきるには13回必要。余裕を持って20回まで許容する。
+      for (let requestNumber = 1; requestNumber <= 20; requestNumber++) {
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 50_000)
         try {
@@ -490,8 +493,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             done: boolean
             cursor: string | null
             progress?: { page: number; totalPages: number }
+            truncated?: boolean
+            ebayTotalPages?: number
           } = await res.json()
           if (!res.ok) throw new Error(json.error ?? 'Sync failed')
+          if (json.truncated && typeof json.ebayTotalPages === 'number') truncatedPages = json.ebayTotalPages
 
           if (json.progress) {
             setSyncProgress(`${json.progress.page}/${json.progress.totalPages}ページ`)
@@ -515,7 +521,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       }
 
       if (!completed) throw new Error('同期の分割回数が上限を超えました')
-      showMsg('success', `同期完了: ${completed.total}件取得、${completed.matched}件マッチ`)
+      if (truncatedPages !== null) {
+        showMsg('error', `同期完了: ${completed.total}件取得、${completed.matched}件マッチ。ただしeBay上のactive出品が取得上限(10,000件)を超えているため(eBay側 ${truncatedPages}ページ)、一部の出品が取得できていません。`)
+      } else {
+        showMsg('success', `同期完了: ${completed.total}件取得、${completed.matched}件マッチ`)
+      }
       setRunsLoaded(false)
     } catch (e) {
       showMsg('error', e instanceof Error ? e.message : '同期失敗')

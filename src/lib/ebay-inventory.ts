@@ -4,7 +4,12 @@ import type { InventoryListingInput } from './inventory'
 
 const EBAY_TRADING_API_URL = 'https://api.ebay.com/ws/api.dll'
 const PAGE_SIZE = 200
-const MAX_PAGES = 25
+// 実データで確認した不具合: 以前は25ページ(5,000件)で打ち切っており、
+// アカウント上のactive出品が約5,400件あったため、後ろの約400件(Kakehashi
+// で直近に出品した149件を含む)が取得されず、在庫管理に1件も紐付かなかった。
+// 上限を50ページ(10,000件)に引き上げるとともに、超過時はtruncatedで
+// 呼び出し側へ知らせて警告を表示できるようにする(黙って欠落させない)。
+const MAX_PAGES = 50
 const DEFAULT_PAGE_TIMEOUT_MS = 10_000
 const DEFAULT_TOTAL_TIMEOUT_MS = 45_000
 const DEFAULT_CONCURRENCY = 8
@@ -39,6 +44,9 @@ export interface EbayInventoryBatchResult {
   nextPage: number | null
   totalPages: number
   lastFetchedPage: number
+  // eBay側の総ページ数がMAX_PAGESを超えており、一部の出品が取得できていない
+  truncated: boolean
+  ebayTotalPages: number
 }
 
 /**
@@ -267,6 +275,10 @@ async function fetchActiveListingRange(
     all.push(...firstPage.items)
 
     const totalPages = Math.min(firstPage.totalPages, MAX_PAGES)
+    const truncated = firstPage.totalPages > MAX_PAGES
+    if (truncated) {
+      console.warn(`[ebay-inventory] active listings exceed the fetch cap: eBay reports ${firstPage.totalPages} pages, fetching only ${MAX_PAGES}`)
+    }
     const lastPage = Math.min(totalPages, startPage + pageCount - 1)
     if (lastPage <= startPage) {
       return {
@@ -274,6 +286,8 @@ async function fetchActiveListingRange(
         nextPage: null,
         totalPages,
         lastFetchedPage: startPage,
+        truncated,
+        ebayTotalPages: firstPage.totalPages,
       }
     }
 
@@ -300,6 +314,8 @@ async function fetchActiveListingRange(
       nextPage: lastPage < totalPages ? lastPage + 1 : null,
       totalPages,
       lastFetchedPage: lastPage,
+      truncated,
+      ebayTotalPages: firstPage.totalPages,
     }
   } catch (error) {
     if (!totalController.signal.aborted) totalController.abort(error)
