@@ -2,11 +2,42 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { syncInventoryListingBatch, syncInventoryListings } from '@/lib/inventory-sync'
 
-const { mockFetchActiveListingsBatch, mockFetchAllActiveListings, mockUpsert } = vi.hoisted(() => ({
+const { mockFetchActiveListingsBatch, mockFetchAllActiveListings, mockUpsert, mockDeleteIs } = vi.hoisted(() => ({
   mockFetchActiveListingsBatch: vi.fn(),
   mockFetchAllActiveListings: vi.fn(),
   mockUpsert: vi.fn(),
+  mockDeleteIs: vi.fn(),
 }))
+
+// inventory_active_listings のモック。同期の最後に「紐付かない出品の掃除」
+// (delete().eq().is('product_id', null)) が走るため、そのチェーンも用意する。
+function listingTable() {
+  return {
+    upsert: mockUpsert,
+    delete: () => ({ eq: () => ({ is: mockDeleteIs }) }),
+  }
+}
+
+// Kakehashiの出品ラベル(kakehashi_{商品UUID})とそのUUIDを index から生成する。
+function kakehashiLabel(index: number): { label: string; productId: string } {
+  const hex = index.toString(16).padStart(8, '0')
+  return {
+    label: `kakehashi_${hex}_0000_4000_8000_000000000000`,
+    productId: `${hex}-0000-4000-8000-000000000000`,
+  }
+}
+
+// products テーブルのモック: id で問い合わせられた分だけ存在するものとして返す。
+function productsTableFor(productIds: string[]) {
+  return {
+    select: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    in: vi.fn(async (column: string, values: string[]) => ({
+      data: column === 'id' ? values.filter(id => productIds.includes(id)).map(id => ({ id })) : [],
+      error: null,
+    })),
+  }
+}
 
 vi.mock('@/lib/ebay-inventory', () => ({
   fetchActiveListingsBatch: mockFetchActiveListingsBatch,
@@ -18,6 +49,7 @@ describe('syncInventoryListings', () => {
     mockFetchActiveListingsBatch.mockReset()
     mockFetchAllActiveListings.mockReset()
     mockUpsert.mockReset().mockResolvedValue({ error: null })
+    mockDeleteIs.mockReset().mockResolvedValue({ error: null })
   })
 
   it('matches products and stores the refreshed eBay snapshot', async () => {
@@ -48,7 +80,7 @@ describe('syncInventoryListings', () => {
             })),
           }
         }
-        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        if (table === 'inventory_active_listings') return listingTable()
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
@@ -60,13 +92,17 @@ describe('syncInventoryListings', () => {
       { accessToken: 'access-token' },
       { signal: undefined },
     )
+    // ユーザー要望: 他ツールで在庫管理中の出品(Kakehashi商品に紐付かない
+    // もの)は混在させない。紐付いた item-1 だけ保存し、item-2 は保存しない。
     expect(mockUpsert).toHaveBeenCalledWith([
       expect.objectContaining({
         ebay_item_id: 'item-1', product_id: 'product-1', user_id: 'user-1',
         raw_data: { image_url: 'https://i.ebayimg.com/images/g/item-1/s-l140.jpg' },
       }),
-      expect.objectContaining({ ebay_item_id: 'item-2', product_id: null, user_id: 'user-1' }),
     ], { onConflict: 'user_id,ebay_item_id' })
+    expect(mockUpsert.mock.calls.flat(2)).not.toContainEqual(expect.objectContaining({ ebay_item_id: 'item-2' }))
+    // 以前の仕様で取り込まれた紐付かない行も掃除する
+    expect(mockDeleteIs).toHaveBeenCalledWith('product_id', null)
   })
 
   it('matches current Kakehashi labels by product UUID', async () => {
@@ -81,7 +117,7 @@ describe('syncInventoryListings', () => {
           select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(),
           in: vi.fn(async (column: string) => ({ data: column === 'id' ? [{ id: productId }] : [], error: null })),
         }
-        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        if (table === 'inventory_active_listings') return listingTable()
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
@@ -103,7 +139,7 @@ describe('syncInventoryListings', () => {
           select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(),
           in: vi.fn(async (column: string) => ({ data: column === 'id' ? [{ id: productId }] : [], error: null })),
         }
-        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        if (table === 'inventory_active_listings') return listingTable()
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
@@ -128,7 +164,7 @@ describe('syncInventoryListings', () => {
             error: null,
           })),
         }
-        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        if (table === 'inventory_active_listings') return listingTable()
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
@@ -160,22 +196,21 @@ describe('syncInventoryListings', () => {
             error: null,
           })),
         }
-        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        if (table === 'inventory_active_listings') return listingTable()
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
 
     await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 0 })
-    expect(mockUpsert).toHaveBeenCalledWith(
-      [expect.objectContaining({ product_id: null })],
-      { onConflict: 'user_id,ebay_item_id' },
-    )
+    // 紐付け先を一意に決められない出品はKakehashi管理外として保存しない
+    expect(mockUpsert).not.toHaveBeenCalled()
   })
 
   it('stores listing chunks concurrently', async () => {
+    const concurrencyIds = Array.from({ length: 450 }, (_, index) => kakehashiLabel(index).productId)
     mockFetchAllActiveListings.mockResolvedValue(Array.from({ length: 450 }, (_, index) => ({
       ebayItemId: `item-${index}`,
-      customLabel: null,
+      customLabel: kakehashiLabel(index).label,
       title: `Item ${index}`,
       currentPrice: 10,
       quantity: 1,
@@ -197,7 +232,8 @@ describe('syncInventoryListings', () => {
 
     const db = {
       from: vi.fn((table: string) => {
-        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        if (table === 'products') return productsTableFor(concurrencyIds)
+        if (table === 'inventory_active_listings') return listingTable()
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
@@ -209,7 +245,7 @@ describe('syncInventoryListings', () => {
       { writeConcurrency: 4 },
     )
 
-    expect(result).toEqual({ total: 450, matched: 0 })
+    expect(result).toEqual({ total: 450, matched: 450 })
     expect(mockUpsert).toHaveBeenCalledTimes(5)
     expect(maxActiveWrites).toBe(4)
   })
@@ -244,7 +280,7 @@ describe('syncInventoryListings', () => {
             }),
           }
         }
-        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        if (table === 'inventory_active_listings') return listingTable()
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
@@ -253,18 +289,19 @@ describe('syncInventoryListings', () => {
 
     expect(result).toEqual({ total: 205, matched: 0 })
     expect(productLookupCalls.map(values => values.length)).toEqual([205, 100, 100, 5])
-    expect(mockUpsert).toHaveBeenCalledTimes(3)
+    // 紐付かない出品は保存しないため書き込みは発生しない
+    expect(mockUpsert).not.toHaveBeenCalled()
   })
 
   it('deduplicates overlapping eBay item ids before one upsert', async () => {
     mockFetchAllActiveListings.mockResolvedValue([
       {
-        ebayItemId: 'item-1', customLabel: null, title: 'Older page result',
+        ebayItemId: 'item-1', customLabel: kakehashiLabel(1).label, title: 'Older page result',
         currentPrice: 10, quantity: 1, quantitySold: 0, listingStatus: 'Active',
         startTime: null, endTime: null,
       },
       {
-        ebayItemId: 'item-1', customLabel: null, title: 'Latest page result',
+        ebayItemId: 'item-1', customLabel: kakehashiLabel(1).label, title: 'Latest page result',
         currentPrice: 12, quantity: 1, quantitySold: 0, listingStatus: 'Active',
         startTime: null, endTime: null,
       },
@@ -272,14 +309,15 @@ describe('syncInventoryListings', () => {
 
     const db = {
       from: vi.fn((table: string) => {
-        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        if (table === 'products') return productsTableFor([kakehashiLabel(1).productId])
+        if (table === 'inventory_active_listings') return listingTable()
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
 
     const result = await syncInventoryListings(db, 'user-1', 'access-token')
 
-    expect(result).toEqual({ total: 1, matched: 0 })
+    expect(result).toEqual({ total: 1, matched: 1 })
     expect(mockUpsert).toHaveBeenCalledWith([
       expect.objectContaining({
         ebay_item_id: 'item-1',
@@ -292,7 +330,7 @@ describe('syncInventoryListings', () => {
   it('stores one resumable eBay page batch and returns its progress', async () => {
     mockFetchActiveListingsBatch.mockResolvedValue({
       items: [{
-        ebayItemId: 'item-5', customLabel: null, title: 'Page 5 item',
+        ebayItemId: 'item-5', customLabel: kakehashiLabel(5).label, title: 'Page 5 item',
         currentPrice: 10, quantity: 1, quantitySold: 0, listingStatus: 'Active',
         startTime: null, endTime: null,
       }],
@@ -303,7 +341,8 @@ describe('syncInventoryListings', () => {
 
     const db = {
       from: vi.fn((table: string) => {
-        if (table === 'inventory_active_listings') return { upsert: mockUpsert }
+        if (table === 'products') return productsTableFor([kakehashiLabel(5).productId])
+        if (table === 'inventory_active_listings') return listingTable()
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
@@ -324,7 +363,7 @@ describe('syncInventoryListings', () => {
     )
     expect(result).toEqual({
       total: 1,
-      matched: 0,
+      matched: 1,
       nextPage: 9,
       totalPages: 12,
       lastFetchedPage: 8,

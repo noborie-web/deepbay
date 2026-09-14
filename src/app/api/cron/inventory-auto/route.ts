@@ -128,10 +128,13 @@ export async function GET(req: NextRequest) {
 
     // 取り下げ
     if (settings.auto_delist) {
+      // ユーザー要望: 他ツールで在庫管理中の出品を誤って取り下げないよう、
+      // Kakehashiの商品に紐付いている出品だけを対象にする。
       const { data: listings } = await db
         .from('inventory_active_listings')
         .select('ebay_item_id, product_id')
         .eq('user_id', userId)
+        .not('product_id', 'is', null)
         .eq('quantity', 0)
         .lte('start_time', getDelistCutoffIso(settings.days_until_delist))
 

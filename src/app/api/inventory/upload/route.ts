@@ -132,8 +132,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  let matched = 0
-  const rows = listings.map((l) => {
+  // ユーザー要望: 他ツールで在庫管理中の出品を混在させないため、
+  // Kakehashiの商品に紐付く出品だけを保存する(API同期と同じ方針)。
+  const rows = listings.flatMap((l) => {
     const directProductId = extractProductIdFromCustomLabel(l.customLabel)
     const sourceProductIds = extractSourceLookupKeys(l.customLabel)
       .flatMap(key => Array.from(sourceProductLookup.get(key) ?? []))
@@ -142,9 +143,9 @@ export async function POST(req: NextRequest) {
       productLookup.get(`ebay:${l.ebayItemId}`),
       sourceProductIds,
     )
-    if (productId) matched++
+    if (!productId) return []
 
-    return {
+    return [{
       user_id: user.id,
       ebay_item_id: l.ebayItemId,
       custom_label: l.customLabel,
@@ -158,8 +159,9 @@ export async function POST(req: NextRequest) {
       product_id: productId,
       fetched_at: now,
       updated_at: now,
-    }
+    }]
   })
+  const matched = rows.length
 
   const CHUNK = 100
   for (let i = 0; i < rows.length; i += CHUNK) {

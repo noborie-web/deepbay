@@ -7,7 +7,22 @@ const mockResolveAccessToken = vi.fn()
 const mockSyncInventoryListings = vi.fn()
 const mockCheckSupplierListings = vi.fn()
 const mockRunInsert = vi.fn()
+const mockListingQueryCalls: Array<[string, ...unknown[]]> = []
 let mockSettings: Array<Record<string, unknown>> = []
+
+// inventory_active_listings への問い合わせチェーンを記録するモック。
+// 自動取り下げが「Kakehashi商品に紐付く出品だけ」を対象にしているか検証する。
+function listingQueryMock() {
+  const chain: Record<string, unknown> = {}
+  for (const method of ['select', 'eq', 'not', 'lte', 'is']) {
+    chain[method] = vi.fn((...args: unknown[]) => {
+      mockListingQueryCalls.push([method, ...args])
+      return chain
+    })
+  }
+  chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+  return chain
+}
 
 vi.mock('@supabase/supabase-js', () => ({
   createClient: vi.fn(() => ({
@@ -24,6 +39,7 @@ vi.mock('@supabase/supabase-js', () => ({
       if (table === 'inventory_runs') {
         return { insert: mockRunInsert.mockImplementation(async () => ({ error: null })) }
       }
+      if (table === 'inventory_active_listings') return listingQueryMock()
       throw new Error(`Unexpected table: ${table}`)
     }),
   })),
@@ -77,6 +93,7 @@ describe('GET /api/cron/inventory-auto', () => {
       failed: 0,
     })
     mockRunInsert.mockClear()
+    mockListingQueryCalls.length = 0
   })
 
   afterEach(() => {
@@ -175,6 +192,21 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 1 })
     expect(mockResolveAccessToken).not.toHaveBeenCalled()
     expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 50)
+  })
+
+  it('自動取り下げはKakehashi商品に紐付く出品だけを対象にする(他ツールの出品を取り下げない)', async () => {
+    // ユーザー要望: eBayアカウント上には他ツールで在庫管理中の出品が
+    // 約5,000件あり、Kakehashiの自動取り下げがそれらをEndしてはならない。
+    mockSettings[0].auto_delist = true
+    const { GET } = await import('@/app/api/cron/inventory-auto/route')
+    const req = new NextRequest('http://localhost/api/cron/inventory-auto', {
+      headers: { authorization: 'Bearer cron-secret' },
+    })
+    const res = await GET(req)
+
+    expect(res.status).toBe(200)
+    expect(mockListingQueryCalls).toContainEqual(['not', 'product_id', 'is', null])
+    expect(mockListingQueryCalls).toContainEqual(['eq', 'quantity', 0])
   })
 
   it('is configured for one daily invocation at midnight UTC', () => {
