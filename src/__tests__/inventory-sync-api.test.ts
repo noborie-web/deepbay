@@ -37,7 +37,7 @@ vi.mock('@/lib/inventory-run', () => ({
 }))
 
 vi.mock('@/lib/inventory-sync', () => ({
-  syncInventoryListingBatch: mockSyncBatch,
+  syncKnownInventoryListingBatch: mockSyncBatch,
 }))
 
 vi.mock('@supabase/supabase-js', () => ({
@@ -107,12 +107,10 @@ describe('POST /api/inventory/sync', () => {
   })
 
   it('starts a run and returns a signed continuation cursor', async () => {
+    // 個別照会方式: Kakehashi出品150件を60件ずつ、最初のバッチで60件更新
     mockSyncBatch.mockResolvedValue({
-      total: 600,
-      matched: 10,
-      nextPage: 5,
-      totalPages: 25,
-      lastFetchedPage: 4,
+      totalItems: 150, processedItems: 60, updated: 58, ended: 2, discovered: 1,
+      nextBatch: 2, totalBatches: 3,
     })
 
     const { POST } = await import('@/app/api/inventory/sync/route')
@@ -126,10 +124,12 @@ describe('POST /api/inventory/sync', () => {
     expect(response.status).toBe(200)
     expect(json).toMatchObject({
       ok: true,
-      total: 600,
-      matched: 10,
+      total: 150,
+      matched: 59,
+      ended: 2,
+      discovered: 1,
       done: false,
-      progress: { page: 4, totalPages: 25 },
+      progress: { processed: 60, total: 150 },
     })
     expect(json.cursor).toEqual(expect.any(String))
     expect(mockSyncBatch).toHaveBeenCalledWith(
@@ -137,7 +137,7 @@ describe('POST /api/inventory/sync', () => {
       'user-1',
       'access-token',
       1,
-      4,
+      60,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
   })
@@ -145,10 +145,12 @@ describe('POST /api/inventory/sync', () => {
   it('uses the stored unique listing count when the run completes', async () => {
     mockSyncBatch
       .mockResolvedValueOnce({
-        total: 600, matched: 10, nextPage: 5, totalPages: 8, lastFetchedPage: 4,
+        totalItems: 100, processedItems: 60, updated: 10, ended: 0, discovered: 0,
+        nextBatch: 2, totalBatches: 2,
       })
       .mockResolvedValueOnce({
-        total: 550, matched: 8, nextPage: null, totalPages: 8, lastFetchedPage: 8,
+        totalItems: 100, processedItems: 100, updated: 8, ended: 0, discovered: 0,
+        nextBatch: null, totalBatches: 2,
       })
 
     const { POST } = await import('@/app/api/inventory/sync/route')
@@ -180,16 +182,18 @@ describe('POST /api/inventory/sync', () => {
       ok: true,
       total: 1050,
       matched: 18,
+      ended: 0,
+      discovered: 0,
       done: true,
       cursor: null,
-      progress: { page: 8, totalPages: 8 },
+      progress: { processed: 100, total: 100 },
     })
     expect(mockSyncBatch).toHaveBeenLastCalledWith(
       expect.anything(),
       'user-1',
       'access-token',
-      5,
-      4,
+      2,
+      60,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
     expect(mockRunInsert).toHaveBeenCalledTimes(1)
@@ -202,7 +206,8 @@ describe('POST /api/inventory/sync', () => {
 
   it('falls back to the fetched total if the unique count cannot be read', async () => {
     mockSyncBatch.mockResolvedValue({
-      total: 550, matched: 8, nextPage: null, totalPages: 4, lastFetchedPage: 4,
+      totalItems: 550, processedItems: 550, updated: 8, ended: 0, discovered: 0,
+      nextBatch: null, totalBatches: 10,
     })
     mockListingCountSelect.mockImplementation(() => ({
       eq: vi.fn(async () => ({ count: null, error: { message: 'count failed' } })),

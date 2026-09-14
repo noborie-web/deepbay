@@ -349,3 +349,196 @@ export async function fetchAllActiveListings(
   const result = await fetchActiveListingRange(tokens, 1, MAX_PAGES, options)
   return result.items
 }
+
+// ---------------------------------------------------------------------------
+// Kakehashiが出品したItemIDだけを個別照会する方式(GetItem)
+//
+// ユーザー要望・実データで確認した不具合: eBayアカウント上には他ツールで
+// 出品中の商品が約1万件あり、GetMyeBaySellingで全active出品を走査する方式
+// では上限・実行時間の制約で最後まで走り切れず、Kakehashiで出品した149件が
+// 1件も同期できなかった。Kakehashiが把握しているItemIDだけをGetItemで個別に
+// 照会すれば、件数はKakehashiの出品数に比例し(数百件程度)、他ツールの出品数
+// に左右されない。
+// ---------------------------------------------------------------------------
+
+const DEFAULT_GET_ITEM_CONCURRENCY = 4
+
+// GetItemで「そのItemIDの出品が存在しない/参照できない」ことを示すエラー
+// コード。終了済み・削除済みの出品として扱い、同期全体は止めない。
+const GET_ITEM_NOT_FOUND_ERROR_CODES = new Set(['17', '37', '21916750', '21917182'])
+
+export interface KnownListingFetchResult {
+  // 現在もactiveな出品(最新の在庫数・価格で更新する)
+  items: InventoryListingInput[]
+  // 終了済み・売却済み・存在しない出品(在庫一覧から除外する)
+  endedItemIds: string[]
+}
+
+export function parseGetItemResponse(xml: string, itemId: string): InventoryListingInput | 'ended' | 'not_found' {
+  const getTag = (src: string, tag: string): string => {
+    const m = src.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'))
+    return m ? m[1].trim() : ''
+  }
+
+  const ack = getTag(xml, 'Ack')
+  if (ack === 'Failure') {
+    const code = getTag(xml, 'ErrorCode')
+    if (GET_ITEM_NOT_FOUND_ERROR_CODES.has(code)) return 'not_found'
+    const errMsg = getTag(xml, 'LongMessage') || getTag(xml, 'ShortMessage')
+    throw new Error(`eBay GetItem error (${itemId}): ${errMsg || `code ${code}`}`)
+  }
+
+  const itemBlock = xml.match(/<Item>[\s\S]*?<\/Item>/i)?.[0] ?? ''
+  if (!itemBlock) return 'not_found'
+
+  const sellingStatus = itemBlock.match(/<SellingStatus>[\s\S]*?<\/SellingStatus>/i)?.[0] ?? ''
+  const listingDetails = itemBlock.match(/<ListingDetails>[\s\S]*?<\/ListingDetails>/i)?.[0] ?? ''
+  const pictureDetails = itemBlock.match(/<PictureDetails>[\s\S]*?<\/PictureDetails>/i)?.[0] ?? ''
+
+  const listingStatus = getTag(sellingStatus, 'ListingStatus')
+  if (listingStatus && listingStatus !== 'Active') return 'ended'
+
+  const parseNum = (s: string): number | null => {
+    const n = parseFloat(s)
+    return isFinite(n) ? n : null
+  }
+  // GetItemのQuantityは出品時の総数で、残数は QuantitySold を引いて求める
+  // (CSV取込の「Available quantity」やActiveListの残数と同じ意味に揃える)。
+  const totalQty = parseNum(getTag(itemBlock, 'Quantity'))
+  const soldQty = parseNum(getTag(sellingStatus, 'QuantitySold')) ?? 0
+  const available = totalQty != null ? Math.max(0, Math.round(totalQty - soldQty)) : null
+
+  return {
+    ebayItemId: getTag(itemBlock, 'ItemID') || itemId,
+    customLabel: getTag(itemBlock, 'SKU') || null,
+    title: getTag(itemBlock, 'Title'),
+    imageUrl: getTag(pictureDetails, 'PictureURL') || null,
+    currentPrice: parseNum(getTag(sellingStatus, 'CurrentPrice')),
+    quantity: available,
+    quantitySold: Math.round(soldQty),
+    listingStatus: listingStatus || 'Active',
+    startTime: getTag(listingDetails, 'StartTime') || null,
+    endTime: getTag(listingDetails, 'EndTime') || null,
+  }
+}
+
+async function fetchItemById(
+  accessToken: string,
+  itemId: string,
+  timeoutMs: number,
+  totalSignal?: AbortSignal,
+): Promise<InventoryListingInput | 'ended' | 'not_found'> {
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <ItemID>${itemId}</ItemID>
+  <DetailLevel>ReturnAll</DetailLevel>
+  <OutputSelector>Item.ItemID</OutputSelector>
+  <OutputSelector>Item.Title</OutputSelector>
+  <OutputSelector>Item.SKU</OutputSelector>
+  <OutputSelector>Item.Quantity</OutputSelector>
+  <OutputSelector>Item.SellingStatus</OutputSelector>
+  <OutputSelector>Item.ListingDetails</OutputSelector>
+  <OutputSelector>Item.PictureDetails</OutputSelector>
+</GetItemRequest>`
+
+  const controller = new AbortController()
+  let timedOut = false
+  const timeout = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
+  const abortForTotal = () => controller.abort(totalSignal?.reason)
+  totalSignal?.addEventListener('abort', abortForTotal, { once: true })
+
+  try {
+    const res = await fetch(EBAY_TRADING_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml',
+        'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+        'X-EBAY-API-CALL-NAME': 'GetItem',
+        'X-EBAY-API-IAF-TOKEN': accessToken,
+        'X-EBAY-API-SITEID': '0',
+      },
+      body: xml,
+      signal: controller.signal,
+    })
+    if (!res.ok) throw new Error(`eBay API HTTP error: ${res.status}`)
+    return parseGetItemResponse(await res.text(), itemId)
+  } catch (error) {
+    if (totalSignal?.aborted) {
+      throw totalSignal.reason instanceof Error ? totalSignal.reason : new Error('eBay inventory sync timeout')
+    }
+    if (timedOut) throw new Error(`eBay API timeout: item ${itemId} exceeded ${timeoutMs}ms`)
+    throw error
+  } finally {
+    clearTimeout(timeout)
+    totalSignal?.removeEventListener('abort', abortForTotal)
+  }
+}
+
+/**
+ * 指定したItemIDの出品情報をGetItemで個別に取得する。
+ * 終了済み・存在しないIDは endedItemIds に振り分け、同期全体は止めない。
+ */
+export async function fetchListingsByItemIds(
+  tokens: EbayTokenSet,
+  itemIds: string[],
+  options: EbayInventoryFetchOptions = {},
+): Promise<KnownListingFetchResult> {
+  const uniqueIds = Array.from(new Set(itemIds.map((id) => id.trim()).filter(Boolean)))
+  const items: InventoryListingInput[] = []
+  const endedItemIds: string[] = []
+  if (uniqueIds.length === 0) return { items, endedItemIds }
+
+  const itemTimeoutMs = options.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS
+  const totalTimeoutMs = options.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS
+  const concurrency = Math.max(1, Math.floor(options.concurrency ?? DEFAULT_GET_ITEM_CONCURRENCY))
+  const startedAt = Date.now()
+  const totalController = new AbortController()
+  const abortForCaller = () => totalController.abort(options.signal?.reason)
+  options.signal?.addEventListener('abort', abortForCaller, { once: true })
+  const totalTimeout = setTimeout(() => {
+    totalController.abort(new Error(`eBay inventory sync timeout: exceeded ${totalTimeoutMs}ms`))
+  }, totalTimeoutMs)
+
+  const remainingMs = () => {
+    const remaining = totalTimeoutMs - (Date.now() - startedAt)
+    if (remaining <= 0) throw new Error(`eBay inventory sync timeout: exceeded ${totalTimeoutMs}ms`)
+    return remaining
+  }
+
+  const fetchWithRetry = async (itemId: string) => {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await fetchItemById(tokens.accessToken, itemId, Math.min(itemTimeoutMs, remainingMs()), totalController.signal)
+      } catch (error) {
+        const isItemTimeout = error instanceof Error && error.message.startsWith(`eBay API timeout: item ${itemId} `)
+        if (!isItemTimeout || attempt === 2 || totalController.signal.aborted) throw error
+      }
+    }
+    throw new Error(`eBay API timeout: item ${itemId}`)
+  }
+
+  try {
+    if (options.signal?.aborted) abortForCaller()
+    let next = 0
+    // 結果の順序を照会順に揃えるため、indexで受ける
+    const results: Array<InventoryListingInput | 'ended' | 'not_found'> = []
+    await Promise.all(Array.from({ length: Math.min(concurrency, uniqueIds.length) }, async () => {
+      while (next < uniqueIds.length) {
+        const index = next++
+        results[index] = await fetchWithRetry(uniqueIds[index])
+      }
+    }))
+    uniqueIds.forEach((id, index) => {
+      const result = results[index]
+      if (result === 'ended' || result === 'not_found') endedItemIds.push(id)
+      else if (result) items.push(result)
+    })
+    return { items, endedItemIds }
+  } catch (error) {
+    if (!totalController.signal.aborted) totalController.abort(error)
+    throw error
+  } finally {
+    clearTimeout(totalTimeout)
+    options.signal?.removeEventListener('abort', abortForCaller)
+  }
+}

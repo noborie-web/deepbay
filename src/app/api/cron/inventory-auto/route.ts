@@ -5,7 +5,7 @@ import { endItem, reviseQuantityToZero, revisePrice, addFixedPriceItem } from '@
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { getDelistCutoffIso, isDelistByAgeEnabled } from '@/lib/inventory-delist'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
-import { syncInventoryListings } from '@/lib/inventory-sync'
+import { syncKnownInventoryListings } from '@/lib/inventory-sync'
 import { checkSupplierListings } from '@/lib/inventory-supplier-check'
 
 function admin() {
@@ -94,8 +94,9 @@ export async function GET(req: NextRequest) {
     if (settings.ebay_auto_sync) {
       const startedAt = new Date().toISOString()
       try {
-        // active出品が数千件(数十ページ)あるため、既定の45秒では取得しきれない
-        const syncResult = await syncInventoryListings(db, userId, accessToken, { fetchTotalTimeoutMs: 240_000 })
+        // ユーザー要望: Kakehashiが出品したItemIDだけをGetItemで個別照会する。
+        // 件数はKakehashiの出品数に比例するため、他ツールの出品数に左右されない。
+        const syncResult = await syncKnownInventoryListings(db, userId, accessToken, { fetchTotalTimeoutMs: 240_000 })
         userResult.sync = syncResult
         await db.from('inventory_runs').insert({
           user_id: userId,

@@ -471,15 +471,15 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     setSyncProgress('開始中')
     try {
       let cursor: string | null = null
-      let completed: { total: number; matched: number } | null = null
-      let truncatedPages: number | null = null
+      let completed: { total: number; matched: number; ended: number; discovered: number } | null = null
 
-      // 1回のリクエストで4ページ(800件)取得するため、取得上限の50ページ
-      // (10,000件)を処理しきるには13回必要。余裕を持って20回まで許容する。
-      // eBay APIの一時的な遅延等で1回失敗しても同期全体を止めず、同じ
-      // cursorで最大2回まで再試行する。
+      // Kakehashiが出品したItemIDだけを1リクエストあたり60件ずつ個別照会する。
+      // 最大50回(3,000件)まで継続を許容する。eBay APIの一時的な遅延等で
+      // 1回失敗しても同期全体を止めず、同じcursorで最大2回まで再試行する。
       let retriesLeft = 2
-      for (let requestNumber = 1; requestNumber <= 20; requestNumber++) {
+      let endedTotal = 0
+      let discoveredTotal = 0
+      for (let requestNumber = 1; requestNumber <= 50; requestNumber++) {
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 50_000)
         try {
@@ -493,20 +493,21 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             error?: string
             total: number
             matched: number
+            ended?: number
+            discovered?: number
             done: boolean
             cursor: string | null
-            progress?: { page: number; totalPages: number }
-            truncated?: boolean
-            ebayTotalPages?: number
+            progress?: { processed: number; total: number }
           } = await res.json()
           if (!res.ok) throw new Error(json.error ?? 'Sync failed')
-          if (json.truncated && typeof json.ebayTotalPages === 'number') truncatedPages = json.ebayTotalPages
+          endedTotal += json.ended ?? 0
+          discoveredTotal += json.discovered ?? 0
 
           if (json.progress) {
-            setSyncProgress(`${json.progress.page}/${json.progress.totalPages}ページ`)
+            setSyncProgress(`${json.progress.processed}/${json.progress.total}件`)
           }
           if (json.done) {
-            completed = { total: json.total, matched: json.matched }
+            completed = { total: json.total, matched: json.matched, ended: endedTotal, discovered: discoveredTotal }
             break
           }
           if (typeof json.cursor !== 'string' || !json.cursor) {
@@ -529,11 +530,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       }
 
       if (!completed) throw new Error('同期の分割回数が上限を超えました')
-      if (truncatedPages !== null) {
-        showMsg('error', `同期完了: ${completed.total}件取得、${completed.matched}件マッチ。ただしeBay上のactive出品が取得上限(10,000件)を超えているため(eBay側 ${truncatedPages}ページ)、一部の出品が取得できていません。`)
-      } else {
-        showMsg('success', `同期完了: ${completed.total}件取得、${completed.matched}件マッチ`)
-      }
+      const extras = [
+        completed.discovered > 0 ? `新規${completed.discovered}件を発見` : null,
+        completed.ended > 0 ? `終了済み${completed.ended}件を除外` : null,
+      ].filter(Boolean).join('、')
+      showMsg('success', `同期完了: Kakehashi出品${completed.total}件を更新${extras ? `（${extras}）` : ''}`)
       setRunsLoaded(false)
     } catch (e) {
       showMsg('error', e instanceof Error ? e.message : '同期失敗')
@@ -1042,7 +1043,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           {/* 手動データ取得 */}
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-2">データ取得</h3>
-            <p className="text-xs text-gray-500 mb-3">eBayのactiveリストを最新状態に更新します。どちらか一方を実行すれば十分です（自動同期がONの場合は毎朝9時に①が自動実行されます）。</p>
+            <p className="text-xs text-gray-500 mb-3">Kakehashiで出品した商品の在庫数・価格・出品状態を最新にします。どちらか一方を実行すれば十分です（自動同期がONの場合は毎朝9時に①が自動実行されます）。</p>
             <div className="flex items-stretch gap-3 flex-wrap">
               <div className="flex flex-col gap-1">
                 <span className="text-xs font-medium text-gray-700">① APIで同期する（推奨）</span>
@@ -1215,7 +1216,10 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             {/* ① APIで同期(推奨) */}
             <div className="border rounded-lg p-3 mb-3 bg-blue-50/40 border-blue-200">
               <p className="text-sm font-medium text-gray-800 mb-1">① APIで同期する（推奨）</p>
-              <p className="text-xs text-gray-500 mb-2">接続済みのeBayアカウントから直接取得します。ファイルの準備は不要です。</p>
+              <p className="text-xs text-gray-500 mb-2">
+                接続済みのeBayアカウントに対して、Kakehashiで出品した商品だけをItemID単位で個別照会し、在庫数・価格・出品状態を最新にします（他ツールの出品は照会しません）。
+                新しく出品した商品は、直近の出品400件の中から自動検出します。それより古い場合は②のCSV取込で登録してください。
+              </p>
               <button onClick={handleSync} disabled={syncing || !settings.has_token}
                 className={`px-4 py-2 text-sm rounded ${syncing || !settings.has_token ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
                 {syncing ? `eBay同期中...${syncProgress ? ` (${syncProgress})` : ''}` : 'eBay同期を今すぐ実行'}

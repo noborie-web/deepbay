@@ -46,7 +46,7 @@ vi.mock('@supabase/supabase-js', () => ({
 }))
 
 vi.mock('@/lib/inventory-sync', () => ({
-  syncInventoryListings: mockSyncInventoryListings,
+  syncKnownInventoryListings: mockSyncInventoryListings,
 }))
 
 vi.mock('@/lib/inventory-supplier-check', () => ({
@@ -84,7 +84,7 @@ describe('GET /api/cron/inventory-auto', () => {
       shipping_profile_name: null,
     }]
     mockResolveAccessToken.mockReset().mockResolvedValue('access-token')
-    mockSyncInventoryListings.mockReset().mockResolvedValue({ total: 12, matched: 8 })
+    mockSyncInventoryListings.mockReset().mockResolvedValue({ total: 12, matched: 8, ended: 0, discovered: 0 })
     mockCheckSupplierListings.mockReset().mockResolvedValue({
       total: 2,
       available: 1,

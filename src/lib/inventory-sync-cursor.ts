@@ -1,5 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 
+const MAX_NEXT_PAGE = 100_000
+
 interface InventorySyncCursorPayload {
   version: 1
   runId: string
@@ -15,7 +17,9 @@ export function createInventorySyncCursor(
   nextPage: number,
   secret: string,
 ): string {
-  if (!runId || !Number.isInteger(nextPage) || nextPage < 2 || nextPage > 25) {
+  // nextPageは「次に処理するバッチ番号」。個別照会方式ではバッチ数が
+  // Kakehashiの出品数に比例するため、旧方式のページ上限(25)は撤廃する。
+  if (!runId || !Number.isInteger(nextPage) || nextPage < 2 || nextPage > MAX_NEXT_PAGE) {
     throw new Error('Invalid inventory sync cursor values')
   }
   if (!secret) throw new Error('Inventory sync cursor secret is not configured')
@@ -55,7 +59,7 @@ export function parseInventorySyncCursor(
       || !parsed.runId
       || !Number.isInteger(parsed.nextPage)
       || parsed.nextPage! < 2
-      || parsed.nextPage! > 25
+      || parsed.nextPage! > MAX_NEXT_PAGE
     ) {
       throw new Error('Invalid inventory sync cursor')
     }
