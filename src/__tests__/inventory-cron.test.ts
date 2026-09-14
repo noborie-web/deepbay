@@ -209,6 +209,22 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(mockListingQueryCalls).toContainEqual(['eq', 'quantity', 0])
   })
 
+  it('N日経過取り下げがOFFなら自動取り下げを実行しない', async () => {
+    // ユーザー要望: OFFの間は経過日数による取り下げを中止する
+    // (自動取り下げトグルがONでも取り下げ対象を問い合わせない)。
+    mockSettings[0].auto_delist = true
+    mockSettings[0].delist_by_age_enabled = false
+    const { GET } = await import('@/app/api/cron/inventory-auto/route')
+    const req = new NextRequest('http://localhost/api/cron/inventory-auto', {
+      headers: { authorization: 'Bearer cron-secret' },
+    })
+    const res = await GET(req)
+
+    expect(res.status).toBe(200)
+    expect(mockListingQueryCalls).not.toContainEqual(['eq', 'quantity', 0])
+    expect(mockRunInsert).not.toHaveBeenCalledWith(expect.objectContaining({ run_type: 'auto_delist' }))
+  })
+
   it('is configured for one daily invocation at midnight UTC', () => {
     const config = JSON.parse(readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'))
 
