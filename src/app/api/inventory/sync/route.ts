@@ -7,6 +7,12 @@ import { expireStaleInventorySyncRuns } from '@/lib/inventory-run'
 import { syncInventoryListingBatch } from '@/lib/inventory-sync'
 import { createInventorySyncCursor, parseInventorySyncCursor } from '@/lib/inventory-sync-cursor'
 
+// 実データで確認した不具合: maxDuration未設定のためVercelのデフォルト上限で
+// 関数が途中終了し、同期が「実行中」のまま止まって149件が取り込まれなかった。
+// Hobbyプランの上限(60秒)を明示し、内部のタイムアウト(40秒)がそれより
+// 先に発火して正常にエラーを返せるようにする。
+export const maxDuration = 60
+
 const ROUTE_TIMEOUT_MS = 40_000
 const PAGES_PER_REQUEST = 4
 

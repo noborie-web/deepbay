@@ -161,6 +161,7 @@ async function fetchPage(
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <ActiveList>
     <Include>true</Include>
+    <Sort>StartTimeDescending</Sort>
     <Pagination>
       <EntriesPerPage>${PAGE_SIZE}</EntriesPerPage>
       <PageNumber>${page}</PageNumber>

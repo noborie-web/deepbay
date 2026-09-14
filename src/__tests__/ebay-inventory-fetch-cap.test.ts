@@ -37,6 +37,24 @@ function mockEbay(totalPages: number) {
   })
 }
 
+describe('eBay active listing request', () => {
+  const originalFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = originalFetch })
+
+  it('出品開始日時の新しい順(StartTimeDescending)で取得する', async () => {
+    // 実データで確認した不具合: 既定順では直近に出品したKakehashiの商品が
+    // 最後のページに来るため、取得が途中で止まると必ず取りこぼされていた。
+    // 新しい順にすることで、Kakehashiの出品が最初のページから取得される。
+    const fetchMock = mockEbay(1)
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    await fetchActiveListingsBatch({ accessToken: 'token' }, 1, 1)
+
+    const body = String(fetchMock.mock.calls[0][1]?.body ?? '')
+    expect(body).toContain('<Sort>StartTimeDescending</Sort>')
+  })
+})
+
 describe('eBay active listing fetch cap', () => {
   const originalFetch = globalThis.fetch
   beforeEach(() => { vi.spyOn(console, 'warn').mockImplementation(() => {}) })

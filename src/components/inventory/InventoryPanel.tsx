@@ -476,6 +476,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
 
       // 1回のリクエストで4ページ(800件)取得するため、取得上限の50ページ
       // (10,000件)を処理しきるには13回必要。余裕を持って20回まで許容する。
+      // eBay APIの一時的な遅延等で1回失敗しても同期全体を止めず、同じ
+      // cursorで最大2回まで再試行する。
+      let retriesLeft = 2
       for (let requestNumber = 1; requestNumber <= 20; requestNumber++) {
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 50_000)
@@ -511,6 +514,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           }
           cursor = json.cursor
         } catch (error) {
+          if (retriesLeft > 0) {
+            retriesLeft -= 1
+            setSyncProgress(`再試行中...${syncProgress ? ` (${syncProgress})` : ''}`)
+            continue
+          }
           if (controller.signal.aborted) {
             throw new Error('同期の1回分が50秒以内に完了しませんでした。実行履歴を確認してください。')
           }
