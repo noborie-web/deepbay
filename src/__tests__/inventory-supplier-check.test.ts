@@ -23,12 +23,14 @@ vi.mock('@/lib/scrapers', () => ({
 }))
 vi.mock('@/lib/exchange-rate', () => ({ fetchUsdJpyRate: mocks.fetchUsdJpyRate }))
 
-import { checkSupplierListings } from '@/lib/inventory-supplier-check'
+import { checkSupplierListings, shouldUpdateEbayPrice } from '@/lib/inventory-supplier-check'
+import { calculateAutomaticEbayPrice } from '@/lib/extraction-run'
 
 interface ProductFixture {
   id: string
   source_url: string | null
   purchase_price_jpy?: number | null
+  ebay_price?: number | null
   extraction_id?: string | null
 }
 
@@ -147,7 +149,7 @@ describe('checkSupplierListings', () => {
 
     const result = await checkSupplierListings(db as never, 'user-1')
 
-    expect(result).toEqual({ total: 2, available: 1, unavailable: 1, skipped: 0, failed: 0, price_increased: 0 })
+    expect(result).toEqual({ total: 2, available: 1, unavailable: 1, skipped: 0, failed: 0, price_increased: 0, price_recalculated: 0 })
     expect(updateCalls(calls)).toEqual([
       expect.objectContaining({ payload: { supplier_checked_at: '2026-08-27T00:00:00.000Z', quantity: 0 } }),
       expect.objectContaining({ payload: { supplier_checked_at: '2026-08-27T00:00:00.000Z' } }),
@@ -260,7 +262,7 @@ describe('checkSupplierListings', () => {
 
     const result = await checkSupplierListings(db as never, 'user-1')
 
-    expect(result).toEqual({ total: 2, available: 1, unavailable: 0, skipped: 0, failed: 1, price_increased: 0 })
+    expect(result).toEqual({ total: 2, available: 1, unavailable: 0, skipped: 0, failed: 1, price_increased: 0, price_recalculated: 0 })
     expect(updateCalls(calls)).toHaveLength(2)
   })
 
@@ -299,13 +301,15 @@ describe('checkSupplierListings', () => {
       expect((productUpdate.payload?.ebay_price as number)).toBeGreaterThan(0)
     })
 
-    it('仕入れ元価格が上昇していなければ、products側は更新しない', async () => {
+    it('仕入れ元価格も為替も変わっていなければ、products側は更新しない', async () => {
       const { db, calls } = makeDatabase({
         listings: [{ id: 'listing-1', product_id: 'product-1' }],
         products: [{
           id: 'product-1',
           source_url: 'https://jp.mercari.com/item/1',
           purchase_price_jpy: 5000,
+          // 出品時点と同じ為替(150円)で計算した価格が登録済み
+          ebay_price: calculateAutomaticEbayPrice(5000, 150, null),
         }],
       })
       mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 5000 }])
@@ -313,7 +317,54 @@ describe('checkSupplierListings', () => {
       const result = await checkSupplierListings(db as never, 'user-1')
 
       expect(result.price_increased).toBe(0)
+      expect(result.price_recalculated).toBe(0)
       expect(updateCalls(calls, 'products')).toHaveLength(0)
+    })
+
+    // ユーザー要望: 「出品した時点の為替の変動の差も検知して再計算して
+    // 価格に反映する」。仕入価格が同じでも為替が動いていれば再計算する。
+    it('仕入れ元価格が同じでも為替が変動していれば、ebay_priceを再計算して更新する', async () => {
+      const listedAt150 = calculateAutomaticEbayPrice(5000, 150, null)
+      const { db, calls } = makeDatabase({
+        listings: [{ id: 'listing-1', product_id: 'product-1' }],
+        products: [{
+          id: 'product-1',
+          source_url: 'https://jp.mercari.com/item/1',
+          purchase_price_jpy: 5000,
+          ebay_price: listedAt150,
+        }],
+      })
+      mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 5000 }])
+      // 円高(150円→135円)になった
+      mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 135, date: '2026-08-27' })
+
+      const result = await checkSupplierListings(db as never, 'user-1')
+
+      expect(result.price_recalculated).toBe(1)
+      expect(result.price_increased).toBe(0)
+      const productUpdate = updateCalls(calls, 'products')[0]
+      expect(productUpdate.payload?.purchase_price_jpy).toBe(5000)
+      expect(productUpdate.payload?.ebay_price).toBe(calculateAutomaticEbayPrice(5000, 135, null))
+      expect(productUpdate.payload?.ebay_price as number).toBeGreaterThan(listedAt150 as number)
+    })
+
+    it('仕入価格が取得できない場合は前回記録した仕入価格と現在の為替で再計算する', async () => {
+      const { db, calls } = makeDatabase({
+        listings: [{ id: 'listing-1', product_id: 'product-1' }],
+        products: [{
+          id: 'product-1',
+          source_url: 'https://jp.mercari.com/item/1',
+          purchase_price_jpy: 5000,
+          ebay_price: calculateAutomaticEbayPrice(5000, 150, null),
+        }],
+      })
+      mocks.scrapeUrl.mockResolvedValue([{ availability: 'available' }])
+      mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 160, date: '2026-08-27' })
+
+      const result = await checkSupplierListings(db as never, 'user-1')
+
+      expect(result.price_recalculated).toBe(1)
+      expect(updateCalls(calls, 'products')[0].payload?.ebay_price).toBe(calculateAutomaticEbayPrice(5000, 160, null))
     })
 
     it('抽出時の一括編集設定(利益率等)があれば、その設定を使って再計算する', async () => {
@@ -375,5 +426,20 @@ describe('checkSupplierListings', () => {
       expect(result.price_increased).toBe(0)
       expect(updateCalls(calls, 'products')).toHaveLength(1)
     })
+  })
+})
+
+describe('shouldUpdateEbayPrice', () => {
+  it('現在価格が未設定なら更新する', () => {
+    expect(shouldUpdateEbayPrice(null, 100)).toBe(true)
+    expect(shouldUpdateEbayPrice(undefined, 100)).toBe(true)
+  })
+
+  it('差が1%または0.5ドルのうち大きい方を超えたときだけ更新する(為替の微小な揺れで毎日改定しない)', () => {
+    expect(shouldUpdateEbayPrice(200, 201.5)).toBe(false)
+    expect(shouldUpdateEbayPrice(200, 202.5)).toBe(true)
+    expect(shouldUpdateEbayPrice(200, 197.5)).toBe(true)
+    expect(shouldUpdateEbayPrice(20, 20.4)).toBe(false)
+    expect(shouldUpdateEbayPrice(20, 20.6)).toBe(true)
   })
 })
