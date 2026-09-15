@@ -6,7 +6,7 @@ import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
-import { checkSupplierListings } from '@/lib/inventory-supplier-check'
+import { checkSupplierListings, normalizePriceChangeFilter } from '@/lib/inventory-supplier-check'
 
 // 1回の実行で「①GetItem同期(148件〜)」「②仕入先チェック」「③取り下げ」
 // 「④価格改定」を続けて行うため、Vercelのデフォルト上限では途中で
@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
   // Vercel側で日次スケジュールを制御するため、ユーザー別の時刻照合は行わない
   const { data: allSettings } = await db
     .from('inventory_settings')
-    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, payment_profile_name, return_profile_name, shipping_profile_name')
+    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, payment_profile_name, return_profile_name, shipping_profile_name')
     .eq('sync_enabled', true)
 
   const results: Record<string, unknown>[] = []
@@ -45,7 +45,10 @@ export async function GET(req: NextRequest) {
         // 上がっていればeBay価格を再計算」は必須。1日50件では148件を
         // 一巡するのに3日かかるため、時間予算(150秒)の範囲で最大500件まで
         // 未チェックが古い順に確認する。
-        const supplierCheckResult = await checkSupplierListings(db, userId, 500, { timeBudgetMs: 150_000 })
+        const supplierCheckResult = await checkSupplierListings(db, userId, 500, {
+          timeBudgetMs: 150_000,
+          priceChangeFilter: normalizePriceChangeFilter(settings),
+        })
         userResult.supplier_check = supplierCheckResult
         // ユーザー要望: 「仕入れ価格の高騰に確実に対応」。この結果を
         // inventory_runsに記録しないと、cronのJSONレスポンス以外では

@@ -427,11 +427,15 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   }
 
   // ---- 一括価格編集 ----
-  function applyPriceEdit(getPriceUsd: (p: Product) => number | null, scope: 'page' | 'all') {
+  function applyPriceEdit(getPriceUsd: (p: Product) => number | null, scope: 'page' | 'all', pricingJpyPerUsd: number | null) {
     const targets = scope === 'page' ? pagedProducts : products
     targets.forEach((p) => {
       const price = getPriceUsd(p)
-      if (price !== null) updateEdit(p.id, 'ebay_price', price)
+      if (price !== null) {
+        updateEdit(p.id, 'ebay_price', price)
+        // 為替変動の検知用に、価格計算に使った為替レートも保存する
+        updateEdit(p.id, 'pricing_jpy_per_usd', Number.isFinite(pricingJpyPerUsd) ? pricingJpyPerUsd : null)
+      }
     })
   }
 

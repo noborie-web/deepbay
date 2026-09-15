@@ -177,6 +177,7 @@ export const PRODUCT_WRITE_WHITELIST = new Set([
   'ebay_price',
   'ebay_condition',
   'purchase_price_jpy',
+  'pricing_jpy_per_usd',
   // ebay_category_id は後続フェーズで追加
 ])
 
@@ -194,6 +195,12 @@ export function validateProductFields(fields: Record<string, unknown>): string |
       if (typeof p !== 'number' || !isFinite(p) || p <= 0) {
         return `ebay_price は0より大きい有限数にしてください (値: ${p})`
       }
+    }
+  }
+  if ('pricing_jpy_per_usd' in fields) {
+    const r = fields.pricing_jpy_per_usd
+    if (r !== null && (typeof r !== 'number' || !isFinite(r) || r <= 0)) {
+      return `pricing_jpy_per_usd はnullまたは0より大きい有限数にしてください (値: ${r})`
     }
   }
   if ('ebay_brand' in fields) {

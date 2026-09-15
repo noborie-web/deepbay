@@ -14,6 +14,7 @@ interface InventoryRun {
 interface Settings {
   has_token: boolean; sync_enabled: boolean; ebay_auto_sync: boolean
   days_until_delist: number; delist_by_age_enabled: boolean; delist_on_sold_out: boolean; daily_run_count: number; ebay_token_expires_at: string | null
+  price_change_direction: 'any' | 'up' | 'down'; price_change_threshold_rate: number
   auto_delist: boolean; auto_revise_price: boolean; auto_stack: boolean
   schedule_time: string
   payment_profile_name: string; return_profile_name: string; shipping_profile_name: string
@@ -207,6 +208,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [settings, setSettings] = useState<Settings>({
     has_token: initialHasToken, sync_enabled: false, ebay_auto_sync: false,
     days_until_delist: 29, delist_by_age_enabled: true, delist_on_sold_out: false, daily_run_count: 1, ebay_token_expires_at: null,
+    price_change_direction: 'any', price_change_threshold_rate: 1,
     auto_delist: false, auto_revise_price: false, auto_stack: false,
     schedule_time: '09:00',
     payment_profile_name: '', return_profile_name: '', shipping_profile_name: '',
@@ -1273,6 +1275,36 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 onChange={e => setSettings(prev => ({ ...prev, days_until_delist: Number(e.target.value) }))}
                 onBlur={() => saveSetting({ days_until_delist: settings.days_until_delist })}
                 className="w-20 border rounded px-2 py-1 text-sm text-center disabled:bg-gray-100" />
+            </div>
+          </div>
+          <hr />
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">価格追従の絞り込み</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              仕入先チェックで「仕入価格の変動」「出品時からの為替変動」を検知してeBay価格を再計算します。
+              価格の更新幅による絞り込みが行えます(例: 仕入価格や為替による値上がりのみ反映したい場合は「プラスのみ」)。
+              現在価格 $100 → 再計算 $110 は +10%、$90 は −10% として判定します。
+            </p>
+            <div className="flex items-center gap-4 flex-wrap">
+              <label className="flex items-center gap-2 text-xs text-gray-500">
+                差分検知タイプ
+                <select value={settings.price_change_direction}
+                  onChange={e => saveSetting({ price_change_direction: e.target.value as Settings['price_change_direction'] })}
+                  disabled={savingSettings}
+                  className="border rounded px-2 py-1 text-sm text-gray-700 disabled:bg-gray-100">
+                  <option value="any">指定なし(上げ下げ両方)</option>
+                  <option value="up">プラスのみ(値上がりだけ反映)</option>
+                  <option value="down">マイナスのみ(値下がりだけ反映)</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-xs text-gray-500">
+                検知差分率(%)
+                <input type="number" value={settings.price_change_threshold_rate} min={0} max={100} step={0.1}
+                  onChange={e => setSettings(prev => ({ ...prev, price_change_threshold_rate: Number(e.target.value) }))}
+                  onBlur={() => saveSetting({ price_change_threshold_rate: settings.price_change_threshold_rate })}
+                  disabled={savingSettings}
+                  className="w-20 border rounded px-2 py-1 text-sm text-center disabled:bg-gray-100" />
+              </label>
             </div>
           </div>
           <hr />
