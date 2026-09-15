@@ -929,7 +929,16 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                     </td>
                     <td className="px-3 py-2 max-w-[320px]">
                       <p className="truncate text-gray-800" title={listing.title}>{listing.title || '—'}</p>
-                      <p className="text-xs text-gray-400">{listing.listing_status ?? '—'}</p>
+                      <p className="text-xs text-gray-400">
+                        {listing.listing_status ?? '—'}
+                        {/* 仕入先チェックで検知した、抽出時からの仕入先の変更 */}
+                        {listing.supplier_diff?.includes('title') && (
+                          <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title={`仕入先の最新タイトル: ${listing.supplier_title ?? ''}`}>仕入先タイトル変更</span>
+                        )}
+                        {listing.supplier_diff?.includes('price') && (
+                          <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title={`仕入先の最新価格: ¥${listing.supplier_price_jpy?.toLocaleString() ?? ''}`}>仕入先価格変更</span>
+                        )}
+                      </p>
                     </td>
                     <td className="px-3 py-2 max-w-[220px] truncate text-xs text-gray-600" title={listing.custom_label ?? ''}>
                       {listing.custom_label ?? '—'}
@@ -1617,6 +1626,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             <h3 className="text-sm font-semibold text-gray-800 mb-4">在庫管理結果ファイルダウンロード</h3>
             <p className="text-xs text-gray-500 mb-4">
               「ファイルダウンロード」ボタンをクリックすると、最新の在庫管理結果から取り下げファイル、差分検知ファイルが生成されます。
+              差分検知ファイルは、仕入先チェックで取得した仕入先の最新タイトル・最新価格(円)が抽出時から変わった商品を出力します。
             </p>
 
             <div className="mb-4">

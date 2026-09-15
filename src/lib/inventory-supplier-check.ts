@@ -11,6 +11,8 @@ interface SupplierListingRow {
 interface SupplierProductRow {
   id: string
   source_url: string | null
+  original_title: string | null
+  original_price: number | null
   purchase_price_jpy: number | null
   ebay_price: number | null
   pricing_jpy_per_usd: number | null
@@ -92,6 +94,28 @@ export interface SupplierCheckResult {
   // 仕入価格の変動・為替レートの変動により eBay価格(ebay_price)を
   // 再計算して更新した件数(price_increased を含む)。
   price_recalculated: number
+  // ユーザー要望: 公式ツール同様にタイトルの差分も検知する。仕入先の最新
+  // タイトルが抽出時(original_title)から変わっていた件数。
+  title_changed: number
+}
+
+export type SupplierDiffKind = 'title' | 'price'
+
+// 抽出時のタイトル・価格(円)と、仕入先の最新タイトル・価格を比べて差分の
+// 種類を返す(公式ツールの差分検知ファイルの diff_detail 相当)。
+export function detectSupplierDiff(
+  original: { title: string | null; priceJpy: number | null },
+  latest: { title: string | null | undefined; priceJpy: number | null | undefined },
+): SupplierDiffKind[] {
+  const diffs: SupplierDiffKind[] = []
+  const originalTitle = (original.title ?? '').trim()
+  const latestTitle = (latest.title ?? '').trim()
+  if (originalTitle && latestTitle && originalTitle !== latestTitle) diffs.push('title')
+  if (
+    typeof original.priceJpy === 'number' && typeof latest.priceJpy === 'number'
+    && latest.priceJpy > 0 && Math.abs(original.priceJpy - latest.priceJpy) >= 1
+  ) diffs.push('price')
+  return diffs
 }
 
 export interface SupplierCheckOptions {
@@ -117,6 +141,7 @@ export async function checkSupplierListings(
     failed: 0,
     price_increased: 0,
     price_recalculated: 0,
+    title_changed: 0,
   }
 
   const { data: listings, error: listingsError } = await db
@@ -139,7 +164,7 @@ export async function checkSupplierListings(
   const productIds = Array.from(new Set(targets.map(listing => listing.product_id)))
   const { data: products, error: productsError } = await db
     .from('products')
-    .select('id, source_url, purchase_price_jpy, ebay_price, pricing_jpy_per_usd, extraction_id')
+    .select('id, source_url, original_title, original_price, purchase_price_jpy, ebay_price, pricing_jpy_per_usd, extraction_id')
     .eq('user_id', userId)
     .in('id', productIds)
 
@@ -204,11 +229,23 @@ export async function checkSupplierListings(
     // 為替レートの基準だけを記録する(価格は変えない)場合に使う
     let baselineJpyPerUsd: number | undefined
     const priceChangeFilter = options.priceChangeFilter ?? DEFAULT_PRICE_CHANGE_FILTER
+    // 仕入先の最新タイトル・価格と、抽出時からの差分
+    let supplierTitle: string | null | undefined
+    let supplierPriceJpy: number | null | undefined
+    let supplierDiff: SupplierDiffKind[] | undefined
 
     if (sourceUrl && findScraper(sourceUrl)) {
       try {
         const scrapedProducts = await scrapeUrl(sourceUrl, { limit: 1 })
-        const scraped = scrapedProducts[0] as { availability?: string; price?: number | null } | undefined
+        const scraped = scrapedProducts[0] as { availability?: string; price?: number | null; title?: string | null } | undefined
+        if (scraped && product) {
+          supplierTitle = typeof scraped.title === 'string' && scraped.title.trim() ? scraped.title.trim() : null
+          supplierPriceJpy = typeof scraped.price === 'number' && scraped.price > 0 ? scraped.price : null
+          supplierDiff = detectSupplierDiff(
+            { title: product.original_title, priceJpy: product.original_price },
+            { title: supplierTitle, priceJpy: supplierPriceJpy },
+          )
+        }
         if (scraped?.availability === 'sold_out') {
           outcome = 'unavailable'
           quantity = 0
@@ -267,10 +304,23 @@ export async function checkSupplierListings(
       }
     }
 
-    const update: { supplier_checked_at: string; quantity?: number } = {
+    const update: {
+      supplier_checked_at: string
+      quantity?: number
+      supplier_title?: string | null
+      supplier_price_jpy?: number | null
+      supplier_diff?: SupplierDiffKind[]
+      supplier_diff_detected_at?: string | null
+    } = {
       supplier_checked_at: checkedAt,
     }
     if (quantity !== undefined) update.quantity = quantity
+    if (supplierDiff !== undefined) {
+      update.supplier_title = supplierTitle ?? null
+      update.supplier_price_jpy = supplierPriceJpy ?? null
+      update.supplier_diff = supplierDiff
+      update.supplier_diff_detected_at = supplierDiff.length > 0 ? checkedAt : null
+    }
 
     try {
       const { error: updateError } = await db
@@ -280,6 +330,7 @@ export async function checkSupplierListings(
         .eq('id', listing.id)
       if (updateError) throw new Error(updateError.message)
       result[outcome] += 1
+      if (supplierDiff?.includes('title')) result.title_changed += 1
     } catch {
       // 1件の更新失敗で、残りの仕入れ元チェックを中断しない。
       result.failed += 1
