@@ -33,7 +33,7 @@ interface DupCheckConfig {
   created_at: string
 }
 
-export type InventoryStatusFilter = 'total' | 'draft' | 'listed' | 'sold'
+export type InventoryStatusFilter = 'total' | 'draft' | 'listed' | 'sold' | 'delisted'
 
 interface Props {
   listings: InventoryActiveListing[]
@@ -809,7 +809,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               </p>
               {statusFilter !== 'total' && (
                 <p className="mt-1 text-xs text-blue-600">
-                  絞り込み中: {statusFilter === 'draft' ? '下書き(eBay出品済みリストには該当がありません)' : statusFilter === 'listed' ? '出品中(在庫数1以上)' : '売却済み(在庫数0)'}
+                  絞り込み中: {statusFilter === 'draft' ? '下書き(eBay出品済みリストには該当がありません)' : statusFilter === 'listed' ? '出品中(在庫数1以上)' : statusFilter === 'sold' ? '売却済み(在庫数0・販売あり)' : '取下げ(在庫数0・販売なし)'}
                 </p>
               )}
             </div>

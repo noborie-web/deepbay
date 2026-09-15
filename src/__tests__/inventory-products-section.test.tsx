@@ -17,7 +17,7 @@ const panelProps = {
   listings: [],
   listingCount: 0,
   hasToken: false,
-  statusCounts: { total: 3, draft: 1, listed: 1, sold: 1 },
+  statusCounts: { total: 3, draft: 1, listed: 1, sold: 1, delisted: 0 },
 }
 
 function makeProduct(overrides: Partial<Product> = {}): Product {
@@ -161,10 +161,12 @@ describe('集計カードの件数', () => {
       <InventoryProductsSection
         items={items}
         {...panelProps}
-        statusCounts={{ total: 158, draft: 10, listed: 148, sold: 0 }}
+        statusCounts={{ total: 158, draft: 10, listed: 148, sold: 0, delisted: 3 }}
       />,
     )
     expect(screen.getByText('総商品数').nextElementSibling).toHaveTextContent('158')
     expect(screen.getByText('出品中').nextElementSibling).toHaveTextContent('148')
+    // ユーザー要望: 取り下げたリストも集計カードで確認できる
+    expect(screen.getByText('取下げ').nextElementSibling).toHaveTextContent('3')
   })
 })

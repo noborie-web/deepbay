@@ -141,7 +141,19 @@ describe('GET /api/inventory/listings', () => {
     const { GET } = await import('@/app/api/inventory/listings/route')
     await GET(request('?status=sold'))
 
+    // 売却済み = 残数0 かつ 販売あり(取り下げで数量0にしたものと区別する)
     expect(mockEq).toHaveBeenCalledWith('quantity', 0)
+    expect(mockGt).toHaveBeenCalledWith('quantity_sold', 0)
+    expect(mockGt).not.toHaveBeenCalledWith('quantity', 0)
+  })
+
+  it('status=delistedのとき残数0で販売なしの商品に絞り込む', async () => {
+    // ユーザー要望: 取り下げたリストを集計カードから表示したい
+    const { GET } = await import('@/app/api/inventory/listings/route')
+    await GET(request('?status=delisted'))
+
+    expect(mockEq).toHaveBeenCalledWith('quantity', 0)
+    expect(mockOr).toHaveBeenCalledWith('quantity_sold.is.null,quantity_sold.eq.0')
     expect(mockGt).not.toHaveBeenCalled()
   })
 

@@ -36,7 +36,7 @@ vi.mock('@supabase/supabase-js', () => ({
           is: mockIs.mockReturnThis(),
           lte: mockLte.mockReturnThis(),
           update: mockUpdate.mockImplementation(() => ({
-            eq: () => ({ in: async () => ({ error: null }) }),
+            eq: () => ({ in: () => ({ select: async () => ({ data: [{ product_id: 'product-1' }], error: null }) }) }),
           })),
         }
         query.then = (resolve: (v: unknown) => void) => resolve({ data: mockListings, error: null })
@@ -51,6 +51,9 @@ vi.mock('@supabase/supabase-js', () => ({
             error: null,
           })),
         }
+      }
+      if (table === 'products') {
+        return { update: () => ({ eq: () => ({ in: async () => ({ error: null }) }) }) }
       }
       return {
         insert: mockRunInsert.mockImplementation(async () => ({ error: null })),

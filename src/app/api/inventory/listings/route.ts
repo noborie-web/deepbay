@@ -40,7 +40,9 @@ export async function GET(request: NextRequest) {
     .eq('user_id', user.id)
 
   if (status === 'listed') query = query.gt('quantity', 0)
-  if (status === 'sold') query = query.eq('quantity', 0)
+  if (status === 'sold') query = query.eq('quantity', 0).gt('quantity_sold', 0)
+  // 取下げ: 残数0で販売なし(仕入先売り切れの即取り下げ等でeBayの数量を0にしたもの)
+  if (status === 'delisted') query = query.eq('quantity', 0).or('quantity_sold.is.null,quantity_sold.eq.0')
 
   if (search) {
     const pattern = `%${search}%`

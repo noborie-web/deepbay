@@ -182,6 +182,7 @@ export async function POST(req: NextRequest) {
     product_id: row.product_id,
     ebay_item_id: row.ebay_item_id,
     quantity: row.quantity,
+    quantity_sold: row.quantity_sold,
   })))
 
   await db.from('inventory_runs').update({
