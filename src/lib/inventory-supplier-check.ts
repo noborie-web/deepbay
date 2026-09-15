@@ -41,11 +41,19 @@ export interface SupplierCheckResult {
   price_increased: number
 }
 
+export interface SupplierCheckOptions {
+  // この時間(ms)を超えたら残りは次回に回す(cronの実行時間上限対策)。
+  // 未チェックが古い順に処理するため、次回は残りから続きが確認される。
+  timeBudgetMs?: number
+}
+
 export async function checkSupplierListings(
   db: SupabaseClient,
   userId: string,
   batchLimit = 50,
+  options: SupplierCheckOptions = {},
 ): Promise<SupplierCheckResult> {
+  const startedAt = Date.now()
   const result: SupplierCheckResult = {
     total: 0,
     available: 0,
@@ -125,6 +133,10 @@ export async function checkSupplierListings(
   }
 
   for (const listing of targets) {
+    if (options.timeBudgetMs !== undefined && Date.now() - startedAt > options.timeBudgetMs) {
+      result.skipped += 1
+      continue
+    }
     const checkedAt = new Date().toISOString()
     const product = productMap.get(listing.product_id)
     const sourceUrl = product?.source_url ?? null

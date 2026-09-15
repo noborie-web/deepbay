@@ -3,10 +3,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { endItem, reviseQuantityToZero, revisePrice, addFixedPriceItem } from '@/lib/ebay-actions'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
-import { getDelistCutoffIso, isDelistByAgeEnabled } from '@/lib/inventory-delist'
+import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
-import { syncKnownInventoryListings } from '@/lib/inventory-sync'
+import { markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
 import { checkSupplierListings } from '@/lib/inventory-supplier-check'
+
+// 1回の実行で「①GetItem同期(148件〜)」「②仕入先チェック」「③取り下げ」
+// 「④価格改定」を続けて行うため、Vercelのデフォルト上限では途中で
+// 打ち切られる。auto-extraction と同じ300秒にする。
+export const maxDuration = 300
 
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
@@ -24,7 +29,7 @@ export async function GET(req: NextRequest) {
   // Vercel側で日次スケジュールを制御するため、ユーザー別の時刻照合は行わない
   const { data: allSettings } = await db
     .from('inventory_settings')
-    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, payment_profile_name, return_profile_name, shipping_profile_name')
+    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, payment_profile_name, return_profile_name, shipping_profile_name')
     .eq('sync_enabled', true)
 
   const results: Record<string, unknown>[] = []
@@ -36,7 +41,11 @@ export async function GET(req: NextRequest) {
     const runSupplierCheck = async () => {
       const startedAt = new Date().toISOString()
       try {
-        const supplierCheckResult = await checkSupplierListings(db, userId, 50)
+        // ユーザー要望: 「仕入先が売り切れたら即取り下げ」「仕入価格が
+        // 上がっていればeBay価格を再計算」は必須。1日50件では148件を
+        // 一巡するのに3日かかるため、時間予算(150秒)の範囲で最大500件まで
+        // 未チェックが古い順に確認する。
+        const supplierCheckResult = await checkSupplierListings(db, userId, 500, { timeBudgetMs: 150_000 })
         userResult.supplier_check = supplierCheckResult
         // ユーザー要望: 「仕入れ価格の高騰に確実に対応」。この結果を
         // inventory_runsに記録しないと、cronのJSONレスポンス以外では
@@ -129,17 +138,22 @@ export async function GET(req: NextRequest) {
     await runSupplierCheck()
 
     // 取り下げ
-    // ユーザー要望: 「N日経過取り下げ」がOFFのときは自動取り下げを行わない。
-    if (settings.auto_delist && isDelistByAgeEnabled(settings)) {
+    // ユーザー要望: 「売り切れ即取り下げ」ONなら在庫0だけを条件にし、
+    // OFFなら「在庫0 かつ N日経過」(N日経過取り下げがOFFなら行わない)。
+    const delistEligibility = resolveDelistEligibility(settings)
+    if (settings.auto_delist && delistEligibility.enabled) {
       // ユーザー要望: 他ツールで在庫管理中の出品を誤って取り下げないよう、
       // Kakehashiの商品に紐付いている出品だけを対象にする。
-      const { data: listings } = await db
+      // 取り下げ済み(delisted_at あり)は毎日繰り返さない。
+      let delistQuery = db
         .from('inventory_active_listings')
         .select('ebay_item_id, product_id')
         .eq('user_id', userId)
         .not('product_id', 'is', null)
         .eq('quantity', 0)
-        .lte('start_time', getDelistCutoffIso(settings.days_until_delist))
+        .is('delisted_at', null)
+      if (delistEligibility.cutoffIso) delistQuery = delistQuery.lte('start_time', delistEligibility.cutoffIso)
+      const { data: listings } = await delistQuery
 
       const delistResults = []
       for (const l of listings ?? []) {
@@ -148,7 +162,12 @@ export async function GET(req: NextRequest) {
           : await endItem(accessToken, l.ebay_item_id)
         delistResults.push(r)
       }
-      userResult.delist = { total: delistResults.length, succeeded: delistResults.filter(r => r.success).length }
+      try {
+        await markListingsDelisted(db, userId, delistResults.filter(r => r.success).map(r => r.itemId))
+      } catch {
+        // 記録の失敗で取り下げ結果自体は変わらないため続行する
+      }
+      userResult.delist = { total: delistResults.length, succeeded: delistResults.filter(r => r.success).length, immediate: delistEligibility.immediate }
       const delistRun = summarizeInventoryActionRun(delistResults)
 
       await db.from('inventory_runs').insert({
