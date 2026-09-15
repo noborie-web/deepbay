@@ -12,7 +12,21 @@ interface SupplierProductRow {
   id: string
   source_url: string | null
   purchase_price_jpy: number | null
+  ebay_price: number | null
   extraction_id: string | null
+}
+
+// ユーザー要望: 「出品した時点の為替の変動の差も検知して再計算して価格に
+// 反映する」。毎回の仕入先チェックで、現在の仕入価格と現在の為替レートで
+// eBay価格を再計算し、現在のeBay価格との差がこの閾値を超えたら更新する
+// (為替の微小な揺れで毎日全件を改定しないための閾値)。
+const PRICE_CHANGE_THRESHOLD_RATE = 0.01
+const PRICE_CHANGE_THRESHOLD_MIN_USD = 0.5
+
+export function shouldUpdateEbayPrice(currentPrice: number | null | undefined, recalculated: number): boolean {
+  if (typeof currentPrice !== 'number' || !Number.isFinite(currentPrice) || currentPrice <= 0) return true
+  const threshold = Math.max(PRICE_CHANGE_THRESHOLD_MIN_USD, currentPrice * PRICE_CHANGE_THRESHOLD_RATE)
+  return Math.abs(recalculated - currentPrice) > threshold
 }
 
 // calculateAutomaticEbayPriceのsettingパラメータ(AutoPricingSetting)は
@@ -39,6 +53,9 @@ export interface SupplierCheckResult {
   // 自動実行(products.ebay_priceとinventory_active_listingsの現在価格
   // の差分を検知する仕組み)が担う — ここではDB上の計算値だけを更新する。
   price_increased: number
+  // 仕入価格の変動・為替レートの変動により eBay価格(ebay_price)を
+  // 再計算して更新した件数(price_increased を含む)。
+  price_recalculated: number
 }
 
 export interface SupplierCheckOptions {
@@ -61,6 +78,7 @@ export async function checkSupplierListings(
     skipped: 0,
     failed: 0,
     price_increased: 0,
+    price_recalculated: 0,
   }
 
   const { data: listings, error: listingsError } = await db
@@ -83,7 +101,7 @@ export async function checkSupplierListings(
   const productIds = Array.from(new Set(targets.map(listing => listing.product_id)))
   const { data: products, error: productsError } = await db
     .from('products')
-    .select('id, source_url, purchase_price_jpy, extraction_id')
+    .select('id, source_url, purchase_price_jpy, ebay_price, extraction_id')
     .eq('user_id', userId)
     .in('id', productIds)
 
@@ -144,6 +162,7 @@ export async function checkSupplierListings(
     let quantity: number | undefined
     let newPurchasePriceJpy: number | undefined
     let newEbayPrice: number | undefined
+    let priceIncreased = false
 
     if (sourceUrl && findScraper(sourceUrl)) {
       try {
@@ -155,20 +174,25 @@ export async function checkSupplierListings(
         } else {
           outcome = 'available'
 
-          if (
-            jpyPerUsd !== null
-            && typeof scraped?.price === 'number'
-            && typeof product?.purchase_price_jpy === 'number'
-            && scraped.price > product.purchase_price_jpy
-          ) {
+          // 現在の仕入価格(取得できなければ前回記録した価格)と現在の為替
+          // レートでeBay価格を再計算する。仕入価格の変動だけでなく、出品時点
+          // からの為替変動も差分として検知される。
+          const purchasePriceJpy = typeof scraped?.price === 'number' && scraped.price > 0
+            ? scraped.price
+            : product?.purchase_price_jpy ?? null
+          if (jpyPerUsd !== null && product && purchasePriceJpy !== null) {
             const bulkSettingId = product.extraction_id
               ? bulkSettingIdByExtractionId.get(product.extraction_id)
               : null
             const setting = bulkSettingId ? bulkSettingMap.get(bulkSettingId) : null
-            const recalculated = calculateAutomaticEbayPrice(scraped.price, jpyPerUsd, setting)
-            if (recalculated !== null) {
-              newPurchasePriceJpy = scraped.price
+            const recalculated = calculateAutomaticEbayPrice(purchasePriceJpy, jpyPerUsd, setting)
+            if (recalculated !== null && shouldUpdateEbayPrice(product.ebay_price, recalculated)) {
+              newPurchasePriceJpy = purchasePriceJpy
               newEbayPrice = recalculated
+              if (
+                typeof product.purchase_price_jpy === 'number'
+                && purchasePriceJpy > product.purchase_price_jpy
+              ) priceIncreased = true
             }
           }
         }
@@ -206,7 +230,8 @@ export async function checkSupplierListings(
           .eq('user_id', userId)
           .eq('id', listing.product_id)
         if (productUpdateError) throw new Error(productUpdateError.message)
-        result.price_increased += 1
+        result.price_recalculated += 1
+        if (priceIncreased) result.price_increased += 1
       } catch {
         // 価格更新の失敗は売り切れチェック(available/unavailable判定)の
         // 成否とは独立して扱い、failedとしては数えない。

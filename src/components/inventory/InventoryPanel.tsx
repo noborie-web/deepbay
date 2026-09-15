@@ -1022,7 +1022,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 <p className="text-2xl font-bold text-blue-700">
                   {summaryLoading ? '…' : actionSummary.revise_price === null ? '—' : `${actionSummary.revise_price}件`}
                 </p>
-                <p className="text-xs text-blue-500 mt-1">仕入れ価格と乖離した商品</p>
+                <p className="text-xs text-blue-500 mt-1">仕入価格・為替の変動で再計算した価格とeBay価格が乖離した商品</p>
                 <button onClick={handlePreviewRevisePrice} disabled={summaryLoading || actionSummary.revise_price === 0}
                   className="mt-3 w-full px-3 py-1.5 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:opacity-40">
                   価格改定実行
@@ -1295,7 +1295,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               </div>
               <div className="flex items-center gap-3 flex-wrap">
                 <Toggle checked={settings.auto_revise_price} onChange={v => saveSetting({ auto_revise_price: v })} disabled={savingSettings || !settings.has_token} />
-                <span className="text-sm text-gray-700 flex-1">価格改定を自動実行する</span>
+                <span className="text-sm text-gray-700 flex-1">価格改定を自動実行する<span className="block text-xs text-gray-500">仕入先チェックで仕入価格・為替レートの変動から再計算した価格を、毎日eBayに反映します</span></span>
                 <button onClick={handlePreviewRevisePrice} disabled={!settings.has_token}
                   className="px-3 py-1 border border-blue-500 text-blue-600 text-xs rounded hover:bg-blue-50 disabled:opacity-40">
                   今すぐ実行
