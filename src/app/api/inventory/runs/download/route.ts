@@ -61,17 +61,17 @@ export async function POST(req: NextRequest) {
   // アクティブリスティングを取得
   const { data: listings } = await db
     .from('inventory_active_listings')
-    .select('ebay_item_id, title, custom_label, current_price, quantity, product_id, fetched_at')
+    .select('ebay_item_id, title, custom_label, current_price, quantity, product_id, fetched_at, supplier_title, supplier_price_jpy, supplier_diff')
     .eq('user_id', user.id)
 
   // 対応するproductを取得
   const productIds = (listings ?? []).filter(l => l.product_id).map(l => l.product_id as string)
-  const productMap = new Map<string, { source_url: string | null; ebay_title: string | null; ebay_price: number | null; original_title: string | null }>()
+  const productMap = new Map<string, { source_url: string | null; ebay_title: string | null; ebay_price: number | null; original_title: string | null; original_price: number | null }>()
 
   if (productIds.length > 0) {
     const { data: products } = await db
       .from('products')
-      .select('id, source_url, ebay_title, ebay_price, original_title')
+      .select('id, source_url, ebay_title, ebay_price, original_title, original_price')
       .in('id', productIds)
     for (const p of products ?? []) {
       productMap.set(p.id, p)
@@ -99,37 +99,29 @@ export async function POST(req: NextRequest) {
     filename = `${seller}_end_items_${dateStr}.csv`
 
   } else if (fileType === 'diff') {
-    // 差分検知ファイル: title/price の差分
+    // 差分検知ファイル: 仕入先の最新タイトル・価格(円)が抽出時から変わった商品
+    // (公式ツールと同じ形式。仕入先チェックで保存した supplier_* 列から生成)
     const rows: string[][] = [['1_item_id', '2_url', '3_旧タイトル', '4_最新タイトル', '5_旧価格', '6_最新価格', 'diff_detail']]
     for (const l of listings ?? []) {
       if (!l.product_id) continue
       const product = productMap.get(l.product_id)
       if (!product) continue
 
-      const diffs: string[] = []
-      const oldTitle = l.title ?? ''
-      const newTitle = product.ebay_title ?? product.original_title ?? ''
-      const oldPrice = l.current_price ?? 0
-      const newPrice = product.ebay_price ?? 0
+      const detected = Array.isArray(l.supplier_diff) ? (l.supplier_diff as string[]) : []
+      const diffs = detected.filter(kind => diffColumns.includes(kind))
+      if (diffs.length === 0) continue
 
-      if (diffColumns.includes('title') && oldTitle !== newTitle && newTitle) {
-        diffs.push('title')
-      }
-      if (diffColumns.includes('price') && newPrice > 0 && Math.abs(oldPrice - newPrice) > 1) {
-        diffs.push('price')
-      }
-
-      if (diffs.length > 0) {
-        rows.push([
-          l.ebay_item_id,
-          product.source_url ?? '',
-          oldTitle,
-          newTitle,
-          String(Math.round(oldPrice)),
-          String(newPrice),
-          JSON.stringify(diffs),
-        ])
-      }
+      const oldPrice = product.original_price
+      const newPrice = l.supplier_price_jpy
+      rows.push([
+        l.ebay_item_id,
+        product.source_url ?? '',
+        product.original_title ?? '',
+        diffs.includes('title') ? (l.supplier_title ?? '') : (product.original_title ?? ''),
+        oldPrice != null ? String(Math.round(oldPrice)) : '',
+        diffs.includes('price') && newPrice != null ? String(Math.round(newPrice)) : (oldPrice != null ? String(Math.round(oldPrice)) : ''),
+        JSON.stringify(diffs),
+      ])
     }
     csv = buildCsv(rows)
     filename = `${seller}_diff_${dateStr}.csv`

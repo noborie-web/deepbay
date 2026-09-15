@@ -23,12 +23,14 @@ vi.mock('@/lib/scrapers', () => ({
 }))
 vi.mock('@/lib/exchange-rate', () => ({ fetchUsdJpyRate: mocks.fetchUsdJpyRate }))
 
-import { checkSupplierListings, normalizePriceChangeFilter, scalePriceByExchangeRate, shouldUpdateEbayPrice } from '@/lib/inventory-supplier-check'
+import { checkSupplierListings, detectSupplierDiff, normalizePriceChangeFilter, scalePriceByExchangeRate, shouldUpdateEbayPrice } from '@/lib/inventory-supplier-check'
 import { calculateAutomaticEbayPrice } from '@/lib/extraction-run'
 
 interface ProductFixture {
   id: string
   source_url: string | null
+  original_title?: string | null
+  original_price?: number | null
   purchase_price_jpy?: number | null
   ebay_price?: number | null
   pricing_jpy_per_usd?: number | null
@@ -150,10 +152,10 @@ describe('checkSupplierListings', () => {
 
     const result = await checkSupplierListings(db as never, 'user-1')
 
-    expect(result).toEqual({ total: 2, available: 1, unavailable: 1, skipped: 0, failed: 0, price_increased: 0, price_recalculated: 0 })
+    expect(result).toEqual({ total: 2, available: 1, unavailable: 1, skipped: 0, failed: 0, price_increased: 0, price_recalculated: 0, title_changed: 0 })
     expect(updateCalls(calls)).toEqual([
-      expect.objectContaining({ payload: { supplier_checked_at: '2026-08-27T00:00:00.000Z', quantity: 0 } }),
-      expect.objectContaining({ payload: { supplier_checked_at: '2026-08-27T00:00:00.000Z' } }),
+      expect.objectContaining({ payload: expect.objectContaining({ supplier_checked_at: '2026-08-27T00:00:00.000Z', quantity: 0 }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ supplier_checked_at: '2026-08-27T00:00:00.000Z' }) }),
     ])
   })
 
@@ -192,7 +194,7 @@ describe('checkSupplierListings', () => {
     const result = await checkSupplierListings(db as never, 'user-1')
 
     expect(result.unavailable).toBe(1)
-    expect(updateCalls(calls)[0].payload).toEqual({
+    expect(updateCalls(calls)[0].payload).toMatchObject({
       supplier_checked_at: '2026-08-27T00:00:00.000Z',
       quantity: 0,
     })
@@ -208,9 +210,10 @@ describe('checkSupplierListings', () => {
     const result = await checkSupplierListings(db as never, 'user-1')
 
     expect(result.available).toBe(1)
-    expect(updateCalls(calls)[0].payload).toEqual({
+    expect(updateCalls(calls)[0].payload).toMatchObject({
       supplier_checked_at: '2026-08-27T00:00:00.000Z',
     })
+    expect(updateCalls(calls)[0].payload).not.toHaveProperty('quantity')
   })
 
   it('updates the check time but skips unsupported supplier URLs', async () => {
@@ -263,7 +266,7 @@ describe('checkSupplierListings', () => {
 
     const result = await checkSupplierListings(db as never, 'user-1')
 
-    expect(result).toEqual({ total: 2, available: 1, unavailable: 0, skipped: 0, failed: 1, price_increased: 0, price_recalculated: 0 })
+    expect(result).toEqual({ total: 2, available: 1, unavailable: 0, skipped: 0, failed: 1, price_increased: 0, price_recalculated: 0, title_changed: 0 })
     expect(updateCalls(calls)).toHaveLength(2)
   })
 
@@ -477,6 +480,81 @@ describe('checkSupplierListings', () => {
       expect(result.price_increased).toBe(0)
       expect(updateCalls(calls, 'products')).toHaveLength(1)
     })
+  })
+})
+
+// ユーザー要望: 「公式ツールはタイトルの差分も検知しています」
+describe('仕入先のタイトル・価格の差分検知', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-27T00:00:00.000Z'))
+    mocks.findScraper.mockReset().mockReturnValue({ siteKey: 'mercari' })
+    mocks.scrapeUrl.mockReset()
+    mocks.fetchUsdJpyRate.mockReset().mockResolvedValue({ rate: 150, date: '2026-08-27' })
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('仕入先の最新タイトルが抽出時から変わっていたら、差分として出品に記録する', async () => {
+    const { db, calls } = makeDatabase({
+      listings: [{ id: 'listing-1', product_id: 'product-1' }],
+      products: [{
+        id: 'product-1',
+        source_url: 'https://jp.mercari.com/item/1',
+        original_title: '【美品】ディズニー ピンバッジ',
+        original_price: 8500,
+        purchase_price_jpy: 8500,
+        ebay_price: 100,
+        pricing_jpy_per_usd: 150,
+      }],
+    })
+    mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', title: '【値下げ】ディズニー ピンバッジ', price: 8500 }])
+
+    const result = await checkSupplierListings(db as never, 'user-1')
+
+    expect(result.title_changed).toBe(1)
+    expect(updateCalls(calls)[0].payload).toMatchObject({
+      supplier_title: '【値下げ】ディズニー ピンバッジ',
+      supplier_price_jpy: 8500,
+      supplier_diff: ['title'],
+      supplier_diff_detected_at: '2026-08-27T00:00:00.000Z',
+    })
+  })
+
+  it('仕入先の価格が抽出時から変わっていたら price の差分として記録し、変わっていなければ差分なし', async () => {
+    const { db, calls } = makeDatabase({
+      listings: [
+        { id: 'listing-1', product_id: 'product-1' },
+        { id: 'listing-2', product_id: 'product-2' },
+      ],
+      products: [
+        { id: 'product-1', source_url: 'https://jp.mercari.com/item/1', original_title: 'A', original_price: 8500, purchase_price_jpy: 8500, ebay_price: 100, pricing_jpy_per_usd: 150 },
+        { id: 'product-2', source_url: 'https://jp.mercari.com/item/2', original_title: 'B', original_price: 6200, purchase_price_jpy: 6200, ebay_price: 80, pricing_jpy_per_usd: 150 },
+      ],
+    })
+    mocks.scrapeUrl
+      .mockResolvedValueOnce([{ availability: 'available', title: 'A', price: 7500 }])
+      .mockResolvedValueOnce([{ availability: 'available', title: 'B', price: 6200 }])
+
+    const result = await checkSupplierListings(db as never, 'user-1')
+
+    expect(result.title_changed).toBe(0)
+    const [first, second] = updateCalls(calls)
+    expect(first.payload).toMatchObject({ supplier_price_jpy: 7500, supplier_diff: ['price'] })
+    expect(second.payload).toMatchObject({ supplier_diff: [], supplier_diff_detected_at: null })
+  })
+})
+
+describe('detectSupplierDiff', () => {
+  it('タイトルと価格(円)の差分を判定する', () => {
+    expect(detectSupplierDiff({ title: 'A', priceJpy: 1000 }, { title: 'A', priceJpy: 1000 })).toEqual([])
+    expect(detectSupplierDiff({ title: 'A', priceJpy: 1000 }, { title: 'B', priceJpy: 1000 })).toEqual(['title'])
+    expect(detectSupplierDiff({ title: 'A', priceJpy: 1000 }, { title: 'A', priceJpy: 900 })).toEqual(['price'])
+    expect(detectSupplierDiff({ title: 'A', priceJpy: 1000 }, { title: 'B', priceJpy: 900 })).toEqual(['title', 'price'])
+  })
+
+  it('最新タイトル・価格が取得できない場合は差分としない', () => {
+    expect(detectSupplierDiff({ title: 'A', priceJpy: 1000 }, { title: null, priceJpy: null })).toEqual([])
+    expect(detectSupplierDiff({ title: null, priceJpy: null }, { title: 'B', priceJpy: 900 })).toEqual([])
   })
 })
 

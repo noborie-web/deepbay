@@ -196,6 +196,11 @@ export interface InventoryActiveListing {
   fetched_at: string
   supplier_checked_at: string | null
   delisted_at?: string | null
+  // 仕入先チェックで取得した最新タイトル・価格(円)と、抽出時からの差分
+  supplier_title?: string | null
+  supplier_price_jpy?: number | null
+  supplier_diff?: Array<'title' | 'price'> | null
+  supplier_diff_detected_at?: string | null
   created_at: string
   updated_at: string
 }
