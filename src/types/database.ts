@@ -160,6 +160,8 @@ export interface Product {
   // specifics-in向けCSV出力(jp_spec)でカテゴリ判定等に使う。
   raw_source_data: Record<string, unknown> | null
   purchase_price_jpy: number | null
+  // eBay価格を計算・設定した時点の為替レート(円/ドル)。為替変動の検知に使う
+  pricing_jpy_per_usd?: number | null
   price_type: ProductPriceType
   created_at: string
   updated_at: string

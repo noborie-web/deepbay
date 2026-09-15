@@ -13,20 +13,56 @@ interface SupplierProductRow {
   source_url: string | null
   purchase_price_jpy: number | null
   ebay_price: number | null
+  pricing_jpy_per_usd: number | null
   extraction_id: string | null
 }
 
-// ユーザー要望: 「出品した時点の為替の変動の差も検知して再計算して価格に
-// 反映する」。毎回の仕入先チェックで、現在の仕入価格と現在の為替レートで
-// eBay価格を再計算し、現在のeBay価格との差がこの閾値を超えたら更新する
-// (為替の微小な揺れで毎日全件を改定しないための閾値)。
-const PRICE_CHANGE_THRESHOLD_RATE = 0.01
-const PRICE_CHANGE_THRESHOLD_MIN_USD = 0.5
+// 公式ツールの「価格追従ファイル絞り込み設定」相当。
+// direction: 'any' = 指定なし / 'up' = 値上がりのみ反映 / 'down' = 値下がりのみ反映
+// thresholdRate: 検知差分率(%)。現在価格からの変動率がこれ以上のときだけ更新する。
+export type PriceChangeDirection = 'any' | 'up' | 'down'
+export interface PriceChangeFilter {
+  direction: PriceChangeDirection
+  thresholdRate: number
+}
+export const DEFAULT_PRICE_CHANGE_FILTER: PriceChangeFilter = { direction: 'any', thresholdRate: 1 }
 
-export function shouldUpdateEbayPrice(currentPrice: number | null | undefined, recalculated: number): boolean {
+export function normalizePriceChangeFilter(input: {
+  price_change_direction?: unknown
+  price_change_threshold_rate?: unknown
+} | null | undefined): PriceChangeFilter {
+  const direction = input?.price_change_direction
+  const rate = input?.price_change_threshold_rate
+  const parsedRate = typeof rate === 'string' ? Number(rate) : rate
+  return {
+    direction: direction === 'up' || direction === 'down' ? direction : 'any',
+    thresholdRate: typeof parsedRate === 'number' && Number.isFinite(parsedRate) && parsedRate >= 0
+      ? parsedRate
+      : DEFAULT_PRICE_CHANGE_FILTER.thresholdRate,
+  }
+}
+
+// ユーザー要望: 「出品した時点の為替の変動の差も検知して再計算して価格に
+// 反映する」。再計算した価格と現在のeBay価格の差が検知差分率以上で、
+// 差分検知タイプに合う方向のときだけ更新する。
+export function shouldUpdateEbayPrice(
+  currentPrice: number | null | undefined,
+  recalculated: number,
+  filter: PriceChangeFilter = DEFAULT_PRICE_CHANGE_FILTER,
+): boolean {
   if (typeof currentPrice !== 'number' || !Number.isFinite(currentPrice) || currentPrice <= 0) return true
-  const threshold = Math.max(PRICE_CHANGE_THRESHOLD_MIN_USD, currentPrice * PRICE_CHANGE_THRESHOLD_RATE)
-  return Math.abs(recalculated - currentPrice) > threshold
+  const diffRate = (recalculated - currentPrice) / currentPrice * 100
+  if (filter.direction === 'up' && diffRate <= 0) return false
+  if (filter.direction === 'down' && diffRate >= 0) return false
+  if (diffRate === 0) return false
+  return Math.abs(diffRate) >= filter.thresholdRate
+}
+
+// 為替変動分だけを既存のeBay価格に反映する(出品時レート/現在レート倍)。
+// 価格一括編集などで手動調整した価格も、その調整を維持したまま為替分だけ
+// 動かせる。セント単位に丸める。
+export function scalePriceByExchangeRate(currentPrice: number, pricingJpyPerUsd: number, currentJpyPerUsd: number): number {
+  return Math.round(currentPrice * pricingJpyPerUsd / currentJpyPerUsd * 100) / 100
 }
 
 // calculateAutomaticEbayPriceのsettingパラメータ(AutoPricingSetting)は
@@ -62,6 +98,8 @@ export interface SupplierCheckOptions {
   // この時間(ms)を超えたら残りは次回に回す(cronの実行時間上限対策)。
   // 未チェックが古い順に処理するため、次回は残りから続きが確認される。
   timeBudgetMs?: number
+  // 価格更新の絞り込み(差分検知タイプ・検知差分率)
+  priceChangeFilter?: PriceChangeFilter
 }
 
 export async function checkSupplierListings(
@@ -101,7 +139,7 @@ export async function checkSupplierListings(
   const productIds = Array.from(new Set(targets.map(listing => listing.product_id)))
   const { data: products, error: productsError } = await db
     .from('products')
-    .select('id, source_url, purchase_price_jpy, ebay_price, extraction_id')
+    .select('id, source_url, purchase_price_jpy, ebay_price, pricing_jpy_per_usd, extraction_id')
     .eq('user_id', userId)
     .in('id', productIds)
 
@@ -163,6 +201,9 @@ export async function checkSupplierListings(
     let newPurchasePriceJpy: number | undefined
     let newEbayPrice: number | undefined
     let priceIncreased = false
+    // 為替レートの基準だけを記録する(価格は変えない)場合に使う
+    let baselineJpyPerUsd: number | undefined
+    const priceChangeFilter = options.priceChangeFilter ?? DEFAULT_PRICE_CHANGE_FILTER
 
     if (sourceUrl && findScraper(sourceUrl)) {
       try {
@@ -174,19 +215,42 @@ export async function checkSupplierListings(
         } else {
           outcome = 'available'
 
-          // 現在の仕入価格(取得できなければ前回記録した価格)と現在の為替
-          // レートでeBay価格を再計算する。仕入価格の変動だけでなく、出品時点
-          // からの為替変動も差分として検知される。
+          // 現在の仕入価格(取得できなければ前回記録した価格)を基に
+          // eBay価格を見直す。
+          //  - 仕入価格が変わった / 価格未設定 / 出品時レート未記録 →
+          //    現在の仕入価格 × 現在の為替レートで計算式から再計算
+          //  - 仕入価格が同じで出品時レートあり → 為替変動分だけ既存価格を
+          //    スケール(手動調整した価格を維持)
+          //  - 出品時レート未記録で価格あり・仕入価格同じ → 今回のレートを
+          //    基準として記録するだけ(既存148件の初回チェック用。価格は変えない)
           const purchasePriceJpy = typeof scraped?.price === 'number' && scraped.price > 0
             ? scraped.price
             : product?.purchase_price_jpy ?? null
           if (jpyPerUsd !== null && product && purchasePriceJpy !== null) {
-            const bulkSettingId = product.extraction_id
-              ? bulkSettingIdByExtractionId.get(product.extraction_id)
+            const currentEbayPrice = typeof product.ebay_price === 'number' && product.ebay_price > 0
+              ? product.ebay_price
               : null
-            const setting = bulkSettingId ? bulkSettingMap.get(bulkSettingId) : null
-            const recalculated = calculateAutomaticEbayPrice(purchasePriceJpy, jpyPerUsd, setting)
-            if (recalculated !== null && shouldUpdateEbayPrice(product.ebay_price, recalculated)) {
+            const pricingRate = typeof product.pricing_jpy_per_usd === 'number' && product.pricing_jpy_per_usd > 0
+              ? product.pricing_jpy_per_usd
+              : null
+            const purchasePriceChanged = typeof product.purchase_price_jpy === 'number'
+              ? Math.abs(purchasePriceJpy - product.purchase_price_jpy) >= 1
+              : true
+
+            let recalculated: number | null = null
+            if (purchasePriceChanged || currentEbayPrice === null) {
+              const bulkSettingId = product.extraction_id
+                ? bulkSettingIdByExtractionId.get(product.extraction_id)
+                : null
+              const setting = bulkSettingId ? bulkSettingMap.get(bulkSettingId) : null
+              recalculated = calculateAutomaticEbayPrice(purchasePriceJpy, jpyPerUsd, setting)
+            } else if (pricingRate !== null) {
+              recalculated = scalePriceByExchangeRate(currentEbayPrice, pricingRate, jpyPerUsd)
+            } else {
+              baselineJpyPerUsd = jpyPerUsd
+            }
+
+            if (recalculated !== null && shouldUpdateEbayPrice(currentEbayPrice, recalculated, priceChangeFilter)) {
               newPurchasePriceJpy = purchasePriceJpy
               newEbayPrice = recalculated
               if (
@@ -226,7 +290,8 @@ export async function checkSupplierListings(
       try {
         const { error: productUpdateError } = await db
           .from('products')
-          .update({ purchase_price_jpy: newPurchasePriceJpy, ebay_price: newEbayPrice })
+          // 更新後の価格は現在のレートで計算した値なので、基準レートも更新する
+          .update({ purchase_price_jpy: newPurchasePriceJpy, ebay_price: newEbayPrice, pricing_jpy_per_usd: jpyPerUsd })
           .eq('user_id', userId)
           .eq('id', listing.product_id)
         if (productUpdateError) throw new Error(productUpdateError.message)
@@ -235,6 +300,16 @@ export async function checkSupplierListings(
       } catch {
         // 価格更新の失敗は売り切れチェック(available/unavailable判定)の
         // 成否とは独立して扱い、failedとしては数えない。
+      }
+    } else if (baselineJpyPerUsd !== undefined) {
+      try {
+        await db
+          .from('products')
+          .update({ pricing_jpy_per_usd: baselineJpyPerUsd })
+          .eq('user_id', userId)
+          .eq('id', listing.product_id)
+      } catch {
+        // 基準レートの記録失敗は次回のチェックで再試行される
       }
     }
   }

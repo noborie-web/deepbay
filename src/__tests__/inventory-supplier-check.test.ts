@@ -23,7 +23,7 @@ vi.mock('@/lib/scrapers', () => ({
 }))
 vi.mock('@/lib/exchange-rate', () => ({ fetchUsdJpyRate: mocks.fetchUsdJpyRate }))
 
-import { checkSupplierListings, shouldUpdateEbayPrice } from '@/lib/inventory-supplier-check'
+import { checkSupplierListings, normalizePriceChangeFilter, scalePriceByExchangeRate, shouldUpdateEbayPrice } from '@/lib/inventory-supplier-check'
 import { calculateAutomaticEbayPrice } from '@/lib/extraction-run'
 
 interface ProductFixture {
@@ -31,6 +31,7 @@ interface ProductFixture {
   source_url: string | null
   purchase_price_jpy?: number | null
   ebay_price?: number | null
+  pricing_jpy_per_usd?: number | null
   extraction_id?: string | null
 }
 
@@ -308,8 +309,9 @@ describe('checkSupplierListings', () => {
           id: 'product-1',
           source_url: 'https://jp.mercari.com/item/1',
           purchase_price_jpy: 5000,
-          // 出品時点と同じ為替(150円)で計算した価格が登録済み
+          // 出品時点と同じ為替(150円)で計算した価格と、そのレートが登録済み
           ebay_price: calculateAutomaticEbayPrice(5000, 150, null),
+          pricing_jpy_per_usd: 150,
         }],
       })
       mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 5000 }])
@@ -321,17 +323,40 @@ describe('checkSupplierListings', () => {
       expect(updateCalls(calls, 'products')).toHaveLength(0)
     })
 
-    // ユーザー要望: 「出品した時点の為替の変動の差も検知して再計算して
-    // 価格に反映する」。仕入価格が同じでも為替が動いていれば再計算する。
-    it('仕入れ元価格が同じでも為替が変動していれば、ebay_priceを再計算して更新する', async () => {
-      const listedAt150 = calculateAutomaticEbayPrice(5000, 150, null)
+    it('出品時レートが未記録なら、価格は変えずに今回のレートを基準として記録する(既存商品の初回チェック)', async () => {
       const { db, calls } = makeDatabase({
         listings: [{ id: 'listing-1', product_id: 'product-1' }],
         products: [{
           id: 'product-1',
           source_url: 'https://jp.mercari.com/item/1',
           purchase_price_jpy: 5000,
-          ebay_price: listedAt150,
+          // 価格一括編集で手動設定した価格(計算式とは一致しない)
+          ebay_price: 123.45,
+          pricing_jpy_per_usd: null,
+        }],
+      })
+      mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 5000 }])
+
+      const result = await checkSupplierListings(db as never, 'user-1')
+
+      expect(result.price_recalculated).toBe(0)
+      const productUpdates = updateCalls(calls, 'products')
+      expect(productUpdates).toHaveLength(1)
+      expect(productUpdates[0].payload).toEqual({ pricing_jpy_per_usd: 150 })
+    })
+
+    // ユーザー要望: 「出品した時点の為替の変動の差も検知して再計算して
+    // 価格に反映する」。仕入価格が同じでも為替が動いていれば再計算する。
+    it('仕入れ元価格が同じでも為替が変動していれば、出品時レートとの比率で既存価格をスケールして更新する', async () => {
+      const { db, calls } = makeDatabase({
+        listings: [{ id: 'listing-1', product_id: 'product-1' }],
+        products: [{
+          id: 'product-1',
+          source_url: 'https://jp.mercari.com/item/1',
+          purchase_price_jpy: 5000,
+          // 手動調整済みの価格でも、その調整を維持したまま為替分だけ動く
+          ebay_price: 100,
+          pricing_jpy_per_usd: 150,
         }],
       })
       mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 5000 }])
@@ -343,9 +368,34 @@ describe('checkSupplierListings', () => {
       expect(result.price_recalculated).toBe(1)
       expect(result.price_increased).toBe(0)
       const productUpdate = updateCalls(calls, 'products')[0]
-      expect(productUpdate.payload?.purchase_price_jpy).toBe(5000)
-      expect(productUpdate.payload?.ebay_price).toBe(calculateAutomaticEbayPrice(5000, 135, null))
-      expect(productUpdate.payload?.ebay_price as number).toBeGreaterThan(listedAt150 as number)
+      expect(productUpdate.payload).toEqual({
+        purchase_price_jpy: 5000,
+        ebay_price: 111.11,
+        pricing_jpy_per_usd: 135,
+      })
+    })
+
+    it('差分検知タイプが「プラスのみ」なら、円安による値下がりは反映しない', async () => {
+      const { db, calls } = makeDatabase({
+        listings: [{ id: 'listing-1', product_id: 'product-1' }],
+        products: [{
+          id: 'product-1',
+          source_url: 'https://jp.mercari.com/item/1',
+          purchase_price_jpy: 5000,
+          ebay_price: 100,
+          pricing_jpy_per_usd: 150,
+        }],
+      })
+      mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 5000 }])
+      // 円安(150円→165円) → 価格は下がる方向
+      mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 165, date: '2026-08-27' })
+
+      const result = await checkSupplierListings(db as never, 'user-1', 500, {
+        priceChangeFilter: { direction: 'up', thresholdRate: 1 },
+      })
+
+      expect(result.price_recalculated).toBe(0)
+      expect(updateCalls(calls, 'products')).toHaveLength(0)
     })
 
     it('仕入価格が取得できない場合は前回記録した仕入価格と現在の為替で再計算する', async () => {
@@ -363,8 +413,9 @@ describe('checkSupplierListings', () => {
 
       const result = await checkSupplierListings(db as never, 'user-1')
 
-      expect(result.price_recalculated).toBe(1)
-      expect(updateCalls(calls, 'products')[0].payload?.ebay_price).toBe(calculateAutomaticEbayPrice(5000, 160, null))
+      // 出品時レート未記録・仕入価格同じ → 基準レートの記録のみ
+      expect(result.price_recalculated).toBe(0)
+      expect(updateCalls(calls, 'products')[0].payload).toEqual({ pricing_jpy_per_usd: 160 })
     })
 
     it('抽出時の一括編集設定(利益率等)があれば、その設定を使って再計算する', async () => {
@@ -435,11 +486,39 @@ describe('shouldUpdateEbayPrice', () => {
     expect(shouldUpdateEbayPrice(undefined, 100)).toBe(true)
   })
 
-  it('差が1%または0.5ドルのうち大きい方を超えたときだけ更新する(為替の微小な揺れで毎日改定しない)', () => {
+  it('検知差分率(既定1%)以上の変動のときだけ更新する(為替の微小な揺れで毎日改定しない)', () => {
     expect(shouldUpdateEbayPrice(200, 201.5)).toBe(false)
-    expect(shouldUpdateEbayPrice(200, 202.5)).toBe(true)
+    expect(shouldUpdateEbayPrice(200, 202)).toBe(true)
     expect(shouldUpdateEbayPrice(200, 197.5)).toBe(true)
-    expect(shouldUpdateEbayPrice(20, 20.4)).toBe(false)
-    expect(shouldUpdateEbayPrice(20, 20.6)).toBe(true)
+    expect(shouldUpdateEbayPrice(200, 200)).toBe(false)
+  })
+
+  it('差分検知タイプで方向を絞り込める(公式ツールの絞り込み設定相当)', () => {
+    // 現在$100 → $110(+10%)は検知、$90(−10%)と$105(+5%)は検知しない(率10%・プラスのみ)
+    const up10 = { direction: 'up' as const, thresholdRate: 10 }
+    expect(shouldUpdateEbayPrice(100, 110, up10)).toBe(true)
+    expect(shouldUpdateEbayPrice(100, 90, up10)).toBe(false)
+    expect(shouldUpdateEbayPrice(100, 105, up10)).toBe(false)
+    const down5 = { direction: 'down' as const, thresholdRate: 5 }
+    expect(shouldUpdateEbayPrice(100, 94, down5)).toBe(true)
+    expect(shouldUpdateEbayPrice(100, 110, down5)).toBe(false)
+  })
+})
+
+describe('scalePriceByExchangeRate', () => {
+  it('出品時レート/現在レートの比率で価格を動かし、セント単位に丸める', () => {
+    expect(scalePriceByExchangeRate(100, 150, 135)).toBe(111.11)
+    expect(scalePriceByExchangeRate(100, 150, 165)).toBe(90.91)
+    expect(scalePriceByExchangeRate(100, 150, 150)).toBe(100)
+  })
+})
+
+describe('normalizePriceChangeFilter', () => {
+  it('不正・未設定の値は既定(指定なし・1%)にする', () => {
+    expect(normalizePriceChangeFilter(null)).toEqual({ direction: 'any', thresholdRate: 1 })
+    expect(normalizePriceChangeFilter({ price_change_direction: 'sideways', price_change_threshold_rate: -3 }))
+      .toEqual({ direction: 'any', thresholdRate: 1 })
+    expect(normalizePriceChangeFilter({ price_change_direction: 'up', price_change_threshold_rate: '10' }))
+      .toEqual({ direction: 'up', thresholdRate: 10 })
   })
 })

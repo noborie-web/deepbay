@@ -472,6 +472,8 @@ export async function runScrape(
         original_condition: scraped.condition,
         ebay_title: ebayTitle,
         ebay_price: ebayPrice,
+        // 為替変動の検知用に、価格計算に使った為替レートを保存する
+        pricing_jpy_per_usd: ebayPrice !== null ? jpyPerUsd : null,
         ebay_description: activeTemplate
           ? applyTemplate(activeTemplate, {
               title: ebayTitle,

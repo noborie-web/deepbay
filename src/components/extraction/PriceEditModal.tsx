@@ -47,7 +47,9 @@ async function requestExchangeRate(): Promise<{ rate: number; date: string }> {
 interface Props {
   products: Product[]
   getPurchaseJpy: (p: Product) => number | null
-  onApply: (getPrice: (p: Product) => number | null, scope: 'page' | 'all') => void
+  // pricingJpyPerUsd: 利益率/段階利益モードで価格計算に使った為替レート
+  // (固定価格/掛け率モードは為替を使わないので null)
+  onApply: (getPrice: (p: Product) => number | null, scope: 'page' | 'all', pricingJpyPerUsd: number | null) => void
   onClose: () => void
 }
 
@@ -666,7 +668,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
               className="border rounded px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
             <button
               disabled={applyDisabled}
-              onClick={() => { onApply(getPriceForProduct, scope); onClose() }}
+              onClick={() => { onApply(getPriceForProduct, scope, mode === 'profit' || mode === 'tiered' ? parseFloat(jpyPerUsd) : null); onClose() }}
               className="bg-blue-500 hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded px-4 py-2 text-sm font-medium">
               適用 ({needsPurchasePrice ? applicableCount : targetProducts.length}件)
             </button>
