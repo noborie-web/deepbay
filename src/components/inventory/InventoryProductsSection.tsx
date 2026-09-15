@@ -4,13 +4,15 @@ import { useState } from 'react'
 import type { Product, InventoryActiveListing } from '@/types/database'
 import InventoryPanel from './InventoryPanel'
 
-export type FilterKey = 'total' | 'draft' | 'listed' | 'sold'
+export type FilterKey = 'total' | 'draft' | 'listed' | 'sold' | 'delisted'
 
 const FILTERS: { key: FilterKey; label: string; color: string; match?: (p: Product) => boolean }[] = [
   { key: 'total', label: '総商品数', color: 'text-gray-800' },
   { key: 'draft', label: '下書き', color: 'text-gray-500', match: (p) => p.listing_status === 'draft' },
   { key: 'listed', label: '出品中', color: 'text-blue-600', match: (p) => p.listing_status === 'listed' },
   { key: 'sold', label: '売却済み', color: 'text-green-600', match: (p) => p.listing_status === 'sold' },
+  // ユーザー要望: 取り下げたリストも集計カードから確認したい
+  { key: 'delisted', label: '取下げ', color: 'text-red-600', match: (p) => p.listing_status === 'delisted' },
 ]
 
 // ユーザー要望: 「総商品数・下書き・出品中・売却済み」の集計カードをクリック
@@ -99,6 +101,7 @@ export default function InventoryProductsSection({ items, listings, listingCount
           draft: prev.draft - removed.filter((p) => p.listing_status === 'draft').length,
           listed: prev.listed - removed.filter((p) => p.listing_status === 'listed').length,
           sold: prev.sold - removed.filter((p) => p.listing_status === 'sold').length,
+          delisted: prev.delisted - removed.filter((p) => p.listing_status === 'delisted').length,
         }))
       }
       setSelected(new Set())
@@ -118,7 +121,7 @@ export default function InventoryProductsSection({ items, listings, listingCount
   return (
     <>
       {/* 集計 */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         {FILTERS.map(({ key, label, color }) => (
           <button
             key={key}

@@ -25,7 +25,7 @@ export default async function InventoryPage() {
     if (status) query = query.eq('listing_status', status)
     return query
   }
-  const [productsResult, listingsResult, settingsResult, totalCount, draftCount, listedCount, soldCount] = await Promise.all([
+  const [productsResult, listingsResult, settingsResult, totalCount, draftCount, listedCount, soldCount, delistedCount] = await Promise.all([
     supabase.from('products').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(100),
     db.from('inventory_active_listings').select('*', { count: 'exact' }).eq('user_id', user.id).order('fetched_at', { ascending: false }).limit(50),
     db.from('inventory_settings').select('ebay_token').eq('user_id', user.id).maybeSingle(),
@@ -33,6 +33,7 @@ export default async function InventoryPage() {
     countByStatus('draft'),
     countByStatus('listed'),
     countByStatus('sold'),
+    countByStatus('delisted'),
   ])
 
   const items = (productsResult.data ?? []) as Product[]
@@ -58,6 +59,7 @@ export default async function InventoryPage() {
           draft: draftCount.count ?? 0,
           listed: listedCount.count ?? 0,
           sold: soldCount.count ?? 0,
+          delisted: delistedCount.count ?? 0,
         }}
         hasToken={hasToken}
       />

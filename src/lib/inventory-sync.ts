@@ -160,6 +160,7 @@ async function storeInventoryListings(
     product_id: row.product_id,
     ebay_item_id: row.ebay_item_id,
     quantity: row.quantity,
+    quantity_sold: row.quantity_sold,
   })))
 
   return { total: uniqueListings.length, matched }
@@ -169,6 +170,15 @@ export interface ProductListingStateInput {
   product_id: string
   ebay_item_id: string
   quantity: number | null
+  quantity_sold?: number | null
+}
+
+// ユーザー要望: 集計カードに取り下げたリストを表示したい。
+// 残数>0 → 出品中 / 残数0で販売あり → 売却済み / 残数0で販売なし → 取下げ
+// (仕入先売り切れの即取り下げでeBayの数量を0にした商品は「取下げ」)。
+export function resolveProductListingStatus(quantity: number | null | undefined, quantitySold: number | null | undefined): 'listed' | 'sold' | 'delisted' {
+  if ((quantity ?? 0) > 0) return 'listed'
+  return (quantitySold ?? 0) > 0 ? 'sold' : 'delisted'
 }
 
 // 実データで確認した不具合: 在庫管理画面の「出品中」「売却済み」の集計は
@@ -194,13 +204,12 @@ export async function applyListingStateToProducts(
         .from('products')
         .update({
           ebay_item_id: entry.ebay_item_id,
-          listing_status: (entry.quantity ?? 0) > 0 ? 'listed' : 'sold',
+          listing_status: resolveProductListingStatus(entry.quantity, entry.quantity_sold),
           listed_at: now,
           updated_at: now,
         })
         .eq('user_id', userId)
         .eq('id', entry.product_id)
-        .in('listing_status', ['draft', 'listing', 'listed', 'sold'])
       if (error) throw new Error(`Product listing state update failed: ${error.message}`)
     }
   }))
@@ -252,12 +261,23 @@ export async function markListingsDelisted(db: SupabaseClient, userId: string, i
   if (itemIds.length === 0) return
   const now = new Date().toISOString()
   for (let index = 0; index < itemIds.length; index += DB_CHUNK_SIZE) {
-    const { error } = await db
+    const chunk = itemIds.slice(index, index + DB_CHUNK_SIZE)
+    const { data: rows, error } = await db
       .from('inventory_active_listings')
       .update({ delisted_at: now, updated_at: now })
       .eq('user_id', userId)
-      .in('ebay_item_id', itemIds.slice(index, index + DB_CHUNK_SIZE))
+      .in('ebay_item_id', chunk)
+      .select('product_id')
     if (error) throw new Error(`Delisted flag update failed: ${error.message}`)
+    // 取り下げた出品に紐付く商品は集計カードの「取下げ」に表示する
+    const productIds = (rows ?? []).map(row => row.product_id as string | null).filter((id): id is string => Boolean(id))
+    if (productIds.length === 0) continue
+    const { error: productError } = await db
+      .from('products')
+      .update({ listing_status: 'delisted', updated_at: now })
+      .eq('user_id', userId)
+      .in('id', productIds)
+    if (productError) throw new Error(`Product delisted state update failed: ${productError.message}`)
   }
 }
 
