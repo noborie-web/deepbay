@@ -28,6 +28,22 @@ function kakehashiLabel(index: number): { label: string; productId: string } {
 }
 
 // products テーブルのモック: id で問い合わせられた分だけ存在するものとして返す。
+// products.update(...) の呼び出し(listing_status / ebay_item_id の更新)を記録する
+const mockProductUpdate = vi.fn()
+const productUpdateMock = {
+  update: (payload: Record<string, unknown>) => {
+    const chain = {
+      eq: (column: string, value: string) => {
+        if (column === 'id') mockProductUpdate({ id: value, ...payload })
+        return chain
+      },
+      in: async () => ({ error: null }),
+      neq: async () => ({ error: null }),
+    }
+    return chain
+  },
+}
+
 function productsTableFor(productIds: string[]) {
   return {
     select: vi.fn().mockReturnThis(),
@@ -36,6 +52,7 @@ function productsTableFor(productIds: string[]) {
       data: column === 'id' ? values.filter(id => productIds.includes(id)).map(id => ({ id })) : [],
       error: null,
     })),
+    ...productUpdateMock,
   }
 }
 
@@ -50,6 +67,7 @@ describe('syncInventoryListings', () => {
     mockFetchAllActiveListings.mockReset()
     mockUpsert.mockReset().mockResolvedValue({ error: null })
     mockDeleteIs.mockReset().mockResolvedValue({ error: null })
+    mockProductUpdate.mockReset()
   })
 
   it('matches products and stores the refreshed eBay snapshot', async () => {
@@ -72,6 +90,7 @@ describe('syncInventoryListings', () => {
       from: vi.fn((table: string) => {
         if (table === 'products') {
           return {
+            ...productUpdateMock,
             select: vi.fn().mockReturnThis(),
             eq: vi.fn().mockReturnThis(),
             in: vi.fn(async () => ({
@@ -103,6 +122,11 @@ describe('syncInventoryListings', () => {
     expect(mockUpsert.mock.calls.flat(2)).not.toContainEqual(expect.objectContaining({ ebay_item_id: 'item-2' }))
     // 以前の仕様で取り込まれた紐付かない行も掃除する
     expect(mockDeleteIs).toHaveBeenCalledWith('product_id', null)
+    // 実データで確認した不具合: 紐付いた商品の listing_status が draft の
+    // ままで「出品中」の集計が0のままだった。紐付いた商品を出品中にする。
+    expect(mockProductUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'product-1', ebay_item_id: 'item-1', listing_status: 'listed',
+    }))
   })
 
   it('matches current Kakehashi labels by product UUID', async () => {
@@ -114,6 +138,7 @@ describe('syncInventoryListings', () => {
     const db = {
       from: vi.fn((table: string) => {
         if (table === 'products') return {
+          ...productUpdateMock,
           select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(),
           in: vi.fn(async (column: string) => ({ data: column === 'id' ? [{ id: productId }] : [], error: null })),
         }
@@ -136,6 +161,7 @@ describe('syncInventoryListings', () => {
     const db = {
       from: vi.fn((table: string) => {
         if (table === 'products') return {
+          ...productUpdateMock,
           select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(),
           in: vi.fn(async (column: string) => ({ data: column === 'id' ? [{ id: productId }] : [], error: null })),
         }
@@ -156,6 +182,7 @@ describe('syncInventoryListings', () => {
     const db = {
       from: vi.fn((table: string) => {
         if (table === 'products') return {
+          ...productUpdateMock,
           select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(),
           in: vi.fn(async (column: string) => ({
             data: column === 'source_item_id'
@@ -185,6 +212,7 @@ describe('syncInventoryListings', () => {
     const db = {
       from: vi.fn((table: string) => {
         if (table === 'products') return {
+          ...productUpdateMock,
           select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(),
           in: vi.fn(async (column: string) => ({
             data: column === 'source_item_id'

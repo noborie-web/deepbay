@@ -156,7 +156,94 @@ async function storeInventoryListings(
     }
   }))
 
+  await applyListingStateToProducts(db, userId, rows.map(row => ({
+    product_id: row.product_id,
+    ebay_item_id: row.ebay_item_id,
+    quantity: row.quantity,
+  })))
+
   return { total: uniqueListings.length, matched }
+}
+
+export interface ProductListingStateInput {
+  product_id: string
+  ebay_item_id: string
+  quantity: number | null
+}
+
+// 実データで確認した不具合: 在庫管理画面の「出品中」「売却済み」の集計は
+// products.listing_status を数えているが、CSV出力→eBayアップロードで出品
+// した商品は products 側が draft のまま更新されず、148件をeBayから
+// 取り込んでも「出品中 0」と表示されていた。eBayの出品と商品が紐付いた
+// 時点で products の listing_status / ebay_item_id を更新する。
+export async function applyListingStateToProducts(
+  db: SupabaseClient,
+  userId: string,
+  listings: ProductListingStateInput[],
+): Promise<void> {
+  const now = new Date().toISOString()
+  const byProduct = new Map<string, ProductListingStateInput>()
+  for (const listing of listings) byProduct.set(listing.product_id, listing)
+  const entries = Array.from(byProduct.values())
+  const workerCount = Math.min(5, entries.length)
+  let next = 0
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (next < entries.length) {
+      const entry = entries[next++]
+      const { error } = await db
+        .from('products')
+        .update({
+          ebay_item_id: entry.ebay_item_id,
+          listing_status: (entry.quantity ?? 0) > 0 ? 'listed' : 'sold',
+          listed_at: now,
+          updated_at: now,
+        })
+        .eq('user_id', userId)
+        .eq('id', entry.product_id)
+        .in('listing_status', ['draft', 'listing', 'listed', 'sold'])
+      if (error) throw new Error(`Product listing state update failed: ${error.message}`)
+    }
+  }))
+}
+
+// 終了した出品に紐付く商品は、売り切れ(残数0で販売数あり)なら「売却済み」、
+// それ以外(取り下げ・期限切れ)は「取下げ」にする。
+async function markProductsForEndedListings(
+  db: SupabaseClient,
+  userId: string,
+  itemIds: string[],
+): Promise<void> {
+  const { data, error } = await db
+    .from('inventory_active_listings')
+    .select('product_id, quantity, quantity_sold')
+    .eq('user_id', userId)
+    .in('ebay_item_id', itemIds)
+    .not('product_id', 'is', null)
+  if (error) throw new Error(`Ended listing lookup failed: ${error.message}`)
+  const now = new Date().toISOString()
+  const soldIds: string[] = []
+  const delistedIds: string[] = []
+  for (const row of data ?? []) {
+    const sold = (row.quantity ?? 0) <= 0 && (row.quantity_sold ?? 0) > 0
+    ;(sold ? soldIds : delistedIds).push(row.product_id as string)
+  }
+  if (soldIds.length > 0) {
+    const { error: soldError } = await db
+      .from('products')
+      .update({ listing_status: 'sold', sold_at: now, updated_at: now })
+      .eq('user_id', userId)
+      .in('id', soldIds)
+    if (soldError) throw new Error(`Product sold state update failed: ${soldError.message}`)
+  }
+  if (delistedIds.length > 0) {
+    const { error: delistError } = await db
+      .from('products')
+      .update({ listing_status: 'delisted', updated_at: now })
+      .eq('user_id', userId)
+      .in('id', delistedIds)
+      .neq('listing_status', 'sold')
+    if (delistError) throw new Error(`Product delisted state update failed: ${delistError.message}`)
+  }
 }
 
 // 以前の仕様では紐付かない出品も保存していたため、他ツールの出品が
@@ -303,6 +390,7 @@ async function removeEndedListings(db: SupabaseClient, userId: string, itemIds: 
   if (itemIds.length === 0) return
   for (let index = 0; index < itemIds.length; index += DB_CHUNK_SIZE) {
     const chunk = itemIds.slice(index, index + DB_CHUNK_SIZE)
+    await markProductsForEndedListings(db, userId, chunk)
     const { error } = await db
       .from('inventory_active_listings')
       .delete()
