@@ -47,6 +47,7 @@ vi.mock('@supabase/supabase-js', () => ({
 
 vi.mock('@/lib/inventory-sync', () => ({
   syncKnownInventoryListings: mockSyncInventoryListings,
+  markListingsDelisted: vi.fn(async () => {}),
 }))
 
 vi.mock('@/lib/inventory-supplier-check', () => ({
@@ -113,7 +114,7 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(mockResolveAccessToken).toHaveBeenCalledOnce()
     // active出品が数十ページあるため、cronでは取得タイムアウトを引き上げて渡す
     expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 240_000 })
-    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 50)
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 150_000 })
     expect(mockSyncInventoryListings.mock.invocationCallOrder[0]).toBeLessThan(
       mockCheckSupplierListings.mock.invocationCallOrder[0],
     )
@@ -137,7 +138,7 @@ describe('GET /api/cron/inventory-auto', () => {
 
     expect(res.status).toBe(200)
     expect(json.results[0].sync).toEqual({ error: 'sync failed' })
-    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 50)
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 150_000 })
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       run_type: 'sync',
       status: 'failed',
@@ -192,7 +193,7 @@ describe('GET /api/cron/inventory-auto', () => {
 
     expect(json).toMatchObject({ ok: true, processed: 1 })
     expect(mockResolveAccessToken).not.toHaveBeenCalled()
-    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 50)
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 150_000 })
   })
 
   it('自動取り下げはKakehashi商品に紐付く出品だけを対象にする(他ツールの出品を取り下げない)', async () => {
@@ -224,6 +225,24 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(res.status).toBe(200)
     expect(mockListingQueryCalls).not.toContainEqual(['eq', 'quantity', 0])
     expect(mockRunInsert).not.toHaveBeenCalledWith(expect.objectContaining({ run_type: 'auto_delist' }))
+  })
+
+  it('売り切れ即取り下げがONなら経過日数で絞らず、取り下げ済みを除いて自動取り下げする', async () => {
+    // ユーザー要望: 「仕入先が売り切れたら即取り下げ(N日経過を待たない)」
+    mockSettings[0].auto_delist = true
+    mockSettings[0].delist_by_age_enabled = false
+    mockSettings[0].delist_on_sold_out = true
+    const { GET } = await import('@/app/api/cron/inventory-auto/route')
+    const req = new NextRequest('http://localhost/api/cron/inventory-auto', {
+      headers: { authorization: 'Bearer cron-secret' },
+    })
+    const res = await GET(req)
+
+    expect(res.status).toBe(200)
+    expect(mockListingQueryCalls).toContainEqual(['eq', 'quantity', 0])
+    expect(mockListingQueryCalls).toContainEqual(['is', 'delisted_at', null])
+    expect(mockListingQueryCalls.some(call => call[0] === 'lte' && call[1] === 'start_time')).toBe(false)
+    expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({ run_type: 'auto_delist' }))
   })
 
   it('is configured for one daily invocation at midnight UTC', () => {

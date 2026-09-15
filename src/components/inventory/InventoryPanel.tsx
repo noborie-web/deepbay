@@ -13,7 +13,7 @@ interface InventoryRun {
 
 interface Settings {
   has_token: boolean; sync_enabled: boolean; ebay_auto_sync: boolean
-  days_until_delist: number; delist_by_age_enabled: boolean; daily_run_count: number; ebay_token_expires_at: string | null
+  days_until_delist: number; delist_by_age_enabled: boolean; delist_on_sold_out: boolean; daily_run_count: number; ebay_token_expires_at: string | null
   auto_delist: boolean; auto_revise_price: boolean; auto_stack: boolean
   schedule_time: string
   payment_profile_name: string; return_profile_name: string; shipping_profile_name: string
@@ -206,7 +206,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // 設定
   const [settings, setSettings] = useState<Settings>({
     has_token: initialHasToken, sync_enabled: false, ebay_auto_sync: false,
-    days_until_delist: 29, delist_by_age_enabled: true, daily_run_count: 1, ebay_token_expires_at: null,
+    days_until_delist: 29, delist_by_age_enabled: true, delist_on_sold_out: false, daily_run_count: 1, ebay_token_expires_at: null,
     auto_delist: false, auto_revise_price: false, auto_stack: false,
     schedule_time: '09:00',
     payment_profile_name: '', return_profile_name: '', shipping_profile_name: '',
@@ -1006,11 +1006,13 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                   {summaryLoading ? '…' : actionSummary.delist === null ? '—' : `${actionSummary.delist}件`}
                 </p>
                 <p className="text-xs text-orange-500 mt-1">
-                  {settings.delist_by_age_enabled
+                  {settings.delist_on_sold_out
+                    ? '仕入先が売り切れた商品（即取り下げ）'
+                    : settings.delist_by_age_enabled
                     ? `売り切れ かつ ${settings.days_until_delist}日経過した商品`
                     : 'N日経過取り下げ OFF（取り下げは行いません）'}
                 </p>
-                <button onClick={handlePreviewDelist} disabled={summaryLoading || actionSummary.delist === 0 || !settings.delist_by_age_enabled}
+                <button onClick={handlePreviewDelist} disabled={summaryLoading || actionSummary.delist === 0 || !(settings.delist_on_sold_out || settings.delist_by_age_enabled)}
                   className="mt-3 w-full px-3 py-1.5 bg-orange-600 text-white text-xs rounded hover:bg-orange-700 disabled:opacity-40">
                   取り下げ実行
                 </button>
@@ -1242,19 +1244,32 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           </div>
           <hr />
           <div>
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">売り切れ即取り下げ</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              ONにすると、仕入先チェックで「売り切れ・削除」と判定された商品を、経過日数を待たずに取り下げ対象にします（eBayの数量を0にします）。
+              自動実行するには下の「取り下げを自動実行する」もONにしてください。
+            </p>
+            <div className="flex items-center gap-3">
+              <Toggle checked={settings.delist_on_sold_out} onChange={v => saveSetting({ delist_on_sold_out: v })} disabled={savingSettings} />
+              <span className="text-sm text-gray-700">仕入先が売り切れたら即取り下げる</span>
+            </div>
+          </div>
+          <hr />
+          <div className={settings.delist_on_sold_out ? 'opacity-50' : ''}>
             <h3 className="text-sm font-semibold text-gray-800 mb-1">N日経過取り下げ</h3>
             <p className="text-xs text-gray-500 mb-3">
               「仕入先が売り切れ（在庫0）」かつ「eBayの出品開始日時から指定日数が経過した」商品を取り下げ対象にします（出品開始日時が取得できない商品は対象外）。
               OFFにすると取り下げを行いません（手動・自動とも対象0件になります）。
+              {settings.delist_on_sold_out && '「売り切れ即取り下げ」がONの間はこの設定は使われません。'}
             </p>
             <div className="flex items-center gap-3 mb-3">
-              <Toggle checked={settings.delist_by_age_enabled} onChange={v => saveSetting({ delist_by_age_enabled: v })} disabled={savingSettings} />
+              <Toggle checked={settings.delist_by_age_enabled} onChange={v => saveSetting({ delist_by_age_enabled: v })} disabled={savingSettings || settings.delist_on_sold_out} />
               <span className="text-sm text-gray-700">N日経過取り下げを行う</span>
             </div>
             <div className={`flex items-center gap-3 ${settings.delist_by_age_enabled ? '' : 'opacity-50'}`}>
               <span className="text-xs text-gray-500">取り下げ対象の経過日数</span>
               <input type="number" value={settings.days_until_delist} min={1} max={365}
-                disabled={!settings.delist_by_age_enabled}
+                disabled={!settings.delist_by_age_enabled || settings.delist_on_sold_out}
                 onChange={e => setSettings(prev => ({ ...prev, days_until_delist: Number(e.target.value) }))}
                 onBlur={() => saveSetting({ days_until_delist: settings.days_until_delist })}
                 className="w-20 border rounded px-2 py-1 text-sm text-center disabled:bg-gray-100" />

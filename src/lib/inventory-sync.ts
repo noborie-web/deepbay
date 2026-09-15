@@ -246,6 +246,21 @@ async function markProductsForEndedListings(
   }
 }
 
+// 取り下げ(数量0へのRevise)を実行した出品に delisted_at を記録し、翌日以降の
+// 自動取り下げで同じ出品を繰り返し対象にしないようにする。
+export async function markListingsDelisted(db: SupabaseClient, userId: string, itemIds: string[]): Promise<void> {
+  if (itemIds.length === 0) return
+  const now = new Date().toISOString()
+  for (let index = 0; index < itemIds.length; index += DB_CHUNK_SIZE) {
+    const { error } = await db
+      .from('inventory_active_listings')
+      .update({ delisted_at: now, updated_at: now })
+      .eq('user_id', userId)
+      .in('ebay_item_id', itemIds.slice(index, index + DB_CHUNK_SIZE))
+    if (error) throw new Error(`Delisted flag update failed: ${error.message}`)
+  }
+}
+
 // 以前の仕様では紐付かない出品も保存していたため、他ツールの出品が
 // 在庫一覧に残っている。Kakehashi管理外の行を同期のたびに取り除く。
 export async function purgeUnmanagedListings(db: SupabaseClient, userId: string): Promise<void> {

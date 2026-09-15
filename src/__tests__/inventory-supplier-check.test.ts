@@ -154,6 +154,31 @@ describe('checkSupplierListings', () => {
     ])
   })
 
+  it('時間予算を超えたら残りの商品はチェックせず次回に回す', async () => {
+    // ユーザー要望: 売り切れ即取り下げ・価格再計算は必須。1日50件固定では
+    // 148件を一巡するのに3日かかるため、時間予算内で可能な限り処理する。
+    const { db, calls } = makeDatabase({
+      listings: [
+        { id: 'listing-1', product_id: 'product-1' },
+        { id: 'listing-2', product_id: 'product-2' },
+      ],
+      products: [
+        { id: 'product-1', source_url: 'https://jp.mercari.com/item/1' },
+        { id: 'product-2', source_url: 'https://jp.mercari.com/item/2' },
+      ],
+    })
+    mocks.scrapeUrl.mockImplementation(async () => {
+      vi.advanceTimersByTime(2_000)
+      return [{ availability: 'available' }]
+    })
+
+    const result = await checkSupplierListings(db as never, 'user-1', 500, { timeBudgetMs: 1_000 })
+
+    expect(result).toMatchObject({ total: 2, available: 1, skipped: 1 })
+    expect(mocks.scrapeUrl).toHaveBeenCalledTimes(1)
+    expect(updateCalls(calls)).toHaveLength(1)
+  })
+
   it('sets quantity to zero when the scraper reports sold out', async () => {
     const { db, calls } = makeDatabase({
       listings: [{ id: 'listing-sold', product_id: 'product-sold' }],

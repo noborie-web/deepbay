@@ -3,8 +3,9 @@ import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { endItem, reviseQuantityToZero } from '@/lib/ebay-actions'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
-import { getDelistCutoffIso, isDelistByAgeEnabled } from '@/lib/inventory-delist'
+import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
+import { markListingsDelisted } from '@/lib/inventory-sync'
 
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
@@ -19,28 +20,30 @@ export async function GET() {
   const db = admin()
   const { data: settings, error: settingsError } = await db
     .from('inventory_settings')
-    .select('days_until_delist, delist_by_age_enabled')
+    .select('days_until_delist, delist_by_age_enabled, delist_on_sold_out')
     .eq('user_id', user.id)
     .maybeSingle()
 
   if (settingsError) return NextResponse.json({ error: settingsError.message }, { status: 500 })
 
-  // 「N日経過取り下げ」がOFFのときは取り下げ対象なし
-  if (!isDelistByAgeEnabled(settings)) {
+  // 「N日経過取り下げ」も「売り切れ即取り下げ」もOFFのときは取り下げ対象なし
+  const eligibility = resolveDelistEligibility(settings)
+  if (!eligibility.enabled) {
     return NextResponse.json({ items: [], count: 0, disabled: true })
   }
 
-  const cutoff = getDelistCutoffIso(settings?.days_until_delist)
-  const { data: listings, error: listingsError } = await db
+  let query = db
     .from('inventory_active_listings')
     .select('ebay_item_id, title, current_price, quantity, product_id, start_time')
     .eq('user_id', user.id)
     .eq('quantity', 0)
-    .lte('start_time', cutoff)
+    .is('delisted_at', null)
+  if (eligibility.cutoffIso) query = query.lte('start_time', eligibility.cutoffIso)
+  const { data: listings, error: listingsError } = await query
 
   if (listingsError) return NextResponse.json({ error: listingsError.message }, { status: 500 })
 
-  return NextResponse.json({ items: listings ?? [], count: (listings ?? []).length })
+  return NextResponse.json({ items: listings ?? [], count: (listings ?? []).length, immediate: eligibility.immediate })
 }
 
 // POST: 取り下げ実行
@@ -66,22 +69,24 @@ export async function POST(req: NextRequest) {
 
   const { data: settings, error: settingsError } = await db
     .from('inventory_settings')
-    .select('ebay_token, ebay_refresh_token, ebay_token_expires_at, days_until_delist, delist_by_age_enabled')
+    .select('ebay_token, ebay_refresh_token, ebay_token_expires_at, days_until_delist, delist_by_age_enabled, delist_on_sold_out')
     .eq('user_id', user.id)
     .maybeSingle()
 
   if (settingsError) return NextResponse.json({ error: settingsError.message }, { status: 500 })
-  if (!isDelistByAgeEnabled(settings)) {
+  const eligibility = resolveDelistEligibility(settings)
+  if (!eligibility.enabled) {
     return NextResponse.json({ error: 'N日経過取り下げがOFFのため取り下げは実行できません' }, { status: 409 })
   }
-  const cutoff = getDelistCutoffIso(settings?.days_until_delist)
-  const { data: listings, error: listingsError } = await db
+  let query = db
     .from('inventory_active_listings')
     .select('ebay_item_id, product_id, quantity, start_time')
     .eq('user_id', user.id)
     .eq('quantity', 0)
+    .is('delisted_at', null)
     .in('ebay_item_id', itemIds)
-    .lte('start_time', cutoff)
+  if (eligibility.cutoffIso) query = query.lte('start_time', eligibility.cutoffIso)
+  const { data: listings, error: listingsError } = await query
 
   if (listingsError) return NextResponse.json({ error: listingsError.message }, { status: 500 })
 
@@ -113,6 +118,7 @@ export async function POST(req: NextRequest) {
   const succeeded = results.filter(r => r.success).length
   const failed = results.filter(r => !r.success)
   const runSummary = summarizeInventoryActionRun(results)
+  await markListingsDelisted(db, user.id, results.filter(r => r.success).map(r => r.itemId))
 
   // 実行ログを記録
   await db.from('inventory_runs').insert({
