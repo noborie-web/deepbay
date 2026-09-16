@@ -882,16 +882,16 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             <table className="w-full min-w-[1280px] text-sm border-collapse">
               <thead>
                 <tr className="bg-gray-50 border-b">
-                  {['選択', '画像', 'eBay商品ID', '商品名', 'Custom Label', '価格', '数量', '販売数', 'マッチ', '取得日時', '操作'].map(heading => (
+                  {['選択', '画像', 'eBay商品ID', '商品名', 'Custom Label', '価格', '仕入値', '利益', '数量', '販売数', 'マッチ', '取得日時', '操作'].map(heading => (
                     <th key={heading} className="text-left px-3 py-2 text-xs font-medium text-gray-500">{heading}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {ebayListingsLoading ? (
-                  <tr><td colSpan={11} className="px-3 py-12 text-center text-gray-400">読み込み中...</td></tr>
+                  <tr><td colSpan={13} className="px-3 py-12 text-center text-gray-400">読み込み中...</td></tr>
                 ) : listings.length === 0 ? (
-                  <tr><td colSpan={11} className="px-3 py-12 text-center text-gray-400">該当するeBay商品がありません</td></tr>
+                  <tr><td colSpan={13} className="px-3 py-12 text-center text-gray-400">該当するeBay商品がありません</td></tr>
                 ) : listings.map(listing => {
                   const imageUrl = getEbayListingImageUrl(listing)
                   return (
@@ -945,6 +945,18 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap text-gray-700">
                       {listing.current_price != null ? `$${listing.current_price.toLocaleString()}` : '—'}
+                    </td>
+                    {/* ユーザー要望: 仕入値と利益額(現在の為替・段階利益設定で計算)を表示 */}
+                    <td className="px-3 py-2 whitespace-nowrap text-right text-gray-700">
+                      {listing.purchase_price_jpy != null ? `¥${Math.round(listing.purchase_price_jpy).toLocaleString()}` : '—'}
+                    </td>
+                    <td className={`px-3 py-2 whitespace-nowrap text-right font-medium ${listing.profit_usd == null ? 'text-gray-400' : listing.profit_usd < 0 ? 'text-red-600' : 'text-green-700'}`}>
+                      {listing.profit_usd != null ? (
+                        <>
+                          {listing.profit_usd < 0 ? '−' : ''}${Math.abs(listing.profit_usd).toFixed(2)}
+                          <span className="block text-[10px] font-normal text-gray-500">¥{(listing.profit_jpy ?? 0).toLocaleString()}</span>
+                        </>
+                      ) : '—'}
                     </td>
                     <td className="px-3 py-2 text-right text-gray-700">{listing.quantity ?? '—'}</td>
                     <td className="px-3 py-2 text-right text-gray-700">{listing.quantity_sold ?? '—'}</td>

@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { findScraper, scrapeUrl } from '@/lib/scrapers'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { calculateAutomaticEbayPrice } from '@/lib/extraction-run'
+import { calcModelPrice, loadPricingModel, type PricingModel } from '@/lib/inventory-pricing'
 
 interface SupplierListingRow {
   id: string
@@ -124,6 +125,8 @@ export interface SupplierCheckOptions {
   timeBudgetMs?: number
   // 価格更新の絞り込み(差分検知タイプ・検知差分率)
   priceChangeFilter?: PriceChangeFilter
+  // テスト用: ユーザーの価格モデル(未指定なら price_tier_settings から読む)
+  pricingModel?: PricingModel
 }
 
 export async function checkSupplierListings(
@@ -204,6 +207,12 @@ export async function checkSupplierListings(
     for (const s of bulkSettings ?? []) bulkSettingMap.set(s.id, s)
   }
 
+  // ユーザーが価格一括編集で保存した段階利益設定があれば、それを価格
+  // モデルとして使う(仕入価格・為替の追従を手動設定と同じ式で行う)。
+  const pricingModel = options.pricingModel !== undefined
+    ? options.pricingModel
+    : await loadPricingModel(db, userId).catch(() => null)
+
   // 為替レート取得に失敗しても売り切れチェック自体は継続する
   // (価格高騰への自動対応だけをスキップする)。
   let jpyPerUsd: number | null = null
@@ -280,7 +289,12 @@ export async function checkSupplierListings(
               && Math.abs(purchasePriceJpy - product.purchase_price_jpy) >= 1
 
             let recalculated: number | null = null
-            if (purchasePriceChanged || currentEbayPrice === null) {
+            if (pricingModel) {
+              // 段階利益設定あり: 現在の仕入価格 × 現在の為替でユーザーの式から
+              // 再計算する(仕入価格の変動も為替の変動も同じ式で追従。手動
+              // 設定した価格と同じ式なので、変動がなければ差分は出ない)
+              recalculated = calcModelPrice(pricingModel, purchasePriceJpy, jpyPerUsd)
+            } else if (purchasePriceChanged || currentEbayPrice === null) {
               const bulkSettingId = product.extraction_id
                 ? bulkSettingIdByExtractionId.get(product.extraction_id)
                 : null

@@ -201,6 +201,10 @@ export interface InventoryActiveListing {
   supplier_price_jpy?: number | null
   supplier_diff?: Array<'title' | 'price'> | null
   supplier_diff_detected_at?: string | null
+  // 一覧API(/api/inventory/listings)が付加する表示用の値(DB列ではない)
+  purchase_price_jpy?: number | null
+  profit_usd?: number | null
+  profit_jpy?: number | null
   created_at: string
   updated_at: string
 }
