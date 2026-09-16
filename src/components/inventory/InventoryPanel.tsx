@@ -311,7 +311,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     try {
       const params = new URLSearchParams({ page: String(pageNumber) })
       if (searchValue) params.set('q', searchValue)
-      if (status === 'listed' || status === 'sold') params.set('status', status)
+      if (status === 'listed' || status === 'sold' || status === 'delisted') params.set('status', status)
       const res = await fetch(`/api/inventory/listings?${params.toString()}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'eBay商品一覧の取得に失敗しました')
