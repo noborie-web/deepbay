@@ -84,4 +84,15 @@ describe('InventoryPanel: statusFilterによるeBay商品一覧の絞り込み',
     const call = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/inventory/listings?'))
     expect(String(call?.[0])).toContain('status=sold')
   })
+
+  it('"delisted"(取下げ)の場合もAPIにstatusを渡して絞り込む', async () => {
+    // 実データで確認した不具合: 取下げカードをクリックしても status が送られず
+    // eBay商品一覧に全148件(出品中も)が表示されていた。
+    render(<InventoryPanel listings={[]} listingCount={0} hasToken={false} statusFilter="delisted" />)
+    await userEvent.click(screen.getByRole('button', { name: 'eBay商品一覧' }))
+
+    await screen.findByText(/絞り込み中/)
+    const call = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/inventory/listings?'))
+    expect(String(call?.[0])).toContain('status=delisted')
+  })
 })
