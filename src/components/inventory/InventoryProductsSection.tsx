@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { Product, InventoryActiveListing } from '@/types/database'
 import InventoryPanel from './InventoryPanel'
 
@@ -41,6 +41,29 @@ export default function InventoryProductsSection({ items, listings, listingCount
   const [deleting, setDeleting] = useState(false)
 
   const [counts, setCounts] = useState<StatusCounts>(statusCounts)
+  const [loadingFilter, setLoadingFilter] = useState(false)
+  // 連続でカードを切り替えたとき、古い取得結果で上書きしないための世代番号
+  const filterRequestRef = useRef(0)
+
+  // 実データで確認した不具合: itemsは直近100件だけなので、カードで絞り込むと
+  // 100件より古い商品(例: 下書き4件)が一覧に出なかった。絞り込み時は
+  // その状態の商品をサーバーから取得する(「総商品数」は初期の100件を使う)。
+  async function loadProductsForFilter(key: FilterKey) {
+    const requestId = ++filterRequestRef.current
+    if (key === 'total') { setProductList(items); return }
+    setLoadingFilter(true)
+    try {
+      const res = await fetch(`/api/inventory/products?status=${key}`)
+      if (!res.ok) throw new Error('failed')
+      const json = await res.json()
+      if (requestId === filterRequestRef.current) setProductList((json.products ?? []) as Product[])
+    } catch {
+      // 取得に失敗したときは手元の100件で絞り込む
+      if (requestId === filterRequestRef.current) setProductList(items)
+    } finally {
+      if (requestId === filterRequestRef.current) setLoadingFilter(false)
+    }
+  }
 
   const activeFilterDef = FILTERS.find((f) => f.key === filter)!
   const filtered = activeFilterDef.match ? productList.filter(activeFilterDef.match) : productList
@@ -51,6 +74,7 @@ export default function InventoryProductsSection({ items, listings, listingCount
   function selectFilter(key: FilterKey) {
     setFilter(key)
     setSelected(new Set())
+    void loadProductsForFilter(key)
   }
 
   function toggleSelect(id: string) {
@@ -167,7 +191,9 @@ export default function InventoryProductsSection({ items, listings, listingCount
           <span>登録日</span>
         </div>
 
-        {filtered.length === 0 ? (
+        {loadingFilter ? (
+          <div className="py-12 text-center text-sm text-gray-400">読み込み中...</div>
+        ) : filtered.length === 0 ? (
           <div className="py-12 text-center text-sm text-gray-400">
             {activeFilterDef.label === '総商品数' ? '在庫がありません' : `${activeFilterDef.label}の商品はありません`}
           </div>
