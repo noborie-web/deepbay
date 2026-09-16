@@ -401,6 +401,30 @@ describe('checkSupplierListings', () => {
       expect(updateCalls(calls, 'products')).toHaveLength(0)
     })
 
+    it('仕入価格が未記録でもeBay価格は変えず、今回の仕入価格と為替を基準として記録する', async () => {
+      // 本番で確認した不具合: 148件すべて purchase_price_jpy が未記録だったため
+      // 「仕入価格が変わった」と誤判定し、計算式で再計算した約20%低い価格で
+      // 価格一括編集済みのeBay価格を上書きしてしまった。
+      const { db, calls } = makeDatabase({
+        listings: [{ id: 'listing-1', product_id: 'product-1' }],
+        products: [{
+          id: 'product-1',
+          source_url: 'https://jp.mercari.com/item/1',
+          purchase_price_jpy: null,
+          ebay_price: 297.6,
+          pricing_jpy_per_usd: null,
+        }],
+      })
+      mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 17888 }])
+
+      const result = await checkSupplierListings(db as never, 'user-1')
+
+      expect(result.price_recalculated).toBe(0)
+      const productUpdates = updateCalls(calls, 'products')
+      expect(productUpdates).toHaveLength(1)
+      expect(productUpdates[0].payload).toEqual({ pricing_jpy_per_usd: 150, purchase_price_jpy: 17888 })
+    })
+
     it('仕入価格が取得できない場合は前回記録した仕入価格と現在の為替で再計算する', async () => {
       const { db, calls } = makeDatabase({
         listings: [{ id: 'listing-1', product_id: 'product-1' }],
