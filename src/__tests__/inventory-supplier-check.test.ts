@@ -283,6 +283,60 @@ describe('checkSupplierListings', () => {
   // 価格(products.ebay_price)を自動的に再計算・更新する。実際にeBayへの
   // 反映は既存の「価格改定」自動実行(products.ebay_priceとeBay上の現在価格
   // の差分検知)が担うため、ここではDB更新のみを検証する。
+  describe('段階利益設定(価格モデル)による追従', () => {
+    const tierModel = {
+      kind: 'tiered' as const,
+      tiers: [
+        { profitJpy: 2000, maxPurchaseJpy: 5000 },
+        { profitJpy: 3000, maxPurchaseJpy: 10000 },
+        { profitJpy: 5000, maxPurchaseJpy: 20000 },
+        { profitJpy: 10000, maxPurchaseJpy: 50000 },
+        { profitJpy: 15000, maxPurchaseJpy: null },
+      ],
+      ebayFeeRate: 0.15, shippingJpy: 6000, fixedCostUsd: 0, adRate: 0.04, customsRate: 0.13, discountRate: 0.05,
+    }
+
+    it('仕入価格が上がったら、ユーザーの段階利益設定の式で再計算して値上げする', async () => {
+      // 本番で確認: PUNK HITS ¥25,800→¥35,800。一括編集設定の利益率方式では
+      // 手動設定より低い価格になっていたため、ユーザーの式で計算する。
+      const { db, calls } = makeDatabase({
+        listings: [{ id: 'listing-1', product_id: 'product-1' }],
+        products: [{
+          id: 'product-1', source_url: 'https://jp.mercari.com/item/1',
+          purchase_price_jpy: 25800, ebay_price: 430.62, pricing_jpy_per_usd: 154.08,
+        }],
+      })
+      mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 35800 }])
+      mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 154.69, date: '2026-09-16' })
+
+      const result = await checkSupplierListings(db as never, 'user-1', 500, { pricingModel: tierModel })
+
+      expect(result.price_recalculated).toBe(1)
+      expect(result.price_increased).toBe(1)
+      const payload = updateCalls(calls, 'products')[0].payload!
+      expect(payload.purchase_price_jpy).toBe(35800)
+      // (35800 + 10000 + 6000) / 154.69 / 0.63
+      expect(payload.ebay_price as number).toBeCloseTo(531.5, 0)
+    })
+
+    it('仕入価格も為替も変わっていなければ、同じ式なので差分が出ず更新しない', async () => {
+      const { db, calls } = makeDatabase({
+        listings: [{ id: 'listing-1', product_id: 'product-1' }],
+        products: [{
+          id: 'product-1', source_url: 'https://jp.mercari.com/item/1',
+          purchase_price_jpy: 17888, ebay_price: 297.6, pricing_jpy_per_usd: 154.08,
+        }],
+      })
+      mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 17888 }])
+      mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 154.08, date: '2026-09-16' })
+
+      const result = await checkSupplierListings(db as never, 'user-1', 500, { pricingModel: tierModel })
+
+      expect(result.price_recalculated).toBe(0)
+      expect(updateCalls(calls, 'products')).toHaveLength(0)
+    })
+  })
+
   describe('仕入れ価格の高騰検知', () => {
     it('仕入れ元価格が上昇していたら、products.ebay_priceを再計算して更新する', async () => {
       const { db, calls } = makeDatabase({
