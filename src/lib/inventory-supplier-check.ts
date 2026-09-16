@@ -228,6 +228,7 @@ export async function checkSupplierListings(
     let priceIncreased = false
     // 為替レートの基準だけを記録する(価格は変えない)場合に使う
     let baselineJpyPerUsd: number | undefined
+    let baselinePurchasePriceJpy: number | undefined
     const priceChangeFilter = options.priceChangeFilter ?? DEFAULT_PRICE_CHANGE_FILTER
     // 仕入先の最新タイトル・価格と、抽出時からの差分
     let supplierTitle: string | null | undefined
@@ -270,9 +271,13 @@ export async function checkSupplierListings(
             const pricingRate = typeof product.pricing_jpy_per_usd === 'number' && product.pricing_jpy_per_usd > 0
               ? product.pricing_jpy_per_usd
               : null
+            // 本番で確認した不具合: 仕入価格(purchase_price_jpy)が未記録の商品を
+            // 「仕入価格が変わった」とみなして計算式で再計算し、価格一括編集で
+            // 設定済みのeBay価格を約20%低い値で上書きしてしまった。未記録の
+            // 場合は変更なしとして扱い、今回の仕入価格・為替を基準として記録
+            // するだけにする(eBay価格は変えない)。
             const purchasePriceChanged = typeof product.purchase_price_jpy === 'number'
-              ? Math.abs(purchasePriceJpy - product.purchase_price_jpy) >= 1
-              : true
+              && Math.abs(purchasePriceJpy - product.purchase_price_jpy) >= 1
 
             let recalculated: number | null = null
             if (purchasePriceChanged || currentEbayPrice === null) {
@@ -285,6 +290,7 @@ export async function checkSupplierListings(
               recalculated = scalePriceByExchangeRate(currentEbayPrice, pricingRate, jpyPerUsd)
             } else {
               baselineJpyPerUsd = jpyPerUsd
+              if (typeof product.purchase_price_jpy !== 'number') baselinePurchasePriceJpy = purchasePriceJpy
             }
 
             if (recalculated !== null && shouldUpdateEbayPrice(currentEbayPrice, recalculated, priceChangeFilter)) {
@@ -356,7 +362,11 @@ export async function checkSupplierListings(
       try {
         await db
           .from('products')
-          .update({ pricing_jpy_per_usd: baselineJpyPerUsd })
+          .update(
+            baselinePurchasePriceJpy !== undefined
+              ? { pricing_jpy_per_usd: baselineJpyPerUsd, purchase_price_jpy: baselinePurchasePriceJpy }
+              : { pricing_jpy_per_usd: baselineJpyPerUsd },
+          )
           .eq('user_id', userId)
           .eq('id', listing.product_id)
       } catch {

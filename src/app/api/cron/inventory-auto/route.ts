@@ -13,6 +13,10 @@ import { checkSupplierListings, normalizePriceChangeFilter } from '@/lib/invento
 // 打ち切られる。auto-extraction と同じ300秒にする。
 export const maxDuration = 300
 
+// 価格改定(eBayへのRevise)に使う時間の上限。同期(約60秒)+仕入先チェック
+// (最大120秒)+取り下げの後に残る時間の範囲に収める。
+const REVISE_PRICE_TIME_BUDGET_MS = 75_000
+
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 }
@@ -46,7 +50,7 @@ export async function GET(req: NextRequest) {
         // 一巡するのに3日かかるため、時間予算(150秒)の範囲で最大500件まで
         // 未チェックが古い順に確認する。
         const supplierCheckResult = await checkSupplierListings(db, userId, 500, {
-          timeBudgetMs: 150_000,
+          timeBudgetMs: 120_000,
           priceChangeFilter: normalizePriceChangeFilter(settings),
         })
         userResult.supplier_check = supplierCheckResult
@@ -197,14 +201,20 @@ export async function GET(req: NextRequest) {
         for (const p of products ?? []) productMap.set(p.id, p)
       }
 
+      // 本番で確認した不具合: 価格改定が135件になった日に、Vercelの実行時間
+      // 上限(300秒)に達して途中で打ち切られ、実行ログも残らなかった。
+      // 時間予算内で処理し、残りは翌日に回す(ログは必ず残す)。
+      const reviseStartedAt = Date.now()
       const reviseResults = []
+      let reviseDeferred = 0
       for (const l of listings ?? []) {
         const p = productMap.get(l.product_id!)
         if (!p?.ebay_price || !l.current_price || Math.abs(p.ebay_price - l.current_price) <= 0.5) continue
+        if (Date.now() - reviseStartedAt > REVISE_PRICE_TIME_BUDGET_MS) { reviseDeferred += 1; continue }
         const r = await revisePrice(accessToken, l.ebay_item_id, p.ebay_price)
         reviseResults.push(r)
       }
-      userResult.revise_price = { total: reviseResults.length, succeeded: reviseResults.filter(r => r.success).length }
+      userResult.revise_price = { total: reviseResults.length, succeeded: reviseResults.filter(r => r.success).length, deferred: reviseDeferred }
       const reviseRun = summarizeInventoryActionRun(reviseResults)
 
       await db.from('inventory_runs').insert({
