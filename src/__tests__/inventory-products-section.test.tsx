@@ -65,7 +65,11 @@ describe('InventoryProductsSection: 集計カードの絞り込みと選択削�
   let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    fetchMock = vi.fn()
+    // 絞り込み時の商品取得API(/api/inventory/products)は既定で失敗させ、
+    // 手元の商品で絞り込む従来の挙動を検証する。
+    fetchMock = vi.fn(async (url: string) => (
+      String(url).startsWith('/api/inventory/products') ? { ok: false } : undefined
+    ))
     global.fetch = fetchMock as unknown as typeof fetch
   })
 
@@ -168,5 +172,32 @@ describe('集計カードの件数', () => {
     expect(screen.getByText('出品中').nextElementSibling).toHaveTextContent('148')
     // ユーザー要望: 取り下げたリストも集計カードで確認できる
     expect(screen.getByText('取下げ').nextElementSibling).toHaveTextContent('3')
+  })
+})
+
+describe('絞り込み時の商品取得', () => {
+  it('カードで絞り込むと、その状態の商品をサーバーから取得して表示する(直近100件より古い下書きも出る)', async () => {
+    // 実データで確認した不具合: 下書き4件が100件より古かったため、
+    // 「下書き 4」なのに一覧は「下書きの商品はありません」になっていた。
+    const oldDraft = makeProduct({ id: 'old-draft', listing_status: 'draft', original_title: '古い下書き商品' })
+    global.fetch = vi.fn(async (url: string) => {
+      if (String(url) === '/api/inventory/products?status=draft') {
+        return { ok: true, json: async () => ({ products: [oldDraft] }) }
+      }
+      return { ok: false }
+    }) as unknown as typeof fetch
+    const items = [makeProduct({ id: 'p1', listing_status: 'listed', original_title: '出品中商品' })]
+    render(
+      <InventoryProductsSection
+        items={items}
+        {...panelProps}
+        statusCounts={{ total: 152, draft: 4, listed: 144, sold: 0, delisted: 4 }}
+      />,
+    )
+
+    await userEvent.click(screen.getByText('下書き'))
+
+    expect(await screen.findByText('古い下書き商品')).toBeInTheDocument()
+    expect(screen.queryByText('出品中商品')).not.toBeInTheDocument()
   })
 })
