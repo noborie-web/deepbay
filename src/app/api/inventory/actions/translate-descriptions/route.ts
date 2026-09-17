@@ -7,6 +7,7 @@ import { listingDescription } from '@/lib/listing-export'
 import { reviseDescription } from '@/lib/ebay-actions'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
+import { loadActiveHtmlTemplate } from '@/lib/html-template'
 import { checkTranslatedDescription, hasJapaneseDescription } from '@/lib/description-translation'
 
 // ユーザー要望: 出品済み商品(148件)の説明文が日本語のままなので、英訳して
@@ -143,9 +144,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `eBayトークンの取得に失敗しました: ${error instanceof Error ? error.message : String(error)}` }, { status: 500 })
     }
 
+    const htmlTemplate = await loadActiveHtmlTemplate(db, user.id)
     const results = []
     for (const product of targets) {
-      const html = listingDescription(product as Product)
+      const html = listingDescription(product as Product, htmlTemplate)
       const result = await reviseDescription(accessToken, product.ebay_item_id!, html)
       results.push(result)
       if (result.success) {

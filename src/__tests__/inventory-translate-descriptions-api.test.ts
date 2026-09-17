@@ -39,6 +39,10 @@ vi.mock('@supabase/supabase-js', () => ({
 vi.mock('@/lib/translate', () => ({ translateDescription: mocks.translateDescription }))
 vi.mock('@/lib/ebay-actions', () => ({ reviseDescription: mocks.reviseDescription }))
 vi.mock('@/lib/inventory-auth', () => ({ resolveInventoryAccessToken: mocks.resolveAccessToken }))
+vi.mock('@/lib/html-template', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/html-template')>()),
+  loadActiveHtmlTemplate: vi.fn(async () => null),
+}))
 
 import { POST } from '@/app/api/inventory/actions/translate-descriptions/route'
 

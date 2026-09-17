@@ -6,6 +6,7 @@ import {
   refreshEbayAccessToken,
 } from '@/lib/ebay'
 import { publishFixedPriceItem } from '@/lib/ebay-listing'
+import { loadActiveHtmlTemplate } from '@/lib/html-template'
 import { getDirectListingIssues } from '@/lib/listing-export'
 import type { Product } from '@/types/database'
 
@@ -168,9 +169,12 @@ export async function POST(request: NextRequest) {
   }
 
   const succeeded: ListingSuccess[] = []
+  // 抽出設定「HTML設定」でアクティブにしたテンプレート(あれば説明文に適用)
+  const htmlTemplate = await loadActiveHtmlTemplate(admin, user.id)
   const options = {
     categoryId,
     conditionMap,
+    htmlTemplate,
     shippingProfileName,
     paymentProfileName,
     returnProfileName,
