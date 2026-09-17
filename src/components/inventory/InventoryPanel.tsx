@@ -935,6 +935,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                         {listing.supplier_diff?.includes('title') && (
                           <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title={`仕入先の最新タイトル: ${listing.supplier_title ?? ''}`}>仕入先タイトル変更</span>
                         )}
+                        {listing.supplier_diff?.includes('reserved') && (
+                          <span className="ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700" title={`仕入先の最新タイトル: ${listing.supplier_title ?? ''}`}>仕入先が専用(取り置き)</span>
+                        )}
                         {listing.supplier_diff?.includes('price') && (
                           <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title={`仕入先の最新価格: ¥${listing.supplier_price_jpy?.toLocaleString() ?? ''}`}>仕入先価格変更</span>
                         )}
@@ -1269,7 +1272,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-1">売り切れ即取り下げ</h3>
             <p className="text-xs text-gray-500 mb-3">
-              ONにすると、仕入先チェックで「売り切れ・削除」と判定された商品を、経過日数を待たずに取り下げ対象にします（eBayの数量を0にします）。
+              ONにすると、仕入先チェックで「売り切れ・削除」または「〇〇様専用・取り置き」と判定された商品を、経過日数を待たずに取り下げ対象にします（eBayの数量を0にします）。
               自動実行するには下の「取り下げを自動実行する」もONにしてください。
             </p>
             <div className="flex items-center gap-3">
