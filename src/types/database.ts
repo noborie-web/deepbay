@@ -152,6 +152,8 @@ export interface Product {
   ebay_item_id?: string | null
   listed_at: string | null
   sold_at: string | null
+  // 英訳した説明文をeBayに反映した日時(未反映なら null)
+  description_synced_at?: string | null
   seller_rating_count: number | null
   seller_url: string | null
   shipping_days: number | null

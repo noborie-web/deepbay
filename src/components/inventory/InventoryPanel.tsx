@@ -215,6 +215,74 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   })
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
+
+  // ユーザー要望: 出品済み商品(148件)の説明文が日本語のままなので、英訳して
+  // eBayの説明文を差し替える。サンプル確認 → 全件翻訳 → eBayへ反映 の順。
+  interface DescTranslationStatus { total: number; untranslated: number; translated: number; unsynced: number }
+  interface DescSample { id: string; ebay_item_id: string | null; title: string | null; before: string; after: string | null; error?: string }
+  const [descStatus, setDescStatus] = useState<DescTranslationStatus | null>(null)
+  const [descSamples, setDescSamples] = useState<DescSample[]>([])
+  const [descBusy, setDescBusy] = useState<'idle' | 'status' | 'preview' | 'translate' | 'revise'>('idle')
+  const [descMessage, setDescMessage] = useState<string | null>(null)
+  const [descError, setDescError] = useState<string | null>(null)
+
+  async function callDescTranslation(mode: 'status' | 'preview' | 'translate' | 'revise') {
+    const res = await fetch('/api/inventory/actions/translate-descriptions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error ?? '処理に失敗しました')
+    return json
+  }
+
+  const loadDescStatus = async () => {
+    setDescBusy('status'); setDescError(null)
+    try { const json = await callDescTranslation('status'); setDescStatus(json.status) }
+    catch (e) { setDescError(e instanceof Error ? e.message : String(e)) }
+    finally { setDescBusy('idle') }
+  }
+
+  const previewDescTranslation = async () => {
+    setDescBusy('preview'); setDescError(null); setDescMessage(null)
+    try { const json = await callDescTranslation('preview'); setDescStatus(json.status); setDescSamples(json.samples ?? []) }
+    catch (e) { setDescError(e instanceof Error ? e.message : String(e)) }
+    finally { setDescBusy('idle') }
+  }
+
+  // 1リクエスト最大25件ずつ、残りが0になるまで繰り返す
+  const translateAllDescriptions = async () => {
+    if (!confirm('日本語のままの説明文をすべて英訳してKakehashiに保存します（eBayにはまだ反映しません）。よろしいですか？')) return
+    setDescBusy('translate'); setDescError(null); setDescMessage(null)
+    let translated = 0; let failed = 0
+    try {
+      for (let i = 0; i < 40; i++) {
+        const json = await callDescTranslation('translate')
+        translated += json.translated ?? 0; failed += (json.failed ?? []).length
+        setDescMessage(`翻訳中… ${translated}件完了${failed ? `（失敗 ${failed}件）` : ''}`)
+        if (json.done || (json.translated ?? 0) === 0) break
+      }
+      setDescMessage(`翻訳完了: ${translated}件を英訳して保存しました${failed ? `（失敗 ${failed}件）` : ''}。「eBayへ反映」で出品中の説明文を差し替えられます。`)
+      await loadDescStatus()
+    } catch (e) { setDescError(e instanceof Error ? e.message : String(e)) }
+    finally { setDescBusy('idle') }
+  }
+
+  const reviseAllDescriptions = async () => {
+    if (!confirm('英訳した説明文をeBayの出品に反映します（ReviseItem）。実行するとeBayへ実際に変更が送信されます。よろしいですか？')) return
+    setDescBusy('revise'); setDescError(null); setDescMessage(null)
+    let revised = 0; let failed = 0
+    try {
+      for (let i = 0; i < 40; i++) {
+        const json = await callDescTranslation('revise')
+        revised += json.revised ?? 0; failed += (json.failed ?? []).length
+        setDescMessage(`eBayへ反映中… ${revised}件完了${failed ? `（失敗 ${failed}件）` : ''}`)
+        if (json.done || ((json.revised ?? 0) === 0 && (json.failed ?? []).length === 0)) break
+      }
+      setDescMessage(`反映完了: ${revised}件の説明文をeBayで差し替えました${failed ? `（失敗 ${failed}件。稼働状況タブで確認できます）` : ''}`)
+      await loadDescStatus()
+    } catch (e) { setDescError(e instanceof Error ? e.message : String(e)) }
+    finally { setDescBusy('idle') }
+  }
   const [uploading, setUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState<'preparing' | 'transferring' | 'processing' | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -1300,6 +1368,60 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 onBlur={() => saveSetting({ days_until_delist: settings.days_until_delist })}
                 className="w-20 border rounded px-2 py-1 text-sm text-center disabled:bg-gray-100" />
             </div>
+          </div>
+          <hr />
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">出品済み商品の説明文を英訳する</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              以前に出品した商品の説明文（日本語のまま）を英訳し、国内配送や「専用」「即購入OK」などの文章をAIで削除したうえで、eBayの説明文を差し替えます。
+              まず「サンプルを確認」で翻訳結果を確認してから、「全件を翻訳」→「eBayへ反映」の順に実行してください。
+            </p>
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <button onClick={loadDescStatus} disabled={descBusy !== 'idle'}
+                className="px-3 py-1.5 border text-xs rounded text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                {descBusy === 'status' ? '確認中...' : '件数を確認'}
+              </button>
+              <button onClick={previewDescTranslation} disabled={descBusy !== 'idle'}
+                className="px-3 py-1.5 border border-blue-400 text-blue-600 text-xs rounded hover:bg-blue-50 disabled:opacity-50">
+                {descBusy === 'preview' ? '翻訳中...' : 'サンプルを確認（3件）'}
+              </button>
+              <button onClick={translateAllDescriptions} disabled={descBusy !== 'idle' || !descStatus || descStatus.untranslated === 0}
+                className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:opacity-40">
+                {descBusy === 'translate' ? '翻訳中...' : `全件を翻訳${descStatus ? `（${descStatus.untranslated}件）` : ''}`}
+              </button>
+              <button onClick={reviseAllDescriptions} disabled={descBusy !== 'idle' || !descStatus || descStatus.unsynced === 0 || !settings.has_token}
+                className="px-3 py-1.5 bg-orange-600 text-white text-xs rounded hover:bg-orange-700 disabled:opacity-40">
+                {descBusy === 'revise' ? '反映中...' : `eBayへ反映${descStatus ? `（${descStatus.unsynced}件）` : ''}`}
+              </button>
+            </div>
+            {descStatus && (
+              <p className="text-xs text-gray-600 mb-2">
+                対象 {descStatus.total}件 / 未翻訳（日本語のまま） {descStatus.untranslated}件 / 翻訳済み {descStatus.translated}件 / eBay未反映 {descStatus.unsynced}件
+              </p>
+            )}
+            {descMessage && <p className="text-xs text-green-700 mb-2">{descMessage}</p>}
+            {descError && <p className="text-xs text-red-600 mb-2">{descError}</p>}
+            {descSamples.length > 0 && (
+              <div className="space-y-3">
+                {descSamples.map(sample => (
+                  <div key={sample.id} className="border rounded p-3 bg-gray-50">
+                    <p className="text-xs font-medium text-gray-800 mb-2">{sample.title ?? sample.ebay_item_id}</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-[11px] text-gray-500 mb-1">翻訳前（メルカリの説明文）</p>
+                        <pre className="text-xs whitespace-pre-wrap text-gray-700 bg-white border rounded p-2 max-h-48 overflow-y-auto">{sample.before}</pre>
+                      </div>
+                      <div>
+                        <p className="text-[11px] text-gray-500 mb-1">翻訳後（eBay用）</p>
+                        {sample.after
+                          ? <pre className="text-xs whitespace-pre-wrap text-gray-800 bg-white border rounded p-2 max-h-48 overflow-y-auto">{sample.after}</pre>
+                          : <p className="text-xs text-red-600">翻訳に失敗しました: {sample.error}</p>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <hr />
           <div>

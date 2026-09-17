@@ -97,6 +97,19 @@ export async function revisePrice(accessToken: string, itemId: string, newPrice:
   return runItemAction(accessToken, 'ReviseInventoryStatus', xml, itemId)
 }
 
+// ReviseItem — 説明文(HTML)の差し替え。ユーザー要望: 出品済み商品の日本語
+// 説明文を英訳してeBayに反映する。
+export async function reviseDescription(accessToken: string, itemId: string, descriptionHtml: string): Promise<EbayActionResult> {
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<ReviseItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <Item>
+    <ItemID>${escapeXml(itemId)}</ItemID>
+    <Description><![CDATA[${descriptionHtml.replace(/]]>/g, ']]&gt;')}]]></Description>
+  </Item>
+</ReviseItemRequest>`
+  return runItemAction(accessToken, 'ReviseItem', xml, itemId)
+}
+
 export interface StackItemInput {
   title: string
   price: number
