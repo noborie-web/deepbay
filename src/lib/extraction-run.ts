@@ -1,5 +1,5 @@
 import { scrapeUrl } from '@/lib/scrapers'
-import { translateTitlesWithFailures } from '@/lib/translate'
+import { extractBrandsSafely, translateDescriptionsWithFailures, translateTitlesWithFailures } from '@/lib/translate'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { calcProfit, DEFAULT_AUTO_PRICING, validateProfitParams } from '@/lib/pricing'
 import { matchesVeroBrandInTitle } from '@/lib/product-exclusion'
@@ -407,6 +407,42 @@ export async function runScrape(
     const translatedTitles = translationResults.filter((r) => !r.failed).map((r) => r.title)
     const translatedTitleFailedExcluded = bulkPriceRangeFilteredList.length - translationFilteredList.length
 
+    // ユーザー要望: 商品説明を英訳し、メルカリ特有・国内向けの文章(ゆうパック/
+    // ヤマト等の国内配送、匿名配送、専用、即購入OK、個人名 など)をAIで削除する。
+    // 抽出設定の「商品詳細設定」(description_engine / description_enabled)に従う。
+    // 翻訳に失敗した商品は除外せず、元の説明文のまま登録する。
+    const descriptionEngine: string = extractionSettings?.description_engine ?? 'high'
+    const descriptionEnabled: boolean = extractionSettings?.description_enabled ?? true
+    const originalDescriptions = translationFilteredList.map((s: { description: string }) => s.description ?? '')
+    let translatedDescriptions: string[] = originalDescriptions
+    if (descriptionEnabled && process.env.OPENAI_API_KEY) {
+      try {
+        translatedDescriptions = (await translateDescriptionsWithFailures(originalDescriptions, descriptionEngine))
+          .map((r) => r.description)
+      } catch (e) {
+        console.error('Description translation failed entirely, using original descriptions:', e)
+      }
+    }
+
+    // ユーザー要望: ブランド設定(brand_engine / brand_enabled)。タイトル・説明から
+    // メーカー/レーベル名を抽出して eBay の Brand 項目に使う(不明なら未設定)。
+    const brandEngine: string = extractionSettings?.brand_engine ?? 'high'
+    const brandEnabled: boolean = extractionSettings?.brand_enabled ?? true
+    let extractedBrands: Array<string | null> = translationFilteredList.map(() => null)
+    if (brandEnabled && process.env.OPENAI_API_KEY) {
+      try {
+        extractedBrands = await extractBrandsSafely(
+          translationFilteredList.map((s: { title: string; description: string }, idx: number) => ({
+            title: translatedTitles[idx] ?? s.title,
+            description: originalDescriptions[idx],
+          })),
+          brandEngine,
+        )
+      } catch (e) {
+        console.error('Brand extraction failed entirely:', e)
+      }
+    }
+
     // 重複除外チェック用に既存商品を取得
     const excludeActive: boolean = extractionSettings?.exclude_active_duplicate ?? true
     const excludeTitle: boolean = extractionSettings?.exclude_title_duplicate ?? false
@@ -474,16 +510,17 @@ export async function runScrape(
         ebay_price: ebayPrice,
         // 為替変動の検知用に、価格計算に使った為替レートを保存する
         pricing_jpy_per_usd: ebayPrice !== null ? jpyPerUsd : null,
+        ebay_brand: extractedBrands[idx] ?? null,
         ebay_description: activeTemplate
           ? applyTemplate(activeTemplate, {
               title: ebayTitle,
               originalTitle: scraped.title,
-              description: scraped.description,
+              description: translatedDescriptions[idx] ?? scraped.description,
               condition: scraped.condition,
               price: scraped.price,
               images: scraped.images,
             })
-          : scraped.description,
+          : (translatedDescriptions[idx] ?? scraped.description),
         ebay_images: scraped.images,
         listing_status: 'draft' as const,
         seller_rating_count: scraped.sellerRatingCount,
