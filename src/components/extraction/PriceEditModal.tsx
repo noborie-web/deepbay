@@ -112,6 +112,108 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
     }
   }
 
+  // ユーザー要望: 段階利益の設定を「デフォルト設定1(控えめ)」「デフォルト
+  // 設定2(積極)」のように名前を付けて複数保存し、切り替えて使えるようにする。
+  interface TierPreset {
+    id: string
+    name: string
+    tiers: { maxPurchaseJpy: number | null; profitJpy: number }[]
+    ebay_fee_rate: number
+    shipping_jpy: number
+    fixed_cost_usd: number
+    ad_rate: number
+    customs_rate: number
+    discount_rate: number
+  }
+  const [tierPresets, setTierPresets] = useState<TierPreset[]>([])
+  const [selectedPresetId, setSelectedPresetId] = useState('')
+  const [presetName, setPresetName] = useState('')
+  const [presetStatus, setPresetStatus] = useState<'idle' | 'saving' | 'saved' | 'deleting' | 'error'>('idle')
+  const [presetError, setPresetError] = useState<string | null>(null)
+
+  function applyTierValues(saved: Omit<TierPreset, 'id' | 'name'>) {
+    setProfitTiers(saved.tiers.map((t, index) => ({
+      id: `tier-loaded-${Date.now()}-${index}`,
+      maxPurchaseJpy: t.maxPurchaseJpy === null ? '' : String(t.maxPurchaseJpy),
+      profitJpy: String(t.profitJpy),
+    })))
+    nextTierIdRef.current = saved.tiers.length + 1
+    setEbayFeeRate(String(saved.ebay_fee_rate))
+    setShippingJpy(String(saved.shipping_jpy))
+    setFixedCostUsd(String(saved.fixed_cost_usd))
+    setAdRate(String(saved.ad_rate * 100))
+    setCustomsRate(String(saved.customs_rate * 100))
+    setDiscountRate(String(saved.discount_rate * 100))
+  }
+
+  async function loadTierPresets() {
+    try {
+      const res = await fetch('/api/price-tier-presets')
+      if (!res.ok) return
+      const data = await res.json() as { presets?: TierPreset[] }
+      setTierPresets(data.presets ?? [])
+    } catch {
+      // プリセット一覧が取れなくても価格編集自体は続行できる
+    }
+  }
+
+  function selectTierPreset(id: string) {
+    setSelectedPresetId(id)
+    const preset = tierPresets.find((p) => p.id === id)
+    if (!preset) return
+    applyTierValues(preset)
+    setPresetName(preset.name)
+  }
+
+  async function saveTierPreset() {
+    const name = presetName.trim()
+    if (!name) { setPresetError('設定名を入力してください'); return }
+    setPresetStatus('saving'); setPresetError(null)
+    try {
+      const response = await fetch('/api/price-tier-presets', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          tiers: parsedProfitTiers,
+          ebay_fee_rate: parseFloat(ebayFeeRate),
+          shipping_jpy: parseFloat(shippingJpy),
+          fixed_cost_usd: parseFloat(fixedCostUsd),
+          ad_rate: parseFloat(adRate) / 100,
+          customs_rate: parseFloat(customsRate) / 100,
+          discount_rate: parseFloat(discountRate) / 100,
+        }),
+      })
+      const data = await response.json().catch(() => ({})) as { preset?: TierPreset; error?: string }
+      if (!response.ok || !data.preset) throw new Error(data.error ?? '保存に失敗しました')
+      await loadTierPresets()
+      setSelectedPresetId(data.preset.id)
+      setPresetStatus('saved')
+      setTimeout(() => setPresetStatus('idle'), 2000)
+    } catch (error) {
+      setPresetStatus('error')
+      setPresetError(error instanceof Error ? error.message : '保存に失敗しました')
+    }
+  }
+
+  async function deleteTierPreset() {
+    const preset = tierPresets.find((p) => p.id === selectedPresetId)
+    if (!preset) return
+    if (!confirm(`「${preset.name}」を削除しますか？`)) return
+    setPresetStatus('deleting'); setPresetError(null)
+    try {
+      const response = await fetch(`/api/price-tier-presets?id=${encodeURIComponent(preset.id)}`, { method: 'DELETE' })
+      if (!response.ok) throw new Error('削除に失敗しました')
+      await loadTierPresets()
+      setSelectedPresetId('')
+      setPresetName('')
+      setPresetStatus('idle')
+    } catch (error) {
+      setPresetStatus('error')
+      setPresetError(error instanceof Error ? error.message : '削除に失敗しました')
+    }
+  }
+
   async function loadExchangeRate(force: boolean) {
     try {
       const data = await requestExchangeRate()
@@ -173,6 +275,13 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
       .finally(() => {
         if (!cancelled) setTierSettingsLoaded(true)
       })
+    // 保存済みプリセット(名前付き設定)の一覧も読み込む
+    fetch('/api/price-tier-presets')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { presets?: TierPreset[] } | null) => {
+        if (!cancelled && data) setTierPresets(data.presets ?? [])
+      })
+      .catch(() => {})
     return () => {
       cancelled = true
     }
@@ -417,6 +526,55 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
                       {tierSaveStatus === 'saving' ? '保存中...' : tierSaveStatus === 'saved' ? '保存しました' : '設定を保存'}
                     </button>
                   </div>
+                </div>
+              )}
+              {mode === 'tiered' && (
+                <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 space-y-2">
+                  <p className="text-xs font-medium text-gray-600">名前を付けた設定（プリセット）</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      aria-label="保存した設定を選択"
+                      value={selectedPresetId}
+                      onChange={(e) => selectTierPreset(e.target.value)}
+                      className="border rounded px-2 py-1.5 text-xs bg-white min-w-[200px]"
+                    >
+                      <option value="">保存した設定を選択して読み込む…</option>
+                      {tierPresets.map((preset) => (
+                        <option key={preset.id} value={preset.id}>{preset.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={deleteTierPreset}
+                      disabled={!selectedPresetId || presetStatus === 'deleting'}
+                      className="border border-red-300 text-red-600 rounded px-3 py-1.5 text-xs hover:bg-red-50 disabled:opacity-40"
+                    >
+                      {presetStatus === 'deleting' ? '削除中...' : '削除'}
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      aria-label="設定名"
+                      type="text"
+                      value={presetName}
+                      onChange={(e) => setPresetName(e.target.value)}
+                      placeholder="設定名（例: デフォルト設定1）"
+                      maxLength={40}
+                      className="border rounded px-2 py-1.5 text-xs bg-white min-w-[200px]"
+                    />
+                    <button
+                      type="button"
+                      onClick={saveTierPreset}
+                      disabled={presetStatus === 'saving' || !!tierValidationError}
+                      className="border border-blue-400 text-blue-600 rounded px-3 py-1.5 text-xs hover:bg-blue-50 disabled:opacity-40"
+                    >
+                      {presetStatus === 'saving' ? '保存中...' : presetStatus === 'saved' ? '保存しました' : '現在の内容をこの名前で保存'}
+                    </button>
+                    {presetError && <span className="text-xs text-red-500">{presetError}</span>}
+                  </div>
+                  <p className="text-[11px] text-gray-500">
+                    プリセットを選ぶと価格帯・手数料などが入力欄に読み込まれます。読み込んだ内容を在庫管理の価格追従にも使うには、上の「設定を保存」も押してください。
+                  </p>
                 </div>
               )}
               <div className="grid grid-cols-2 gap-4">
