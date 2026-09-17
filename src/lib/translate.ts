@@ -57,6 +57,7 @@ KEEP and translate accurately:
 - Authenticity notes and storage notes that matter to a buyer
 
 Rules:
+- For Japanese song/album titles or artist names that have no established English name, write the romanized reading followed by the original Japanese in parentheses, e.g. "Gekka no Yasoukyoku (月下の夜想曲)".
 - Output plain text only (no markdown, no HTML), in short paragraphs or bullet-like lines.
 - Do not add information that is not in the original. Do not mention Mercari or Japan-only services.
 - If nothing meaningful remains, output a single short sentence describing the item's condition.`
