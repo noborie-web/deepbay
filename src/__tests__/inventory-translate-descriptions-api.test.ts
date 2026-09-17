@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
-import { hasJapaneseDescription } from '@/lib/description-translation'
+import { checkTranslatedDescription, hasJapaneseDescription } from '@/lib/description-translation'
 
 // ユーザー要望: 出品済み商品の日本語の説明文を英訳し、eBayの説明文を差し替える。
 const mocks = vi.hoisted(() => ({
@@ -47,10 +47,29 @@ const request = (body: unknown) => new NextRequest('http://localhost/api/invento
 })
 
 describe('hasJapaneseDescription', () => {
-  it('日本語が含まれていれば未翻訳とみなす', () => {
+  it('日本語が主体なら未翻訳とみなす', () => {
     expect(hasJapaneseDescription({ ebay_description: '新品未開封です', original_description: null })).toBe(true)
     expect(hasJapaneseDescription({ ebay_description: 'Brand new, sealed.', original_description: '新品' })).toBe(false)
     expect(hasJapaneseDescription({ ebay_description: null, original_description: 'ゆうパックで発送' })).toBe(true)
+  })
+
+  it('曲名など一部に日本語が残る翻訳済みの説明文は未翻訳とみなさない', () => {
+    // 本番で確認した不具合: 曲名を日本語で残した正しい翻訳が7件「失敗」になった
+    const translated = 'Limited edition album "Memai (眩暈～めまい～)" by Laputa, signed by all members on the case. Minor scuffs on case and disc. Tracklist includes "Gekka no Yasoukyoku (月下の夜想曲)".'
+    expect(hasJapaneseDescription({ ebay_description: translated, original_description: '限定盤' })).toBe(false)
+  })
+})
+
+describe('checkTranslatedDescription', () => {
+  it('日本語の割合が小さく禁止語が無ければ成功', () => {
+    expect(checkTranslatedDescription('Rare CD "Ware Omou Toki Ai (我想う時愛)" by S.L.A.C.K. Out of print. Excellent condition.')).toEqual({ ok: true })
+  })
+  it('国内向けの文言が残っていれば失敗', () => {
+    expect(checkTranslatedDescription('Ships via ゆうパック. Sealed.').ok).toBe(false)
+    expect(checkTranslatedDescription('Rare CD. 即購入OK').ok).toBe(false)
+  })
+  it('日本語が多く残っていれば失敗', () => {
+    expect(checkTranslatedDescription('新品未開封のCDです。目立つ傷はありません。Sealed.').ok).toBe(false)
   })
 })
 
@@ -92,8 +111,8 @@ describe('POST /api/inventory/actions/translate-descriptions', () => {
     expect(productUpdates[0]).toMatchObject({ ebay_description: 'Brand new, sealed. Ships from Japan.', description_synced_at: null })
   })
 
-  it('translate: 翻訳結果に日本語が残っていれば失敗扱いにして保存しない', async () => {
-    mocks.translateDescription.mockResolvedValue('Brand new. ゆうパック')
+  it('translate: 翻訳結果に国内向けの文言が残っていれば失敗扱いにして保存しない', async () => {
+    mocks.translateDescription.mockResolvedValue('Brand new. Ships via ゆうパック')
     const json = await (await POST(request({ mode: 'translate' }))).json()
     expect(json.translated).toBe(0)
     expect(json.failed).toHaveLength(1)

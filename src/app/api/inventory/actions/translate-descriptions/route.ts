@@ -7,7 +7,7 @@ import { listingDescription } from '@/lib/listing-export'
 import { reviseDescription } from '@/lib/ebay-actions'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
-import { hasJapaneseDescription, JAPANESE_PATTERN } from '@/lib/description-translation'
+import { checkTranslatedDescription, hasJapaneseDescription } from '@/lib/description-translation'
 
 // ユーザー要望: 出品済み商品(148件)の説明文が日本語のままなので、英訳して
 // eBayの説明文を差し替える。
@@ -103,7 +103,8 @@ export async function POST(req: NextRequest) {
         const source = product.original_description ?? product.ebay_description ?? ''
         try {
           const after = await translateDescription(source, engine)
-          if (!after.trim() || JAPANESE_PATTERN.test(after)) throw new Error('翻訳結果に日本語が残っています')
+          const check = checkTranslatedDescription(after)
+          if (!check.ok) throw new Error(check.reason)
           const { error } = await db
             .from('products')
             .update({ ebay_description: after, description_synced_at: null, updated_at: new Date().toISOString() })
