@@ -117,6 +117,12 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
             <Badge variant="success">編集済み</Badge>
           </div>
         )}
+        {/* ユーザー要望: 出品CSVを出力したら「出力済み」を編集済みの下に表示 */}
+        {extraction.csv_exported_at && (
+          <div title={`出力: ${new Date(extraction.csv_exported_at).toLocaleString('ja-JP')}`}>
+            <Badge variant="default">出力済み</Badge>
+          </div>
+        )}
       </div>
 
       {/* 抽出ID・セラー・カテゴリ */}

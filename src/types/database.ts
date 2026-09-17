@@ -119,6 +119,8 @@ export interface Extraction {
   error_message: string | null
   exclusion_summary: ExtractionExclusionSummary | null
   edited_at: string | null
+  // 出品CSVを出力した日時(「出力済み」バッジ)
+  csv_exported_at?: string | null
   created_at: string
   updated_at: string
   // joins
