@@ -1,3 +1,4 @@
+import { renderDescriptionTemplate } from '@/lib/html-template'
 import type { Product } from '@/types/database'
 
 export interface ListingPolicies {
@@ -12,6 +13,9 @@ export interface ListingExportOptions extends ListingPolicies {
   // 出品カテゴリー管理画面で設定した、商品状態→ConditionIDの対応。
   // 未設定(null/undefined)なら従来の標準マッピングを使う。
   conditionMap?: Record<string, string> | null
+  // 抽出設定「HTML設定」でアクティブにしたテンプレート。あれば説明文HTMLを
+  // このテンプレートで組み立てる(無ければ既定の Description/Shipping 構成)。
+  htmlTemplate?: string | null
 }
 
 const CONDITION_ID_MAP: Record<string, string> = {
@@ -178,7 +182,8 @@ export function productSpecifics(product: Product): Record<string, string[]> {
   return specifics
 }
 
-export function listingDescription(product: Product): string {
+export function listingDescription(product: Product, htmlTemplate?: string | null): string {
+  if (htmlTemplate?.trim()) return renderDescriptionTemplate(htmlTemplate, product)
   const description = product.ebay_description ?? product.original_description ?? ''
   const condition = product.ebay_condition ?? product.original_condition ?? 'Pre-owned / Used'
   return [
@@ -195,8 +200,8 @@ export function listingDescription(product: Product): string {
   ].join('')
 }
 
-function listingCsvDescription(product: Product): string {
-  return `<![CDATA[${listingDescription(product).replace(/]]>/g, ']]&gt;')}]]>`
+function listingCsvDescription(product: Product, htmlTemplate?: string | null): string {
+  return `<![CDATA[${listingDescription(product, htmlTemplate).replace(/]]>/g, ']]&gt;')}]]>`
 }
 
 export function getListingIssues(product: Product, fallbackCategoryId: string | null): string[] {
@@ -270,7 +275,7 @@ export function generateListingCsv(
       Number.isFinite(price) && price > 0 ? price.toFixed(2) : '',
       conditionIdForProduct(product, category, options.conditionMap),
       (product.ebay_title ?? product.original_title).slice(0, 80),
-      listingCsvDescription(product),
+      listingCsvDescription(product, options.htmlTemplate),
       brand,
       productImages(product).slice(0, 24).join('|'),
       upc,
@@ -399,7 +404,7 @@ export function generateSpecificsCsv(
       Number.isFinite(price) && price > 0 ? price.toFixed(2) : '',
       conditionIdForProduct(product, category, options.conditionMap),
       (product.ebay_title ?? product.original_title).slice(0, 80),
-      listingDescription(product),
+      listingDescription(product, options.htmlTemplate),
       brand,
       productImages(product).slice(0, 24).join('|'),
       upc,

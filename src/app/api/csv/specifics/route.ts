@@ -7,6 +7,7 @@ import {
   specificsInColumnCount,
   specificsInFilename,
 } from '@/lib/listing-export'
+import { loadActiveHtmlTemplate } from '@/lib/html-template'
 import { getCategoryItemSpecificsNames } from '@/lib/ebay-taxonomy'
 import type { Product } from '@/types/database'
 
@@ -85,6 +86,8 @@ export async function GET(req: NextRequest) {
   // フォールバックする。
   const categoryId = extraction.category?.ebay_category_id ?? null
   const conditionMap = extraction.category?.condition_map ?? null
+  // 抽出設定「HTML設定」でアクティブにしたテンプレート(あれば説明文に適用)
+  const htmlTemplate = await loadActiveHtmlTemplate(supabase, user.id)
   const admin = createServiceClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
@@ -97,6 +100,7 @@ export async function GET(req: NextRequest) {
   const csv = generateSpecificsCsv(products as Product[], {
     categoryId,
     conditionMap,
+    htmlTemplate,
     sellerId: seller.seller_id,
     paymentProfileName: paymentProfile,
     returnProfileName: returnProfile,

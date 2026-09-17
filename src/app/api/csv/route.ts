@@ -8,6 +8,7 @@ import {
   getListingIssues,
   listingFilename,
 } from '@/lib/listing-export'
+import { loadActiveHtmlTemplate } from '@/lib/html-template'
 import { getCategoryItemSpecificsNames } from '@/lib/ebay-taxonomy'
 import type { Product } from '@/types/database'
 
@@ -83,6 +84,8 @@ export async function GET(req: NextRequest) {
   const categoryId = extraction.category?.ebay_category_id ?? null
   // 出品カテゴリー管理で設定した商品状態→ConditionIDの対応(未設定ならnull)。
   const conditionMap = extraction.category?.condition_map ?? null
+  // 抽出設定「HTML設定」でアクティブにしたテンプレート(あれば説明文に適用)
+  const htmlTemplate = await loadActiveHtmlTemplate(supabase, user.id)
   const typedProducts = products as Product[]
   const invalid = typedProducts
     .map((product) => ({ productId: product.id, issues: getListingIssues(product, categoryId) }))
@@ -110,6 +113,7 @@ export async function GET(req: NextRequest) {
   const csv = generateListingCsv(typedProducts, {
     categoryId,
     conditionMap,
+    htmlTemplate,
     sellerId: seller.seller_id,
     paymentProfileName: paymentProfile,
     returnProfileName: returnProfile,
