@@ -30,7 +30,8 @@ interface SpotWord { id: string; word: string }
 interface ReplaceWord { id: string; before_word: string; after_word: string }
 interface HtmlTemplate { id: string; name: string; content: string; is_active: boolean }
 
-const ENGINE_LABELS: Record<Engine, string> = { normal: '通常品質', high: '高品質翻訳', best: '最高品質翻訳' }
+// ユーザーへの説明: 各品質のモデル名も表示する(通常=gpt-4.1-nano / 高品質=gpt-4.1-mini / 最高=gpt-5-mini)
+const ENGINE_LABELS: Record<Engine, string> = { normal: '通常品質（gpt-4.1-nano・最安）', high: '高品質翻訳（gpt-4.1-mini・推奨）', best: '最高品質翻訳（gpt-5-mini）' }
 const DEFAULT_SETTINGS: ExtractionSettings = {
   title_engine: 'high', title_enabled: true,
   brand_engine: 'high', brand_enabled: true,
@@ -489,6 +490,10 @@ export default function ExtractionSettingsPage() {
           {/* 翻訳設定 */}
           <div>
             <h2 className="text-sm font-semibold text-gray-700 mb-4 pb-1 border-b">翻訳設定</h2>
+            <p className="text-xs text-gray-500 mb-3">
+              タイトル: 英訳（80文字以内）。ブランド: タイトル・説明からメーカー/レーベル名を抽出してeBayのBrand項目に設定。
+              商品詳細: 説明文を英訳し、国内配送（ゆうパック・ヤマト・匿名配送等）や「専用」「即購入OK」など海外バイヤーに不要な文章をAIで削除します。
+            </p>
             <div className="space-y-4">
               {([
                 ['タイトル設定', 'title_engine', 'title_enabled'],
