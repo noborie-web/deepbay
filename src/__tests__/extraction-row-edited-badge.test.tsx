@@ -45,3 +45,20 @@ describe('ExtractionRow: 編集済みバッジ', () => {
     expect(screen.queryByText('編集済み')).not.toBeInTheDocument()
   })
 })
+
+// ユーザー要望: 出品CSVを出力した抽出には「出力済み」バッジを編集済みの下に表示したい。
+describe('ExtractionRow: 出力済みバッジ', () => {
+  it('csv_exported_atが設定されていれば「出力済み」バッジを表示する', () => {
+    const extraction = makeExtraction({ edited_at: '2026-09-09T00:00:00.000Z', csv_exported_at: '2026-09-17T00:00:00.000Z' })
+    render(<ExtractionRow extraction={extraction} onViewResult={vi.fn()} />)
+
+    expect(screen.getByText('編集済み')).toBeInTheDocument()
+    expect(screen.getByText('出力済み')).toBeInTheDocument()
+  })
+
+  it('csv_exported_atがnullなら「出力済み」バッジを表示しない', () => {
+    render(<ExtractionRow extraction={makeExtraction({ csv_exported_at: null })} onViewResult={vi.fn()} />)
+
+    expect(screen.queryByText('出力済み')).not.toBeInTheDocument()
+  })
+})

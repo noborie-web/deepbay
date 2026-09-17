@@ -120,6 +120,13 @@ export async function GET(req: NextRequest) {
     shippingProfileName: shippingProfile,
   }, itemSpecificColumns)
 
+  // ユーザー要望: 出品CSVを出力した抽出に「出力済み」を表示する
+  await admin
+    .from('extractions')
+    .update({ csv_exported_at: new Date().toISOString() })
+    .eq('id', extractionId)
+    .eq('user_id', user.id)
+
   return new NextResponse(csv, {
     headers: {
       'Content-Type': 'text/csv; charset=utf-8',
