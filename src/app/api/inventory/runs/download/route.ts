@@ -108,7 +108,8 @@ export async function POST(req: NextRequest) {
       if (!product) continue
 
       const detected = Array.isArray(l.supplier_diff) ? (l.supplier_diff as string[]) : []
-      const diffs = detected.filter(kind => diffColumns.includes(kind))
+      // 「専用(取り置き)」はタイトル差分の一種として、タイトルを選んだときに出力する
+      const diffs = detected.filter(kind => diffColumns.includes(kind) || (kind === 'reserved' && diffColumns.includes('title')))
       if (diffs.length === 0) continue
 
       const oldPrice = product.original_price

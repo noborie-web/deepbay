@@ -199,7 +199,7 @@ export interface InventoryActiveListing {
   // 仕入先チェックで取得した最新タイトル・価格(円)と、抽出時からの差分
   supplier_title?: string | null
   supplier_price_jpy?: number | null
-  supplier_diff?: Array<'title' | 'price'> | null
+  supplier_diff?: Array<'title' | 'price' | 'reserved'> | null
   supplier_diff_detected_at?: string | null
   // 一覧API(/api/inventory/listings)が付加する表示用の値(DB列ではない)
   purchase_price_jpy?: number | null

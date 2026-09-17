@@ -23,7 +23,7 @@ vi.mock('@/lib/scrapers', () => ({
 }))
 vi.mock('@/lib/exchange-rate', () => ({ fetchUsdJpyRate: mocks.fetchUsdJpyRate }))
 
-import { checkSupplierListings, detectSupplierDiff, normalizePriceChangeFilter, scalePriceByExchangeRate, shouldUpdateEbayPrice } from '@/lib/inventory-supplier-check'
+import { checkSupplierListings, detectSupplierDiff, isReservedTitle, normalizePriceChangeFilter, scalePriceByExchangeRate, shouldUpdateEbayPrice } from '@/lib/inventory-supplier-check'
 import { calculateAutomaticEbayPrice } from '@/lib/extraction-run'
 
 interface ProductFixture {
@@ -152,7 +152,7 @@ describe('checkSupplierListings', () => {
 
     const result = await checkSupplierListings(db as never, 'user-1')
 
-    expect(result).toEqual({ total: 2, available: 1, unavailable: 1, skipped: 0, failed: 0, price_increased: 0, price_recalculated: 0, title_changed: 0 })
+    expect(result).toEqual({ total: 2, available: 1, unavailable: 1, skipped: 0, failed: 0, price_increased: 0, price_recalculated: 0, title_changed: 0, reserved: 0 })
     expect(updateCalls(calls)).toEqual([
       expect.objectContaining({ payload: expect.objectContaining({ supplier_checked_at: '2026-08-27T00:00:00.000Z', quantity: 0 }) }),
       expect.objectContaining({ payload: expect.objectContaining({ supplier_checked_at: '2026-08-27T00:00:00.000Z' }) }),
@@ -266,7 +266,7 @@ describe('checkSupplierListings', () => {
 
     const result = await checkSupplierListings(db as never, 'user-1')
 
-    expect(result).toEqual({ total: 2, available: 1, unavailable: 0, skipped: 0, failed: 1, price_increased: 0, price_recalculated: 0, title_changed: 0 })
+    expect(result).toEqual({ total: 2, available: 1, unavailable: 0, skipped: 0, failed: 1, price_increased: 0, price_recalculated: 0, title_changed: 0, reserved: 0 })
     expect(updateCalls(calls)).toHaveLength(2)
   })
 
@@ -619,6 +619,57 @@ describe('仕入先のタイトル・価格の差分検知', () => {
     const [first, second] = updateCalls(calls)
     expect(first.payload).toMatchObject({ supplier_price_jpy: 7500, supplier_diff: ['price'] })
     expect(second.payload).toMatchObject({ supplier_diff: [], supplier_diff_detected_at: null })
+  })
+})
+
+// ユーザー要望: メルカリでは購入者に取り置きするためタイトルを
+// 「〇〇様専用」に変更する出品者がいる。在庫切れと同じ扱いにする。
+describe('専用(取り置き)タイトルの検知', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-27T00:00:00.000Z'))
+    mocks.findScraper.mockReset().mockReturnValue({ siteKey: 'mercari' })
+    mocks.scrapeUrl.mockReset()
+    mocks.fetchUsdJpyRate.mockReset().mockResolvedValue({ rate: 150, date: '2026-08-27' })
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('タイトルが「〇〇様専用」になっていたら在庫0(売り切れと同じ)にする', async () => {
+    const { db, calls } = makeDatabase({
+      listings: [{ id: 'listing-1', product_id: 'product-1' }],
+      products: [{
+        id: 'product-1', source_url: 'https://jp.mercari.com/item/1',
+        original_title: 'ATEEZ サン タワレコ特典 キャンパスボード', original_price: 8999,
+        purchase_price_jpy: 8999, ebay_price: 185.43, pricing_jpy_per_usd: 150,
+      }],
+    })
+    mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', title: 'Risa様専用', price: 2222 }])
+
+    const result = await checkSupplierListings(db as never, 'user-1')
+
+    expect(result.unavailable).toBe(1)
+    expect(result.reserved).toBe(1)
+    expect(result.price_recalculated).toBe(0)
+    expect(updateCalls(calls)[0].payload).toMatchObject({
+      quantity: 0,
+      supplier_title: 'Risa様専用',
+      supplier_diff: ['title', 'reserved', 'price'],
+    })
+    // 取り置きの仮価格(¥2,222)でeBay価格を再計算してはいけない
+    expect(updateCalls(calls, 'products')).toHaveLength(0)
+  })
+
+  it('isReservedTitle: 専用・取り置きの表記を検知し、通常のタイトルは検知しない', () => {
+    expect(isReservedTitle('Risa様専用')).toBe(true)
+    expect(isReservedTitle('Risa 様 専用')).toBe(true)
+    expect(isReservedTitle('専用出品 ATEEZ トレカ')).toBe(true)
+    expect(isReservedTitle('ATEEZ トレカ 専用')).toBe(true)
+    expect(isReservedTitle('お取り置き中 ATEEZ トレカ')).toBe(true)
+    expect(isReservedTitle('取置き ATEEZ トレカ')).toBe(true)
+    expect(isReservedTitle('ATEEZ サン タワレコ特典 キャンパスボード')).toBe(false)
+    expect(isReservedTitle('PS5専用コントローラー')).toBe(false)
+    expect(isReservedTitle('iPhone専用ケース 新品')).toBe(false)
+    expect(isReservedTitle(null)).toBe(false)
   })
 })
 

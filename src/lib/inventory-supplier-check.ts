@@ -98,9 +98,29 @@ export interface SupplierCheckResult {
   // ユーザー要望: 公式ツール同様にタイトルの差分も検知する。仕入先の最新
   // タイトルが抽出時(original_title)から変わっていた件数。
   title_changed: number
+  // 「〇〇様専用」等の取り置きになっていた件数(unavailable に含まれる)
+  reserved: number
 }
 
-export type SupplierDiffKind = 'title' | 'price'
+export type SupplierDiffKind = 'title' | 'price' | 'reserved'
+
+// ユーザー要望: メルカリでは購入者に取り置きするためタイトルを
+// 「〇〇様専用」に変更する出品者がいる。この場合は他の人は買えないので
+// 在庫切れと同じ扱い(在庫0 → 即取り下げ)にする。
+const RESERVED_TITLE_PATTERNS = [
+  /様\s*専用/,          // 〇〇様専用
+  /専用\s*(出品|ページ|です|になります|$)/, // 専用出品 / 専用ページ / 「…専用」で終わる
+  /^専用/,              // 専用〇〇様
+  /お?取り?置き/,        // 取り置き / お取り置き / 取置き
+  /取置/,
+  /(purchased|reserved)\s*by/i,
+]
+
+export function isReservedTitle(title: string | null | undefined): boolean {
+  if (!title) return false
+  const normalized = title.replace(/\s+/g, ' ').trim()
+  return RESERVED_TITLE_PATTERNS.some(pattern => pattern.test(normalized))
+}
 
 // 抽出時のタイトル・価格(円)と、仕入先の最新タイトル・価格を比べて差分の
 // 種類を返す(公式ツールの差分検知ファイルの diff_detail 相当)。
@@ -112,6 +132,8 @@ export function detectSupplierDiff(
   const originalTitle = (original.title ?? '').trim()
   const latestTitle = (latest.title ?? '').trim()
   if (originalTitle && latestTitle && originalTitle !== latestTitle) diffs.push('title')
+  // 抽出時は専用ではなかったのに、今は「〇〇様専用」等になっている
+  if (latestTitle && isReservedTitle(latestTitle) && !isReservedTitle(originalTitle)) diffs.push('reserved')
   if (
     typeof original.priceJpy === 'number' && typeof latest.priceJpy === 'number'
     && latest.priceJpy > 0 && Math.abs(original.priceJpy - latest.priceJpy) >= 1
@@ -145,6 +167,7 @@ export async function checkSupplierListings(
     price_increased: 0,
     price_recalculated: 0,
     title_changed: 0,
+    reserved: 0,
   }
 
   const { data: listings, error: listingsError } = await db
@@ -259,6 +282,10 @@ export async function checkSupplierListings(
         if (scraped?.availability === 'sold_out') {
           outcome = 'unavailable'
           quantity = 0
+        } else if (supplierDiff?.includes('reserved')) {
+          // 「〇〇様専用」等の取り置き: 他の人は買えないので在庫切れと同じ扱い
+          outcome = 'unavailable'
+          quantity = 0
         } else {
           outcome = 'available'
 
@@ -351,6 +378,7 @@ export async function checkSupplierListings(
       if (updateError) throw new Error(updateError.message)
       result[outcome] += 1
       if (supplierDiff?.includes('title')) result.title_changed += 1
+      if (supplierDiff?.includes('reserved')) result.reserved += 1
     } catch {
       // 1件の更新失敗で、残りの仕入れ元チェックを中断しない。
       result.failed += 1
