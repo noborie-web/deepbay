@@ -132,7 +132,26 @@ export const EBAY_UPLOAD_COLUMN_COUNT = 42
 // 呼び出し側(APIルート)がレスポンスヘッダー等で実際の出力列数を知る
 // ためのヘルパー(itemSpecificColumnsがカテゴリごとに変動するため)。
 export function ebayUploadColumnCount(itemSpecificColumns: readonly string[]): number {
-  return EBAY_UPLOAD_BASE_HEADERS.length + itemSpecificColumns.length
+  return EBAY_UPLOAD_BASE_HEADERS.length + dedupeItemSpecificColumns(itemSpecificColumns).length
+}
+
+// 実データで確認した不具合: カテゴリ別の項目(eBayのaspect一覧)に Brand や
+// Country が含まれると、基本列の C:Brand / C:Country と重複した列が出力
+// されていた(例: カテゴリ69528で C:Brand が2列)。基本列にある項目は
+// カテゴリ別項目から除く。
+const BASE_ITEM_SPECIFIC_NAMES = new Set(
+  EBAY_UPLOAD_BASE_HEADERS.filter((h) => h.startsWith('C:')).map((h) => h.slice(2)),
+)
+
+export function dedupeItemSpecificColumns(itemSpecificColumns: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const name of itemSpecificColumns) {
+    if (BASE_ITEM_SPECIFIC_NAMES.has(name) || seen.has(name)) continue
+    seen.add(name)
+    result.push(name)
+  }
+  return result
 }
 
 function escapeCsv(value: string): string {
@@ -260,7 +279,7 @@ export function generateListingCsv(
   options: ListingExportOptions,
   itemSpecificColumns: readonly string[] = EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS,
 ): string {
-  const names = itemSpecificColumns
+  const names = dedupeItemSpecificColumns(itemSpecificColumns)
   const headers = [...EBAY_UPLOAD_BASE_HEADERS, ...names.map((name) => `C:${name}`)]
   const rows = products.map((product, index) => {
     const specifics = productSpecifics(product)
@@ -376,7 +395,7 @@ export const SPECIFICS_IN_COLUMN_COUNT = 45
 // 呼び出し側(APIルート)がレスポンスヘッダー等で実際の出力列数を知る
 // ためのヘルパー(itemSpecificColumnsがカテゴリごとに変動するため)。
 export function specificsInColumnCount(itemSpecificColumns: readonly string[]): number {
-  return SPECIFICS_IN_HEADERS.length + itemSpecificColumns.length
+  return SPECIFICS_IN_HEADERS.length + dedupeItemSpecificColumns(itemSpecificColumns).length
 }
 
 // itemSpecificColumnsが渡された場合(eBay Taxonomy APIから取得したカテゴリ
@@ -388,7 +407,7 @@ export function generateSpecificsCsv(
   options: ListingExportOptions,
   itemSpecificColumns: readonly string[] = EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS,
 ): string {
-  const names = itemSpecificColumns
+  const names = dedupeItemSpecificColumns(itemSpecificColumns)
   const headers = [...SPECIFICS_IN_HEADERS, ...names.map((name) => `C:${name}`)]
 
   const rows = products.map((product, index) => {

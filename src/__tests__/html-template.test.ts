@@ -47,3 +47,24 @@ describe('listingDescription with template', () => {
     expect(withoutTemplate).toContain('<h2>Shipping</h2>')
   })
 })
+
+import { dedupeItemSpecificColumns, ebayUploadColumnCount, generateListingCsv } from '@/lib/listing-export'
+
+// 実データで確認した不具合: カテゴリ69528の出品CSVで C:Brand 列が2つ出力
+// されていた(基本列とカテゴリ別項目の両方に Brand があるため)。
+describe('dedupeItemSpecificColumns', () => {
+  it('基本列にある Brand/Country と重複する項目を除き、同名の重複も1つにする', () => {
+    expect(dedupeItemSpecificColumns(['Franchise', 'Brand', 'Country', 'Type', 'Type'])).toEqual(['Franchise', 'Type'])
+    expect(ebayUploadColumnCount(['Franchise', 'Brand'])).toBe(ebayUploadColumnCount(['Franchise']))
+  })
+
+  it('出品CSVのヘッダーに C:Brand が1列しか出ない', () => {
+    const csv = generateListingCsv([product()], {
+      categoryId: '69528', sellerId: 'miyabi-24',
+      paymentProfileName: 'p', returnProfileName: 'r', shippingProfileName: 's',
+    }, ['Franchise', 'Brand', 'Type'])
+    const header = csv.split('\n')[0]
+    expect(header.split(',').filter((h) => h === 'C:Brand')).toHaveLength(1)
+    expect(header).toContain('C:Franchise')
+  })
+})

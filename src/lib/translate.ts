@@ -30,7 +30,7 @@ export async function translateTitle(title: string, engine: string): Promise<str
     messages: [
       {
         role: 'system',
-        content: 'You are an expert eBay listing title translator. Translate the Japanese product title to English. Output only the translated title, nothing else. Keep brand names, model numbers, and product codes as-is. Max 80 characters.',
+        content: 'You are an expert eBay listing title translator. Translate the Japanese product title to English. Output only the translated title, nothing else. Keep brand names, model numbers, and product codes as-is. Max 80 characters. Remove Japanese marketplace (Mercari) phrases that are meaningless to international buyers, such as 値下げ交渉/値下げ/最終値下げ/本日限定/専用/取り置き/即購入OK/匿名配送/送料込み/コメント不要/フォロー割 — do not translate them (e.g. never output "Price Negotiable" or "Reserved").',
       },
       { role: 'user', content: title },
     ],
