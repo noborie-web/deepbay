@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   products: [] as Candidate[],
   inventoryListings: [] as { product_id: string | null }[],
   deleteTables: [] as string[],
+  updates: [] as { table: string; payload: Record<string, unknown> }[],
 }))
 
 vi.mock('@/lib/supabase/server', () => ({
@@ -41,10 +42,11 @@ vi.mock('@/lib/supabase/server', () => ({
 vi.mock('@supabase/supabase-js', () => ({
   createClient: vi.fn(() => ({
     from: vi.fn((table: string) => {
-      let operation: 'select' | 'delete' = 'select'
+      let operation: 'select' | 'delete' | 'update' = 'select'
       const query = {
         select: vi.fn(),
         delete: vi.fn(),
+        update: vi.fn(),
         eq: vi.fn(),
         in: vi.fn(),
         then: (
@@ -54,6 +56,8 @@ vi.mock('@supabase/supabase-js', () => ({
           let result: { data?: unknown; error: null }
           if (operation === 'delete') {
             state.deleteTables.push(table)
+            result = { error: null }
+          } else if (operation === 'update') {
             result = { error: null }
           } else if (table === 'products') {
             result = { data: state.products, error: null }
@@ -71,6 +75,11 @@ vi.mock('@supabase/supabase-js', () => ({
       })
       query.delete.mockImplementation(() => {
         operation = 'delete'
+        return query
+      })
+      query.update.mockImplementation((payload: Record<string, unknown>) => {
+        operation = 'update'
+        state.updates.push({ table, payload })
         return query
       })
       query.eq.mockReturnValue(query)
@@ -101,9 +110,12 @@ describe('protected product deletion', () => {
     state.products = []
     state.inventoryListings = []
     state.deleteTables = []
+    state.updates = []
   })
 
-  it('blocks the entire extraction when one child product is listed', async () => {
+  // 本番で発生した事故の再発防止: 抽出を削除しても出品済みの商品は削除せず、
+  // 抽出から切り離すだけにする(在庫管理の紐付けを維持)。強制削除は廃止。
+  it('出品済みの商品を含む抽出を削除すると、出品済みは切り離して残し、未出品だけ削除する', async () => {
     state.products = [unlistedProduct, listedProduct]
     const { DELETE } = await import('@/app/api/extractions/[id]/route')
     const response = await DELETE(
@@ -111,15 +123,17 @@ describe('protected product deletion', () => {
       { params: Promise.resolve({ id: 'extraction-1' }) },
     )
 
-    expect(response.status).toBe(409)
+    expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({
-      error: LISTED_PRODUCT_DELETE_ERROR,
-      blockedProducts: [{ id: 'product-listed', title: 'Listed title' }],
+      ok: true,
+      deleted: 1,
+      kept: [{ id: 'product-listed', title: 'Listed title' }],
     })
-    expect(state.deleteTables).toEqual([])
+    expect(state.updates).toEqual([{ table: 'products', payload: expect.objectContaining({ extraction_id: null }) }])
+    expect(state.deleteTables).toEqual(['products', 'extractions'])
   })
 
-  it('force-deletes an extraction containing listed products', async () => {
+  it('force=true を付けても出品済みの商品は削除しない', async () => {
     state.products = [listedProduct]
     const { DELETE } = await import('@/app/api/extractions/[id]/route')
     const response = await DELETE(
@@ -128,7 +142,8 @@ describe('protected product deletion', () => {
     )
 
     expect(response.status).toBe(200)
-    expect(state.deleteTables).toEqual(['products', 'extractions'])
+    expect(state.deleteTables).toEqual(['extractions'])
+    expect(state.updates.map(u => u.table)).toEqual(['products'])
   })
 
   it('deletes an extraction normally when none of its products are listed', async () => {
