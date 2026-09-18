@@ -253,10 +253,12 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       for (let i = 0; i < 30; i++) {
         const json = await callRecover('recover')
         recovered += json.recovered ?? 0; failed += (json.failed ?? []).length
-        setRecoverMessage(`復元中… ${recovered}件完了${failed ? `（失敗 ${failed}件）` : ''}`)
-        if (json.done || ((json.recovered ?? 0) === 0 && (json.failed ?? []).length === 0)) break
+        const firstError = (json.failed ?? [])[0]?.error
+        setRecoverMessage(`復元中… ${recovered}件完了${failed ? `（失敗 ${failed}件${firstError ? `: ${firstError}` : ''}）` : ''}`)
+        // 1件も進まなければ(全件失敗など)繰り返しても同じ結果になるので止める
+        if (json.done || (json.recovered ?? 0) === 0) break
       }
-      setRecoverMessage(`復元完了: ${recovered}件の商品を再作成し在庫管理に紐付けました${failed ? `（失敗 ${failed}件）` : ''}。ページを再読み込みすると集計に反映されます。`)
+      setRecoverMessage(`復元完了: ${recovered}件の商品を再作成し在庫管理に紐付けました${failed ? `（失敗 ${failed}件。失敗理由は上の行を参照）` : ''}。ページを再読み込みすると集計に反映されます。`)
       await checkRecoverStatus()
     } catch (e) { setRecoverError(e instanceof Error ? e.message : String(e)) }
     finally { setRecoverBusy('idle') }

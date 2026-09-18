@@ -113,8 +113,11 @@ export async function POST(req: NextRequest) {
         id: productId,
         user_id: user.id,
         extraction_id: null,
-        source_url: null,
-        source_site: 'mercari',
+        // 本番で確認した不具合: source_url は NOT NULL のため null では作成できず
+        // 全件失敗した。仕入先URLが判明するまでの仮の値として eBay の商品URLを
+        // 入れる(対応スクレイパーが無いため仕入先チェックは skipped になる)。
+        source_url: `https://www.ebay.com/itm/${candidate.itemId}`,
+        source_site: 'ebay',
         source_item_id: null,
         original_title: details.title,
         original_price: null,
