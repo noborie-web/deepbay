@@ -30,7 +30,7 @@ export interface InventorySyncBatchResult extends InventorySyncResult {
 
 const DB_CHUNK_SIZE = 100
 
-async function storeInventoryListings(
+export async function storeInventoryListings(
   db: SupabaseClient,
   userId: string,
   listings: InventoryListingInput[],
