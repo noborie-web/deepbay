@@ -216,6 +216,52 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
 
+  // ユーザー要望(事故復旧): 抽出の削除で消えた出品済み商品を、eBay上の出品
+  // (Kakehashi SKU)から復元する。
+  const [recoverItemIds, setRecoverItemIds] = useState('')
+  const [recoverStatus, setRecoverStatus] = useState<{ candidates: number; discovered: number } | null>(null)
+  const [recoverBusy, setRecoverBusy] = useState<'idle' | 'status' | 'recover'>('idle')
+  const [recoverMessage, setRecoverMessage] = useState<string | null>(null)
+  const [recoverError, setRecoverError] = useState<string | null>(null)
+
+  function parseRecoverItemIds(): string[] {
+    return Array.from(new Set(recoverItemIds.split(/[\s,]+/).map(v => v.trim()).filter(v => /^\d{9,15}$/.test(v))))
+  }
+
+  async function callRecover(mode: 'status' | 'recover') {
+    const res = await fetch('/api/inventory/actions/recover-products', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, item_ids: parseRecoverItemIds() }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error ?? '処理に失敗しました')
+    return json
+  }
+
+  const checkRecoverStatus = async () => {
+    setRecoverBusy('status'); setRecoverError(null); setRecoverMessage(null)
+    try { const json = await callRecover('status'); setRecoverStatus({ candidates: json.candidates, discovered: json.discovered }) }
+    catch (e) { setRecoverError(e instanceof Error ? e.message : String(e)) }
+    finally { setRecoverBusy('idle') }
+  }
+
+  const runRecover = async () => {
+    if (!confirm('eBay上のKakehashi出品から商品を復元します（eBay側は変更しません）。よろしいですか？')) return
+    setRecoverBusy('recover'); setRecoverError(null); setRecoverMessage(null)
+    let recovered = 0; let failed = 0
+    try {
+      for (let i = 0; i < 30; i++) {
+        const json = await callRecover('recover')
+        recovered += json.recovered ?? 0; failed += (json.failed ?? []).length
+        setRecoverMessage(`復元中… ${recovered}件完了${failed ? `（失敗 ${failed}件）` : ''}`)
+        if (json.done || ((json.recovered ?? 0) === 0 && (json.failed ?? []).length === 0)) break
+      }
+      setRecoverMessage(`復元完了: ${recovered}件の商品を再作成し在庫管理に紐付けました${failed ? `（失敗 ${failed}件）` : ''}。ページを再読み込みすると集計に反映されます。`)
+      await checkRecoverStatus()
+    } catch (e) { setRecoverError(e instanceof Error ? e.message : String(e)) }
+    finally { setRecoverBusy('idle') }
+  }
+
   // ユーザー要望: 出品済み商品(148件)の説明文が日本語のままなので、英訳して
   // eBayの説明文を差し替える。サンプル確認 → 全件翻訳 → eBayへ反映 の順。
   interface DescTranslationStatus { total: number; untranslated: number; translated: number; unsynced: number }
@@ -1368,6 +1414,30 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 onBlur={() => saveSetting({ days_until_delist: settings.days_until_delist })}
                 className="w-20 border rounded px-2 py-1 text-sm text-center disabled:bg-gray-100" />
             </div>
+          </div>
+          <hr />
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">eBayから商品を復元する</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              抽出の削除などでKakehashiの商品データが消えた場合に、eBay上のKakehashi出品（管理番号 kakehashi_…）から商品を同じ商品IDで再作成し、在庫管理に紐付けます。
+              eBayの新しい順600件を自動で走査するほか、eBayのItemIDを貼り付けて指定することもできます。仕入先URLは復元できないため、復元後に別途設定してください。
+            </p>
+            <textarea value={recoverItemIds} onChange={e => setRecoverItemIds(e.target.value)} rows={3}
+              placeholder="eBay ItemID（任意・改行/カンマ区切り）例: 318865179224, 298670540821"
+              className="w-full border rounded px-3 py-2 text-xs mb-2" />
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <button onClick={checkRecoverStatus} disabled={recoverBusy !== 'idle' || !settings.has_token}
+                className="px-3 py-1.5 border text-xs rounded text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                {recoverBusy === 'status' ? '確認中...' : '復元候補を確認'}
+              </button>
+              <button onClick={runRecover} disabled={recoverBusy !== 'idle' || !recoverStatus || recoverStatus.candidates === 0}
+                className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:opacity-40">
+                {recoverBusy === 'recover' ? '復元中...' : `復元を実行${recoverStatus ? `（${recoverStatus.candidates}件）` : ''}`}
+              </button>
+            </div>
+            {recoverStatus && <p className="text-xs text-gray-600 mb-2">Kakehashi出品 {recoverStatus.discovered}件を確認 / うち商品が存在しない（復元候補） {recoverStatus.candidates}件</p>}
+            {recoverMessage && <p className="text-xs text-green-700 mb-2">{recoverMessage}</p>}
+            {recoverError && <p className="text-xs text-red-600 mb-2">{recoverError}</p>}
           </div>
           <hr />
           <div>
