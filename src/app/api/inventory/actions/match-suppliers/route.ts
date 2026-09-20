@@ -24,16 +24,31 @@ function isPlaceholderSource(url: string | null): boolean {
   return !findScraper(url)
 }
 
-interface Row { id: string; ebay_item_id: string | null; original_title: string; original_price: number | null; purchase_price_jpy: number | null; source_url: string | null; listing_status: string }
+interface Row { id: string; ebay_item_id: string | null; original_title: string; original_price: number | null; purchase_price_jpy: number | null; source_url: string | null; listing_status: string; ebay_images: string[] | null }
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const body = await req.json().catch(() => ({})) as { mode?: string; limit?: number; apply?: unknown; skip_ids?: unknown }
+  const body = await req.json().catch(() => ({})) as { mode?: string; limit?: number; apply?: unknown; skip_ids?: unknown; product_id?: unknown }
   const mode = body.mode ?? 'status'
   const db = admin()
+
+  // 仕入先がメルカリ上に見つからない(売れた/削除された)商品は、仕入れが
+  // できないので在庫切れ扱いにする(在庫0 → 即取り下げの対象になる)。
+  if (mode === 'mark_unavailable') {
+    const productId = typeof body.product_id === 'string' ? body.product_id : ''
+    if (!productId) return NextResponse.json({ error: 'product_id を指定してください' }, { status: 400 })
+    const now = new Date().toISOString()
+    const { error } = await db
+      .from('inventory_active_listings')
+      .update({ quantity: 0, supplier_checked_at: now, updated_at: now })
+      .eq('user_id', user.id)
+      .eq('product_id', productId)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ ok: true })
+  }
 
   if (mode === 'apply') {
     const entries = Array.isArray(body.apply) ? body.apply as Array<{ product_id?: string; source_url?: string }> : []
@@ -55,7 +70,7 @@ export async function POST(req: NextRequest) {
 
   const { data, error } = await db
     .from('products')
-    .select('id, ebay_item_id, original_title, original_price, purchase_price_jpy, source_url, listing_status')
+    .select('id, ebay_item_id, original_title, original_price, purchase_price_jpy, source_url, listing_status, ebay_images')
     .eq('user_id', user.id)
     .not('ebay_item_id', 'is', null)
     .order('created_at', { ascending: true })
@@ -69,7 +84,7 @@ export async function POST(req: NextRequest) {
   const limit = Math.min(Math.max(1, Math.floor(body.limit ?? RUN_LIMIT_MAX)), RUN_LIMIT_MAX)
   const batch = targets.slice(0, limit)
   const matched: Array<{ product_id: string; ebay_item_id: string | null; title: string; source_url: string; candidate_title: string; price: number | null }> = []
-  const review: Array<{ product_id: string; ebay_item_id: string | null; title: string; price_jpy: number | null; listing_status: string; candidates: SupplierCandidate[] }> = []
+  const review: Array<{ product_id: string; ebay_item_id: string | null; title: string; price_jpy: number | null; listing_status: string; image_url: string | null; candidates: SupplierCandidate[] }> = []
   const failed: Array<{ product_id: string; title: string; error: string }> = []
 
   const concurrency = 3
@@ -90,7 +105,7 @@ export async function POST(req: NextRequest) {
           if (updateError) throw new Error(updateError.message)
           matched.push({ product_id: row.id, ebay_item_id: row.ebay_item_id, title: row.original_title, source_url: result.best.sourceUrl, candidate_title: result.best.title, price: result.best.price })
         } else {
-          review.push({ product_id: row.id, ebay_item_id: row.ebay_item_id, title: row.original_title, price_jpy: priceJpy, listing_status: row.listing_status, candidates: result.candidates.slice(0, 3) })
+          review.push({ product_id: row.id, ebay_item_id: row.ebay_item_id, title: row.original_title, price_jpy: priceJpy, listing_status: row.listing_status, image_url: row.ebay_images?.[0] ?? null, candidates: result.candidates.slice(0, 3) })
         }
       } catch (error) {
         failed.push({ product_id: row.id, title: row.original_title, error: error instanceof Error ? error.message : String(error) })
