@@ -9,6 +9,8 @@ export interface SupplierCandidate {
   title: string
   price: number | null
   availability: string | null
+  // 検索結果のサムネイル(画像で見比べて判断するため)
+  imageUrl: string | null
   score: number
   // 仕入価格と一致(同名商品が複数ある場合の決め手)
   priceMatch: boolean
@@ -106,6 +108,7 @@ export async function findSupplierMatch(
         title: r.title,
         price: r.price ?? null,
         availability: (r as { availability?: string | null }).availability ?? null,
+        imageUrl: r.images?.[0] ?? null,
         score: scoreCandidate(product, { title: r.title, price: r.price ?? null }),
         priceMatch: isPriceMatch(product, { price: r.price ?? null }),
       }))

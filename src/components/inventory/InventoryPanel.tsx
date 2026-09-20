@@ -219,8 +219,8 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // ユーザー要望(事故復旧): 仕入先URLが消えた商品を、元タイトル+仕入価格で
   // メルカリを検索して照合する。確度が高いものは自動設定、それ以外は候補を
   // 表示して採用/手動入力。
-  interface MatchCandidate { sourceUrl: string; title: string; price: number | null; availability: string | null; score: number; priceMatch: boolean }
-  interface MatchReview { product_id: string; ebay_item_id: string | null; title: string; price_jpy: number | null; listing_status: string; candidates: MatchCandidate[] }
+  interface MatchCandidate { sourceUrl: string; title: string; price: number | null; availability: string | null; imageUrl: string | null; score: number; priceMatch: boolean }
+  interface MatchReview { product_id: string; ebay_item_id: string | null; title: string; price_jpy: number | null; listing_status: string; image_url: string | null; candidates: MatchCandidate[] }
   const [matchPending, setMatchPending] = useState<number | null>(null)
   const [matchBusy, setMatchBusy] = useState<'idle' | 'status' | 'run' | 'apply'>('idle')
   const [matchMessage, setMatchMessage] = useState<string | null>(null)
@@ -260,6 +260,16 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       }
       setMatchMessage(`照合完了: 自動設定 ${matched}件 / 要確認 ${reviews.length}件${failed ? ` / 失敗 ${failed}件` : ''}`)
       await checkMatchStatus()
+    } catch (e) { setMatchError(e instanceof Error ? e.message : String(e)) }
+    finally { setMatchBusy('idle') }
+  }
+
+  const markUnavailable = async (productId: string) => {
+    if (!confirm('この商品の仕入先が見つからないため「在庫切れ」として扱います（次回の自動実行で取り下げ対象になります）。よろしいですか？')) return
+    setMatchBusy('apply'); setMatchError(null)
+    try {
+      await callMatch({ mode: 'mark_unavailable', product_id: productId })
+      setMatchReviews(prev => prev.filter(r => r.product_id !== productId))
     } catch (e) { setMatchError(e instanceof Error ? e.message : String(e)) }
     finally { setMatchBusy('idle') }
   }
@@ -1529,15 +1539,37 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 <p className="text-xs font-medium text-gray-700">要確認（候補を選ぶかURLを入力してください）</p>
                 {matchReviews.map(review => (
                   <div key={review.product_id} className="border rounded p-3 bg-gray-50">
-                    <p className="text-xs font-medium text-gray-800">
-                      {review.title}
-                      <span className="ml-2 text-gray-500">仕入 {review.price_jpy != null ? `¥${review.price_jpy.toLocaleString()}` : '—'} / eBay {review.ebay_item_id ?? '—'}</span>
-                    </p>
+                    <div className="flex items-start gap-3">
+                      {/* Kakehashi側(eBay出品)の画像。候補のメルカリ画像と見比べて判断する */}
+                      <div className="h-16 w-16 shrink-0 overflow-hidden rounded border bg-white flex items-center justify-center text-[10px] text-gray-400">
+                        {review.image_url
+                          // eslint-disable-next-line @next/next/no-img-element
+                          ? <img src={review.image_url} alt="" className="h-full w-full object-contain" loading="lazy" />
+                          : '画像なし'}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium text-gray-800">
+                          {review.title}
+                          <span className="ml-2 text-gray-500">仕入 {review.price_jpy != null ? `¥${review.price_jpy.toLocaleString()}` : '—'} / eBay {review.ebay_item_id ? <a href={`https://www.ebay.com/itm/${review.ebay_item_id}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{review.ebay_item_id}</a> : '—'}</span>
+                        </p>
+                        <p className="text-[11px] text-gray-500">左の画像（eBay出品の1枚目）と候補の画像が同じ商品か確認してください。</p>
+                      </div>
+                      <button onClick={() => markUnavailable(review.product_id)} disabled={matchBusy !== 'idle'}
+                        className="shrink-0 px-2 py-1 border border-red-400 text-red-600 text-[11px] rounded hover:bg-red-50 disabled:opacity-40">
+                        仕入先なし→取り下げ対象
+                      </button>
+                    </div>
                     <div className="mt-2 space-y-1">
-                      {review.candidates.length === 0 && <p className="text-[11px] text-gray-500">メルカリで候補が見つかりませんでした</p>}
+                      {review.candidates.length === 0 && <p className="text-[11px] text-gray-500">メルカリで候補が見つかりませんでした（売れた/削除された可能性があります）</p>}
                       {review.candidates.map(c => (
                         <div key={c.sourceUrl} className="flex flex-wrap items-center gap-2 text-[11px]">
-                          <a href={c.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate max-w-[420px]" title={c.title}>{c.title}</a>
+                          <span className="h-10 w-10 shrink-0 overflow-hidden rounded border bg-white inline-flex items-center justify-center text-[9px] text-gray-400">
+                            {c.imageUrl
+                              // eslint-disable-next-line @next/next/no-img-element
+                              ? <img src={c.imageUrl} alt="" className="h-full w-full object-contain" loading="lazy" />
+                              : '—'}
+                          </span>
+                          <a href={c.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate max-w-[380px]" title={c.title}>{c.title}</a>
                           <span className="text-gray-500">{c.price != null ? `¥${c.price.toLocaleString()}` : '—'}{c.priceMatch ? '（価格一致）' : ''} / {c.availability === 'sold_out' ? '売り切れ' : '販売中'} / 一致度 {Math.round(c.score * 100)}%</span>
                           <button onClick={() => applyMatch(review.product_id, c.sourceUrl)} disabled={matchBusy !== 'idle'}
                             className="px-2 py-0.5 border border-blue-500 text-blue-600 rounded hover:bg-blue-50 disabled:opacity-40">採用</button>
