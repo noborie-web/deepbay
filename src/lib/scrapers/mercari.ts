@@ -506,6 +506,10 @@ export class MercariScraper {
     //    →ブラウザを使い回さず、Shops商品1件ごとに起動・使用・終了する
     //    ようにした。起動コストは増えるが、Shops商品は抽出全体のごく一部
     //    (数%程度)のため許容する。
+    // 仕入先URLの照合など、検索結果(タイトル・価格・URL・販売状況)だけで
+    // 足りる用途では商品ごとの詳細取得を省略する。
+    if (options.skipDetailEnrichment) return products
+
     const shopProducts = products.filter((p) => isShopItem(p.rawData))
     const normalProducts = products.filter((p) => !isShopItem(p.rawData))
 

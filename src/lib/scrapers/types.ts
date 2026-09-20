@@ -36,6 +36,9 @@ export interface ScraperOptions {
   // 危険セラーが1件も登録されていない場合はfalseのままにして、不要な
   // 追加アクセスを避ける。
   fetchSellerInfo?: boolean
+  // 検索結果だけが必要な用途(仕入先URLの照合など)で、商品ごとの詳細取得
+  // (画像・説明・Shops商品のブラウザ取得)を省略して高速に返す。
+  skipDetailEnrichment?: boolean
 }
 
 export interface IScraper {
