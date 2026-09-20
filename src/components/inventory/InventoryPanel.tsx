@@ -216,6 +216,69 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
 
+  // ユーザー要望(事故復旧): 仕入先URLが消えた商品を、元タイトル+仕入価格で
+  // メルカリを検索して照合する。確度が高いものは自動設定、それ以外は候補を
+  // 表示して採用/手動入力。
+  interface MatchCandidate { sourceUrl: string; title: string; price: number | null; availability: string | null; score: number; priceMatch: boolean }
+  interface MatchReview { product_id: string; ebay_item_id: string | null; title: string; price_jpy: number | null; listing_status: string; candidates: MatchCandidate[] }
+  const [matchPending, setMatchPending] = useState<number | null>(null)
+  const [matchBusy, setMatchBusy] = useState<'idle' | 'status' | 'run' | 'apply'>('idle')
+  const [matchMessage, setMatchMessage] = useState<string | null>(null)
+  const [matchError, setMatchError] = useState<string | null>(null)
+  const [matchReviews, setMatchReviews] = useState<MatchReview[]>([])
+  const [matchManualUrls, setMatchManualUrls] = useState<Record<string, string>>({})
+
+  async function callMatch(payload: Record<string, unknown>) {
+    const res = await fetch('/api/inventory/actions/match-suppliers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error ?? '処理に失敗しました')
+    return json
+  }
+
+  const checkMatchStatus = async () => {
+    setMatchBusy('status'); setMatchError(null)
+    try { const json = await callMatch({ mode: 'status' }); setMatchPending(json.pending) }
+    catch (e) { setMatchError(e instanceof Error ? e.message : String(e)) }
+    finally { setMatchBusy('idle') }
+  }
+
+  const runMatch = async () => {
+    setMatchBusy('run'); setMatchError(null); setMatchMessage(null)
+    let matched = 0; const reviews: MatchReview[] = []; let failed = 0
+    try {
+      // 要確認になった商品は次の回で再検索しないよう skip_ids で除外する
+      for (let i = 0; i < 40; i++) {
+        const json = await callMatch({ mode: 'run', skip_ids: reviews.map(r => r.product_id) })
+        matched += (json.matched ?? []).length
+        reviews.push(...(json.review ?? []))
+        failed += (json.failed ?? []).length
+        setMatchMessage(`照合中… 自動設定 ${matched}件 / 要確認 ${reviews.length}件${failed ? ` / 失敗 ${failed}件` : ''}`)
+        setMatchReviews([...reviews])
+        if (json.done || (json.processed ?? 0) === 0) break
+      }
+      setMatchMessage(`照合完了: 自動設定 ${matched}件 / 要確認 ${reviews.length}件${failed ? ` / 失敗 ${failed}件` : ''}`)
+      await checkMatchStatus()
+    } catch (e) { setMatchError(e instanceof Error ? e.message : String(e)) }
+    finally { setMatchBusy('idle') }
+  }
+
+  const applyMatch = async (productId: string, sourceUrl: string) => {
+    if (!sourceUrl.trim()) return
+    setMatchBusy('apply'); setMatchError(null)
+    try {
+      const json = await callMatch({ mode: 'apply', apply: [{ product_id: productId, source_url: sourceUrl.trim() }] })
+      if ((json.applied ?? 0) > 0) {
+        setMatchReviews(prev => prev.filter(r => r.product_id !== productId))
+        setMatchPending(prev => (prev == null ? prev : Math.max(0, prev - 1)))
+      } else {
+        setMatchError('URLを設定できませんでした（対応している仕入先のURLか確認してください）')
+      }
+    } catch (e) { setMatchError(e instanceof Error ? e.message : String(e)) }
+    finally { setMatchBusy('idle') }
+  }
+
   // ユーザー要望(事故復旧): 抽出の削除で消えた出品済み商品を、eBay上の出品
   // (Kakehashi SKU)から復元する。
   const [recoverItemIds, setRecoverItemIds] = useState('')
@@ -1440,6 +1503,59 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             {recoverStatus && <p className="text-xs text-gray-600 mb-2">Kakehashi出品 {recoverStatus.discovered}件を確認 / うち商品が存在しない（復元候補） {recoverStatus.candidates}件</p>}
             {recoverMessage && <p className="text-xs text-green-700 mb-2">{recoverMessage}</p>}
             {recoverError && <p className="text-xs text-red-600 mb-2">{recoverError}</p>}
+          </div>
+          <hr />
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">仕入先URLの自動照合</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              仕入先URLが未設定（eBayのURLが仮に入っている）商品について、元タイトルと仕入価格でメルカリを検索して仕入先URLを復元します。
+              タイトルと価格が一致する確度の高いものは自動で設定し、それ以外は候補を表示するので「採用」するかURLを手入力してください。
+            </p>
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <button onClick={checkMatchStatus} disabled={matchBusy !== 'idle'}
+                className="px-3 py-1.5 border text-xs rounded text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                {matchBusy === 'status' ? '確認中...' : '未設定の件数を確認'}
+              </button>
+              <button onClick={runMatch} disabled={matchBusy !== 'idle' || !matchPending}
+                className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:opacity-40">
+                {matchBusy === 'run' ? '照合中...' : `照合を実行${matchPending != null ? `（${matchPending}件）` : ''}`}
+              </button>
+            </div>
+            {matchPending != null && <p className="text-xs text-gray-600 mb-2">仕入先URL未設定: {matchPending}件</p>}
+            {matchMessage && <p className="text-xs text-green-700 mb-2">{matchMessage}</p>}
+            {matchError && <p className="text-xs text-red-600 mb-2">{matchError}</p>}
+            {matchReviews.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-gray-700">要確認（候補を選ぶかURLを入力してください）</p>
+                {matchReviews.map(review => (
+                  <div key={review.product_id} className="border rounded p-3 bg-gray-50">
+                    <p className="text-xs font-medium text-gray-800">
+                      {review.title}
+                      <span className="ml-2 text-gray-500">仕入 {review.price_jpy != null ? `¥${review.price_jpy.toLocaleString()}` : '—'} / eBay {review.ebay_item_id ?? '—'}</span>
+                    </p>
+                    <div className="mt-2 space-y-1">
+                      {review.candidates.length === 0 && <p className="text-[11px] text-gray-500">メルカリで候補が見つかりませんでした</p>}
+                      {review.candidates.map(c => (
+                        <div key={c.sourceUrl} className="flex flex-wrap items-center gap-2 text-[11px]">
+                          <a href={c.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate max-w-[420px]" title={c.title}>{c.title}</a>
+                          <span className="text-gray-500">{c.price != null ? `¥${c.price.toLocaleString()}` : '—'}{c.priceMatch ? '（価格一致）' : ''} / {c.availability === 'sold_out' ? '売り切れ' : '販売中'} / 一致度 {Math.round(c.score * 100)}%</span>
+                          <button onClick={() => applyMatch(review.product_id, c.sourceUrl)} disabled={matchBusy !== 'idle'}
+                            className="px-2 py-0.5 border border-blue-500 text-blue-600 rounded hover:bg-blue-50 disabled:opacity-40">採用</button>
+                        </div>
+                      ))}
+                      <div className="flex items-center gap-2 text-[11px]">
+                        <input type="url" placeholder="仕入先URLを手入力（https://jp.mercari.com/item/m…）"
+                          value={matchManualUrls[review.product_id] ?? ''}
+                          onChange={e => setMatchManualUrls(prev => ({ ...prev, [review.product_id]: e.target.value }))}
+                          className="flex-1 min-w-[260px] border rounded px-2 py-1 bg-white" />
+                        <button onClick={() => applyMatch(review.product_id, matchManualUrls[review.product_id] ?? '')} disabled={matchBusy !== 'idle' || !(matchManualUrls[review.product_id] ?? '').trim()}
+                          className="px-2 py-0.5 border rounded text-gray-700 hover:bg-gray-100 disabled:opacity-40">設定</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <hr />
           <div>
