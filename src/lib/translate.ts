@@ -197,3 +197,90 @@ export async function translateTitlesWithFailures(
   }
   return results
 }
+
+// ---------------------------------------------------------------------------
+// ユーザー要望: 説明文をAIで生成する。
+//  - 'missing': 仕入先から説明文が取れなかった商品(Yahoo!フリマは商品ページの
+//    取得制限が厳しく、説明文だけ時間がかかる)だけ、タイトル・状態・カテゴリ等
+//    から生成する
+//  - 'all': 全商品について、元の説明文(あれば)も材料にして eBay向けの説明文を
+//    生成する
+// 推測で書かせない(付属品・欠品・傷の詳細は元情報に無ければ書かない)。
+// ---------------------------------------------------------------------------
+
+export type AiDescriptionMode = 'off' | 'missing' | 'all'
+
+export interface DescriptionSourceInfo {
+  title: string
+  condition?: string | null
+  category?: string | null
+  brand?: string | null
+  hashtags?: string[] | null
+  originalDescription?: string | null
+}
+
+const GENERATE_DESCRIPTION_SYSTEM_PROMPT = `You write English eBay listing descriptions for items sold from Japan.
+
+You are given structured facts about one item (Japanese title, condition grade, category, brand, tags, and possibly the seller's original Japanese description). Write a concise, natural description for international buyers.
+
+Rules:
+- Use ONLY the facts given. Never invent included items, defects, editions, working status, or measurements. If the original description is not provided, do not guess details; you may say "Please see photos for details."
+- Translate the item name; keep brand names, model numbers, and product codes as-is. For Japanese titles/artists with no established English name, write the romanized reading followed by the original Japanese in parentheses.
+- State the condition grade in buyer-friendly words (e.g. "Used - no noticeable scratches or stains").
+- Mention that it is the Japanese version / ships from Japan when relevant (games, media, books: note region/language, e.g. NTSC-J, Japanese text).
+- If an original description is provided, translate its buyer-relevant facts (condition details, included/missing items, edition) and REMOVE Japanese-marketplace-only content (domestic shipping carriers, 匿名配送, 専用/取り置き, 即購入OK, 値下げ交渉, personal names, comments to Japanese buyers).
+- Do not mention Mercari, Yahoo, PayPay, or Japan-only services. No prices.
+- Output plain text only (no markdown, no HTML), 3-8 short lines.`
+
+function describeSource(info: DescriptionSourceInfo): string {
+  const lines = [`Title (Japanese): ${info.title}`]
+  if (info.condition) lines.push(`Condition grade: ${info.condition}`)
+  if (info.category) lines.push(`Category: ${info.category}`)
+  if (info.brand) lines.push(`Brand/Maker: ${info.brand}`)
+  if (info.hashtags && info.hashtags.length > 0) lines.push(`Tags: ${info.hashtags.slice(0, 10).join(', ')}`)
+  const original = info.originalDescription?.trim()
+  lines.push(original ? `Original description (Japanese):\n${original.slice(0, 3000)}` : 'Original description: (not available)')
+  return lines.join('\n')
+}
+
+export async function generateDescription(info: DescriptionSourceInfo, engine: string): Promise<string> {
+  const model = MODEL_MAP[engine] ?? MODEL_MAP.high
+  const openai = getClient()
+  const response = await openai.chat.completions.create({
+    ...completionParams(model, 500, 0.3),
+    messages: [
+      { role: 'system', content: GENERATE_DESCRIPTION_SYSTEM_PROMPT },
+      { role: 'user', content: describeSource(info) },
+    ],
+  })
+  return response.choices[0]?.message?.content?.trim() ?? ''
+}
+
+export interface GeneratedDescriptionResult { description: string | null; failed: boolean }
+
+// 生成に失敗した商品は null(呼び出し側で元の説明文/翻訳を使う)
+export async function generateDescriptionsSafely(
+  items: DescriptionSourceInfo[],
+  engine: string,
+): Promise<GeneratedDescriptionResult[]> {
+  if (items.length === 0) return []
+  const results: GeneratedDescriptionResult[] = []
+  const chunkSize = 5
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize)
+    results.push(...await Promise.all(chunk.map(async (item): Promise<GeneratedDescriptionResult> => {
+      try {
+        const description = await generateDescription(item, engine)
+        return description ? { description, failed: false } : { description: null, failed: true }
+      } catch (e) {
+        console.error('Description generation failed for one item:', e)
+        return { description: null, failed: true }
+      }
+    })))
+  }
+  return results
+}
+
+export function normalizeAiDescriptionMode(value: unknown): AiDescriptionMode {
+  return value === 'all' || value === 'off' ? value : 'missing'
+}

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   translateTitlesWithFailures: vi.fn(),
   translateDescriptionsWithFailures: vi.fn(),
   extractBrandsSafely: vi.fn(),
+  generateDescriptionsSafely: vi.fn(),
   fetchUsdJpyRate: vi.fn(),
 }))
 
@@ -16,6 +17,7 @@ vi.mock('@/lib/translate', () => ({
   translateTitlesWithFailures: mocks.translateTitlesWithFailures,
   translateDescriptionsWithFailures: mocks.translateDescriptionsWithFailures,
   extractBrandsSafely: mocks.extractBrandsSafely,
+  generateDescriptionsSafely: mocks.generateDescriptionsSafely,
 }))
 vi.mock('@/lib/exchange-rate', () => ({ fetchUsdJpyRate: mocks.fetchUsdJpyRate }))
 
@@ -86,6 +88,7 @@ describe('extraction description translation / brand extraction', () => {
       { description: 'Korean drama OST "The King\'s Face", Korean edition. Brand new, factory sealed.', failed: false },
     ])
     mocks.extractBrandsSafely.mockReset().mockResolvedValue(['KBS Media'])
+    mocks.generateDescriptionsSafely.mockReset().mockResolvedValue([])
     mocks.fetchUsdJpyRate.mockReset().mockResolvedValue({ rate: 150, date: '2026-09-17' })
   })
   afterEach(() => {
@@ -128,5 +131,47 @@ describe('extraction description translation / brand extraction', () => {
 
     expect(insertedProducts).toHaveLength(1)
     expect(insertedProducts[0].ebay_description).toBe(scrapedProduct.description)
+  })
+
+  // ユーザー要望: 説明文をAIで生成する。'missing' は説明文が取れなかった商品だけ、
+  // 'all' は全商品(元の説明文も材料にする)。
+  it("ai_description_mode='missing' なら説明文が空の商品だけAIで生成し、元の説明文がある商品は翻訳のまま", async () => {
+    const noDescription = { ...scrapedProduct, sourceItemId: 'z2', sourceUrl: 'https://paypayfleamarket.yahoo.co.jp/item/z2', sourceSite: 'yahoo_flea', description: '', condition: '目立った傷や汚れなし', category: 'ソフト', rawData: { brand: 'Nintendo', hashtags: ['ファミコン'] } }
+    mocks.scrapeUrl.mockResolvedValue([scrapedProduct, noDescription])
+    mocks.translateDescriptionsWithFailures.mockResolvedValue([
+      { description: 'Translated description', failed: false },
+      { description: '', failed: false },
+    ])
+    mocks.extractBrandsSafely.mockResolvedValue(['KBS Media', null])
+    mocks.generateDescriptionsSafely.mockResolvedValue([{ description: 'Generated English description', failed: false }])
+    const { db, insertedProducts } = makeDatabase({ description_enabled: true, description_engine: 'high', ai_description_mode: 'missing' })
+
+    await runScrape('user-1', 'extraction-1', 'https://jp.mercari.com/search', null, db)
+
+    expect(mocks.generateDescriptionsSafely).toHaveBeenCalledWith([
+      { title: noDescription.title, condition: '目立った傷や汚れなし', category: 'ソフト', brand: 'Nintendo', hashtags: ['ファミコン'], originalDescription: '' },
+    ], 'high')
+    expect(insertedProducts[0].ebay_description).toBe('Translated description')
+    expect(insertedProducts[0].ai_description_generated_at).toBeNull()
+    expect(insertedProducts[1].ebay_description).toBe('Generated English description')
+    expect(insertedProducts[1].ai_description_generated_at).toBeTruthy()
+  })
+
+  it("ai_description_mode='all' なら全商品を元の説明文も材料にして生成する", async () => {
+    mocks.generateDescriptionsSafely.mockResolvedValue([{ description: 'Generated from original', failed: false }])
+    const { db, insertedProducts } = makeDatabase({ description_enabled: true, ai_description_mode: 'all' })
+
+    await runScrape('user-1', 'extraction-1', 'https://jp.mercari.com/search', null, db)
+
+    expect(mocks.generateDescriptionsSafely).toHaveBeenCalledTimes(1)
+    expect(mocks.generateDescriptionsSafely.mock.calls[0][0][0]).toMatchObject({ title: scrapedProduct.title, originalDescription: scrapedProduct.description, brand: 'KBS Media' })
+    expect(insertedProducts[0].ebay_description).toBe('Generated from original')
+    expect(insertedProducts[0].original_description).toBe(scrapedProduct.description)
+  })
+
+  it("ai_description_mode='off' なら生成しない", async () => {
+    const { db } = makeDatabase({ description_enabled: true, ai_description_mode: 'off' })
+    await runScrape('user-1', 'extraction-1', 'https://jp.mercari.com/search', null, db)
+    expect(mocks.generateDescriptionsSafely).not.toHaveBeenCalled()
   })
 })
