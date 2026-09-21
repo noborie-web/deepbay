@@ -39,6 +39,11 @@ export interface ScraperOptions {
   // 検索結果だけが必要な用途(仕入先URLの照合など)で、商品ごとの詳細取得
   // (画像・説明・Shops商品のブラウザ取得)を省略して高速に返す。
   skipDetailEnrichment?: boolean
+  // ユーザー要望: ヤフオクの検索URLを指定したとき、同じ条件(キーワード・
+  // 価格帯・状態・カテゴリ)でYahoo!フリマも検索して結果を合算する。
+  // (ヤフオクの検索結果にフリマ出品が混ざって表示されるのは一部利用者
+  //  向けの表示で、サーバー側の取得では含まれないため)
+  includeYahooFlea?: boolean
 }
 
 export interface IScraper {

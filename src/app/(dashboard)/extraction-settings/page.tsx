@@ -21,6 +21,8 @@ interface ExtractionSettings {
   price_max: number | null
   spot_check_title: boolean
   spot_check_description: boolean
+  // ヤフオク検索URLで抽出するとき、同じ条件でYahoo!フリマも検索して合算する
+  yahoo_auction_include_flea: boolean
 }
 
 interface DangerSeller { id: string; seller_url: string }
@@ -46,6 +48,7 @@ const DEFAULT_SETTINGS: ExtractionSettings = {
   price_max: null,
   spot_check_title: true,
   spot_check_description: true,
+  yahoo_auction_include_flea: true,
 }
 
 function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
@@ -536,6 +539,7 @@ export default function ExtractionSettingsPage() {
                 ['exclude_active_duplicate', 'active重複: 除外', 'active重複: 除外しない'],
                 ['exclude_title_duplicate', 'タイトル重複: 除外', 'タイトル重複: 除外しない'],
                 ['exclude_translated_duplicate', '翻訳後タイトル重複: 除外', '翻訳後タイトル重複: 除外しない'],
+                ['yahoo_auction_include_flea', 'ヤフオク検索時にYahoo!フリマも取得: する', 'ヤフオク検索時にYahoo!フリマも取得: しない'],
               ] as [keyof ExtractionSettings, string, string][]).map(([key, onLabel, offLabel]) => (
                 <div key={key} className="flex items-center gap-2">
                   <Toggle

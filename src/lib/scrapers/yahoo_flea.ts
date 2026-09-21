@@ -70,6 +70,146 @@ function extractProductLdJson($: cheerio.CheerioAPI): Record<string, any> | null
   return found
 }
 
+// ---------------------------------------------------------------------------
+// ヤフオク検索条件 → Yahoo!フリマ検索URL の変換
+//
+// 実データで確認(2026-09-21): Yahoo!フリマの検索は minPrice/maxPrice、
+// conditions(NEW,USED10,USED20,USED40,USED60,USED80)、categoryIds(フリマの
+// カテゴリID)、open=1(販売中)で絞り込める。カテゴリIDはヤフオクと体系が
+// 異なるため、ヤフオク検索ページのカテゴリ階層(例: おもちゃ、ゲーム >
+// ゲーム > テレビゲーム > ファミコン > タイトル)を、フリマのカテゴリAPI
+// (/api/v1/categories/{id}/children)を名前で辿って対応付ける
+// (例: ゲーム、おもちゃ > テレビゲーム > 旧機種 > ファミコン > ソフト)。
+// ---------------------------------------------------------------------------
+
+export interface YahooFleaCategory { id: number; name: string }
+export type YahooFleaCategoryFetcher = (parentId: number) => Promise<YahooFleaCategory[]>
+
+const CATEGORY_API_ROOT = 1
+// ヤフオク側の階層名のうち、フリマでは別名になっているもの
+const CATEGORY_SYNONYMS: Record<string, string[]> = {
+  'タイトル': ['ソフト'],
+  'ソフト': ['タイトル'],
+}
+// 検索キーワードに補う価値のない汎用的な階層名
+const GENERIC_CATEGORY_NAMES = new Set(['すべてのカテゴリ', 'タイトル', 'ソフト', '本体', '周辺機器', 'その他', 'アクセサリー'])
+const MAX_CATEGORY_API_CALLS = 40
+
+function categoryTokens(name: string): string[] {
+  return name.split(/[、,・/／\s]+/).map(t => t.trim()).filter(Boolean).sort()
+}
+
+function categoryNameMatches(fleaName: string, auctionName: string): boolean {
+  if (fleaName === auctionName) return true
+  const a = categoryTokens(fleaName)
+  const b = categoryTokens(auctionName)
+  if (a.length > 0 && a.length === b.length && a.every((t, i) => t === b[i])) return true
+  return (CATEGORY_SYNONYMS[auctionName] ?? []).includes(fleaName)
+}
+
+export async function fetchYahooFleaCategoryChildren(parentId: number, userAgent = DEFAULT_UA): Promise<YahooFleaCategory[]> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 5000)
+  try {
+    const res = await fetch(`${ORIGIN}/api/v1/categories/${parentId}/children`, {
+      headers: { 'User-Agent': userAgent, Accept: 'application/json' },
+      signal: controller.signal,
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const json = await res.json()
+    if (!Array.isArray(json)) return []
+    return json
+      .filter((c): c is { id: number; name: string } => c && typeof c.id === 'number' && typeof c.name === 'string')
+      .map(c => ({ id: c.id, name: c.name }))
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * ヤフオクのカテゴリ階層名を、Yahoo!フリマのカテゴリIDに対応付ける。
+ * 各階層名を、現在のフリマカテゴリ配下(子・孫まで)から名前で探し、見つかれば
+ * そこへ降りる。見つからない階層(ヤフオク独自の中間階層)は読み飛ばす。
+ * 対応付けできた最も深いカテゴリのIDを返す(1つも対応しなければ null)。
+ */
+export async function resolveYahooFleaCategoryId(
+  auctionCategoryPath: string[],
+  fetchChildren: YahooFleaCategoryFetcher = (id) => fetchYahooFleaCategoryChildren(id),
+): Promise<number | null> {
+  const names = auctionCategoryPath.filter(n => n && n !== 'すべてのカテゴリ')
+  if (names.length === 0) return null
+  const cache = new Map<number, YahooFleaCategory[]>()
+  let calls = 0
+  const children = async (id: number): Promise<YahooFleaCategory[]> => {
+    const cached = cache.get(id)
+    if (cached) return cached
+    if (calls >= MAX_CATEGORY_API_CALLS) return []
+    calls += 1
+    const result = await fetchChildren(id).catch(() => [] as YahooFleaCategory[])
+    cache.set(id, result)
+    return result
+  }
+
+  let current = CATEGORY_API_ROOT
+  let resolved: number | null = null
+  for (const name of names) {
+    // 子 → 孫 の順に探す(ヤフオク側に無い中間階層がフリマ側にあっても辿れる)
+    const kids = await children(current)
+    let found = kids.find(k => categoryNameMatches(k.name, name)) ?? null
+    if (!found) {
+      for (const kid of kids) {
+        const grandkids = await children(kid.id)
+        const hit = grandkids.find(g => categoryNameMatches(g.name, name))
+        if (hit) { found = hit; break }
+      }
+    }
+    if (found) {
+      current = found.id
+      resolved = found.id
+    }
+  }
+  return resolved
+}
+
+/**
+ * ヤフオク検索URL(+検索ページから読み取ったカテゴリ階層)から、同じ条件の
+ * Yahoo!フリマ検索URLを組み立てる。
+ */
+export async function buildYahooFleaSearchUrlFromAuction(
+  auctionSearchUrl: string,
+  auctionCategoryPath: string[],
+  fetchChildren?: YahooFleaCategoryFetcher,
+): Promise<string | null> {
+  const src = new URL(auctionSearchUrl)
+  const keyword = (src.searchParams.get('p') ?? src.searchParams.get('va') ?? '').trim()
+  if (!keyword) return null
+
+  const categoryId = await resolveYahooFleaCategoryId(auctionCategoryPath, fetchChildren)
+  // カテゴリを対応付けできなかった場合は、最も具体的な階層名をキーワードに補う
+  let searchKeyword = keyword
+  if (categoryId === null) {
+    const specific = [...auctionCategoryPath].reverse().find(n => n && !GENERIC_CATEGORY_NAMES.has(n))
+    if (specific && !keyword.includes(specific)) searchKeyword = `${keyword} ${specific}`
+  }
+
+  const dest = new URL(`${ORIGIN}/search/${encodeURIComponent(searchKeyword)}`)
+  dest.searchParams.set('open', '1')
+  const min = src.searchParams.get('min')
+  const max = src.searchParams.get('max')
+  if (min && /^\d+$/.test(min)) dest.searchParams.set('minPrice', min)
+  if (max && /^\d+$/.test(max)) dest.searchParams.set('maxPrice', max)
+  // ヤフオクの istatus: 1=未使用, 2=中古(全グレード)
+  const istatus = (src.searchParams.get('istatus') ?? '').split(',').map(v => v.trim()).filter(Boolean)
+  if (istatus.length > 0) {
+    const conditions: string[] = []
+    if (istatus.includes('1')) conditions.push('NEW')
+    if (istatus.includes('2')) conditions.push('USED10', 'USED20', 'USED40', 'USED60', 'USED80')
+    if (conditions.length > 0) dest.searchParams.set('conditions', conditions.join(','))
+  }
+  if (categoryId !== null) dest.searchParams.set('categoryIds', String(categoryId))
+  return dest.toString()
+}
+
 export class YahooFleaScraper extends BaseScraper {
   name = 'Yahoo!フリマ'
   siteKey = 'yahoo_flea'
@@ -121,9 +261,13 @@ export class YahooFleaScraper extends BaseScraper {
       const sellerId = params.match(/;sellerid:([A-Za-z0-9_-]+);/)?.[1]
       const sold = $el.find('img[alt="sold"]').length > 0
       const imgSrc = $img.attr('src') ?? ''
+      // 実データで確認: Yahoo!フリマの検索結果にはヤフオクの定額出品も混ざる
+      // (IDが z 以外で始まる)。それらはヤフオクの商品として扱い、商品ページ・
+      // 在庫チェックはヤフオク側で行う。
+      const isAuctionItem = !itemId.startsWith('z')
       products.push({
-        sourceUrl: `${ORIGIN}/item/${itemId}`,
-        sourceSite: this.siteKey,
+        sourceUrl: isAuctionItem ? `https://auctions.yahoo.co.jp/jp/auction/${itemId}` : `${ORIGIN}/item/${itemId}`,
+        sourceSite: isAuctionItem ? 'yahoo_auction' : this.siteKey,
         sourceItemId: itemId,
         title,
         price: Number.isFinite(price as number) ? price : null,
@@ -199,7 +343,9 @@ export class YahooFleaScraper extends BaseScraper {
       const enriched = await Promise.all(chunk.map(async (product) => {
         try {
           const html = await this.fetchHtml(product.sourceUrl, userAgent, timeoutMs)
-          const detail = this.parse(cheerio.load(html), product.sourceUrl)
+          const detail = product.sourceSite === 'yahoo_auction'
+            ? new (await import('./yahoo_auction')).YahooAuctionScraper().parse(cheerio.load(html), product.sourceUrl)
+            : this.parse(cheerio.load(html), product.sourceUrl)
           return {
             ...product,
             title: detail.title || product.title,

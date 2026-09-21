@@ -2,6 +2,7 @@ import * as cheerio from 'cheerio'
 import { BaseScraper } from './base'
 import { ScraperError } from './types'
 import type { ScrapedProduct, ScraperOptions } from './types'
+import { YahooFleaScraper, buildYahooFleaSearchUrlFromAuction } from './yahoo_flea'
 
 const SEARCH_URL_PATTERN = /auctions\.yahoo\.co\.jp\/search\/search/
 const SELLER_URL_PATTERN = /auctions\.yahoo\.co\.jp\/seller\/[^/?#]+/
@@ -57,6 +58,8 @@ export class YahooAuctionScraper extends BaseScraper {
     const allProducts: ScrapedProduct[] = []
     const seenIds = new Set<string>()
     let numFound: number | null = null
+    // Yahoo!フリマ側の検索に使う、検索ページのカテゴリ階層(パンくず)
+    let categoryPath: string[] = []
     // 暴走防止用の安全上限
     const maxPages = Math.ceil(limit / PAGE_SIZE) + 5
 
@@ -95,6 +98,9 @@ export class YahooAuctionScraper extends BaseScraper {
         const headerText = $('.Result__header').first().text()
         const m = headerText.match(/([\d,]+)\s*件/)
         if (m) numFound = parseInt(m[1].replace(/,/g, ''), 10)
+      }
+      if (page === 0) {
+        categoryPath = $('.CategoryTree__link').map((_, el) => $(el).text().trim()).get().filter(Boolean)
       }
 
       const pageProducts: ScrapedProduct[] = []
@@ -143,11 +149,45 @@ export class YahooAuctionScraper extends BaseScraper {
       if (numFound !== null && allProducts.length >= numFound) break
     }
 
+    // ユーザー要望: ヤフオクの検索結果にYahoo!フリマの出品が混ざって表示される
+    // 利用者がいるが、サーバー側の取得では含まれない。同じ条件でYahoo!フリマも
+    // 検索し、結果を合算する(フリマ側に混ざるヤフオク定額出品はIDで重複除去)。
+    if (options.includeYahooFlea && allProducts.length < limit) {
+      const fleaProducts = await this.scrapeYahooFleaCounterpart(url, categoryPath, limit - allProducts.length, options)
+      for (const p of fleaProducts) {
+        const id = p.sourceItemId ?? p.sourceUrl
+        if (seenIds.has(id)) continue
+        seenIds.add(id)
+        allProducts.push(p)
+      }
+      onPage?.(allProducts.length, allProducts.length)
+    }
+
     if (allProducts.length === 0) {
       throw new ScraperError('検索結果が0件です', this.siteKey, url)
     }
 
     return allProducts.slice(0, limit)
+  }
+
+  // Yahoo!フリマ側の検索に失敗しても、ヤフオク側の結果は返す(合算は加点扱い)。
+  private async scrapeYahooFleaCounterpart(
+    auctionSearchUrl: string,
+    categoryPath: string[],
+    limit: number,
+    options: ScraperOptions,
+  ): Promise<ScrapedProduct[]> {
+    try {
+      const fleaUrl = await buildYahooFleaSearchUrlFromAuction(auctionSearchUrl, categoryPath)
+      if (!fleaUrl) return []
+      const products = await new YahooFleaScraper().scrape(fleaUrl, { ...options, includeYahooFlea: false, limit })
+      // フリマ側の検索に混ざるヤフオク定額出品は、ヤフオク側の検索(ユーザー指定の
+      // 絞り込みそのまま)で取得済みなので、フリマ出品だけを合算する
+      return products.filter(p => p.sourceSite === 'yahoo_flea')
+    } catch (err) {
+      console.warn('[yahoo auction] Yahoo!フリマの合算検索に失敗:', err instanceof Error ? err.message : err)
+      return []
+    }
   }
 
   // セラーページ(出品者の出品一覧)の抽出。検索ページと違い商品カードに
@@ -167,6 +207,8 @@ export class YahooAuctionScraper extends BaseScraper {
     const allProducts: ScrapedProduct[] = []
     const seenIds = new Set<string>()
     let numFound: number | null = null
+    // Yahoo!フリマ側の検索に使う、検索ページのカテゴリ階層(パンくず)
+    let categoryPath: string[] = []
     // 暴走防止用の安全上限
     const maxPages = Math.ceil(limit / PAGE_SIZE) + 5
 

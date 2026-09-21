@@ -113,6 +113,8 @@ export async function runScrape(
       // 追加コスト(ラクマ等、検索結果に出品者情報がないサイトでは商品
       // ごとの個別ページアクセスが必要)を払わない。
       fetchSellerInfo: sellerUrls.length > 0,
+      // ユーザー要望: ヤフオク検索時にYahoo!フリマも合わせて取得する(抽出設定でON/OFF)
+      includeYahooFlea: extractionSettings?.yahoo_auction_include_flea ?? true,
       onPage: async (fetched, total) => {
         const pct = Math.min(Math.round((fetched / total) * 90), 90)
         await supabase
