@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import * as cheerio from 'cheerio'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { YahooFleaScraper } from '@/lib/scrapers/yahoo_flea'
+import { YahooFleaScraper, FLEA_DETAIL_PER_RUN, FLEA_RATE_LIMIT_WINDOW_MS } from '@/lib/scrapers/yahoo_flea'
 import { YahooAuctionScraper } from '@/lib/scrapers/yahoo_auction'
-import { fetchWithRetry, mapThrottled } from '@/lib/scrapers/throttled-fetch'
+import { fetchWithRetry, mapThrottled, RateLimitedError } from '@/lib/scrapers/throttled-fetch'
 import { translateDescriptionsWithFailures } from '@/lib/translate'
 import type { ScrapedProduct } from '@/lib/scrapers/types'
 
@@ -20,9 +20,12 @@ export const maxDuration = 60
 
 const BATCH = 30
 const TIME_BUDGET_MS = 42_000
-const SITE_PACING: Record<string, { concurrency: number; intervalMs: number }> = {
-  yahoo_flea: { concurrency: 2, intervalMs: 400 },
-  yahoo_auction: { concurrency: 3, intervalMs: 250 },
+// 実データで計測(2026-09-21): Yahoo!フリマは1つのIPから約15件で429になり約15分
+// ブロックされる。1回の呼び出しでは FLEA_DETAIL_PER_RUN 件だけ1件ずつ取得し、
+// 429が出たら打ち切って呼び出し側に「15分後に再開」を返す。
+const SITE_PACING: Record<string, { concurrency: number; intervalMs: number; retries: number; maxPerRun: number }> = {
+  yahoo_flea: { concurrency: 1, intervalMs: 1000, retries: 0, maxPerRun: FLEA_DETAIL_PER_RUN },
+  yahoo_auction: { concurrency: 3, intervalMs: 250, retries: 2, maxPerRun: BATCH },
 }
 const ENRICHABLE_SITES = Object.keys(SITE_PACING)
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -91,25 +94,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const auction = new YahooAuctionScraper()
   const startedAt = Date.now()
   let failed = 0
+  let fleaRateLimited = false
   const failedIds: string[] = []
   const enriched: Array<{ product: PendingProduct; detail: ScrapedProduct }> = []
 
   // サイトごとにアクセス間隔を分けて取得する
   for (const site of ENRICHABLE_SITES) {
-    const siteTargets = targets.filter(t => t.source_site === site)
-    if (siteTargets.length === 0) continue
     const pacing = SITE_PACING[site]
+    const siteTargets = targets.filter(t => t.source_site === site).slice(0, pacing.maxPerRun)
+    if (siteTargets.length === 0) continue
     const remainingBudget = TIME_BUDGET_MS - (Date.now() - startedAt)
     if (remainingBudget <= 0) break
+    let stop = false
     const { results } = await mapThrottled(siteTargets.map(t => ({ target: t, detail: null as ScrapedProduct | null, failed: false })), async (entry) => {
+      if (stop) return entry
       try {
         const html = await fetchWithRetry(entry.target.source_url, {
-          userAgent: USER_AGENT, timeoutMs: 15000, intervalMs: pacing.intervalMs, retries: 2, siteKey: site,
+          userAgent: USER_AGENT, timeoutMs: 15000, intervalMs: pacing.intervalMs, retries: pacing.retries, siteKey: site,
         })
         const $ = cheerio.load(html)
         const detail = site === 'yahoo_flea' ? flea.parse($, entry.target.source_url) : auction.parse($, entry.target.source_url)
         return { ...entry, detail }
       } catch (err) {
+        if (err instanceof RateLimitedError) {
+          // 制限中は「試みた」扱いにせず、次回(15分後)に回す
+          stop = true
+          if (site === 'yahoo_flea') fleaRateLimited = true
+          return entry
+        }
         console.error('[enrich-details] failed for', entry.target.id, err instanceof Error ? err.message : err)
         return { ...entry, failed: true }
       }
@@ -160,5 +172,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     await db.from('products').update({ detail_enriched_at: now }).in('id', failedIds).eq('user_id', user.id)
   }
 
-  return NextResponse.json({ ok: true, processed, failed, pending: await countPending(db, user.id, extractionId) })
+  const pending = await countPending(db, user.id, extractionId)
+  const { count: fleaPending } = await db
+    .from('products')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', user.id)
+    .eq('extraction_id', extractionId)
+    .eq('source_site', 'yahoo_flea')
+    .is('detail_enriched_at', null)
+  return NextResponse.json({
+    ok: true,
+    processed,
+    failed,
+    pending,
+    flea_pending: fleaPending ?? 0,
+    // Yahoo!フリマの制限に達した(または1回分を取り切った)ら、次の呼び出しまで待つ時間
+    retry_after_ms: (fleaPending ?? 0) > 0 && (fleaRateLimited || processed > 0) ? FLEA_RATE_LIMIT_WINDOW_MS : 0,
+    flea_rate_limited: fleaRateLimited,
+  })
 }

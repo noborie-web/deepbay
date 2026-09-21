@@ -87,24 +87,70 @@ describe('YahooFleaScraper', () => {
     expect(product.availability).toBe('sold_out')
   })
 
-  it('検索抽出は販売中(open=1)を付与してページ送りし、商品ページで詳細を補完する', async () => {
+  it('検索は検索API(JSON)で一覧+状態・評価数・出品日時を取り、商品ページで説明文を補完する', async () => {
     const urls: string[] = []
+    const apiItems = [
+      { id: 'z688080634', title: 'ドラゴンボール ターレス GDR ゴッドレア', price: 2400, thumbnailImageUrl: 'https://auc-pctr.c.yimg.jp/i/x.jpg?w=298', imageCount: 2,
+        category: { id: 2420, name: 'トレーディングカード', path: [{ id: 2511, name: 'ゲーム、おもちゃ' }, { id: 2420, name: 'トレーディングカード' }] },
+        seller: { id: 'p5796031', numRating: 56 }, condition: 'used20', openTime: '2026-09-21T12:22:00+09:00', itemStatus: 'OPEN', hashtag: ['トレカ'] },
+      { id: 'g123456789', title: 'ヤフオク定額出品', price: 5000, seller: { id: 'abc', numRating: 3 }, condition: 'new', itemStatus: 'OPEN' },
+    ]
     globalThis.fetch = vi.fn(async (url: string) => {
       urls.push(url)
-      if (url.includes('/search/')) {
-        const page = new URL(url).searchParams.get('page')
-        return new Response(page === '1' ? SEARCH_HTML : '<html><body></body></html>', { status: 200 })
+      if (url.includes('/api/v1/search')) {
+        const offset = Number(new URL(url).searchParams.get('offset'))
+        return new Response(JSON.stringify({ totalResultsAvailable: 2, items: offset === 0 ? apiItems : [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
+      if (url.includes('auctions.yahoo.co.jp/jp/auction/')) return new Response('<html><body></body></html>', { status: 200 })
       return new Response(ITEM_HTML, { status: 200 })
     }) as unknown as typeof fetch
 
-    const products = await new YahooFleaScraper().scrape('https://paypayfleamarket.yahoo.co.jp/search/%E3%83%AC%E3%82%A2?minPrice=5000', { limit: 10 })
-    expect(urls[0]).toContain('open=1')
-    expect(urls[0]).toContain('page=1')
+    const products = await new YahooFleaScraper().scrape(
+      'https://paypayfleamarket.yahoo.co.jp/search/%E3%83%AC%E3%82%A2?minPrice=5000&maxPrice=50000&conditions=NEW%2CUSED20&categoryIds=2511%2C2420&open=1',
+      { limit: 10 },
+    )
+    const api = new URL(urls[0])
+    expect(api.pathname).toBe('/api/v1/search')
+    expect(api.searchParams.get('query')).toBe('レア')
+    expect(api.searchParams.get('itemStatus')).toBe('open')
+    expect(api.searchParams.get('minPrice')).toBe('5000')
+    expect(api.searchParams.get('itemConditions')).toBe('NEW,USED20')
+    expect(api.searchParams.get('genreCategoryIds')).toBe('2420')
+
     expect(products).toHaveLength(2)
+    expect(products[0]).toMatchObject({
+      sourceItemId: 'z688080634',
+      sourceSite: 'yahoo_flea',
+      condition: '目立った傷や汚れなし',
+      sellerRatingCount: 56,
+      category: 'トレーディングカード',
+      sellerUrl: 'https://paypayfleamarket.yahoo.co.jp/user/p5796031',
+    })
+    expect(products[0].sourceUpdatedAt).toBe(new Date('2026-09-21T12:22:00+09:00').toISOString())
+    // 商品ページから説明文を補完
     expect(products[0].description).toContain('ドラゴンボール')
-    expect(products[0].condition).toBe('目立った傷や汚れなし')
-    expect(products[1].sourceItemId).toBe('z688106704')
+    // フリマ検索に混ざるヤフオク定額出品はヤフオクの商品として扱う
+    expect(products[1]).toMatchObject({ sourceItemId: 'g123456789', sourceSite: 'yahoo_auction', sourceUrl: 'https://auctions.yahoo.co.jp/jp/auction/g123456789' })
+  })
+
+  it('商品ページが429になったら以降の商品ページ取得を打ち切り、一覧の情報で返す', async () => {
+    const apiItems = Array.from({ length: 5 }, (_, i) => ({ id: `z${i}`, title: `商品${i}`, price: 1000, condition: 'new', itemStatus: 'OPEN' }))
+    let itemCalls = 0
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.includes('/api/v1/search')) {
+        const offset = Number(new URL(url).searchParams.get('offset'))
+        return new Response(JSON.stringify({ totalResultsAvailable: 5, items: offset === 0 ? apiItems : [] }), { status: 200 })
+      }
+      itemCalls += 1
+      return itemCalls <= 2 ? new Response(ITEM_HTML, { status: 200 }) : new Response('', { status: 429 })
+    }) as unknown as typeof fetch
+
+    const products = await new YahooFleaScraper().scrape('https://paypayfleamarket.yahoo.co.jp/search/x?open=1', { limit: 10 })
+    expect(products).toHaveLength(5)
+    expect(itemCalls).toBe(3)
+    expect(products[0].description).toContain('ドラゴンボール')
+    expect(products[4].description).toBe('')
+    expect(products[4].condition).toBe('未使用')
   })
 })
 
@@ -173,6 +219,7 @@ describe('YahooAuctionScraper + Yahoo!フリマ合算', () => {
       fetched.push(url)
       if (url.includes('auctions.yahoo.co.jp/search/search')) return new Response(AUCTION_SEARCH_HTML, { status: 200 })
       if (url.includes('/api/v1/categories/')) return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })
+      if (url.includes('/api/v1/search')) return new Response('', { status: 500, statusText: 'Internal Server Error' })
       if (url.includes('paypayfleamarket.yahoo.co.jp/search/')) {
         const page = new URL(url).searchParams.get('page')
         if (page !== '1') return new Response('<html><body></body></html>', { status: 200 })
