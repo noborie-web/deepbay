@@ -12,6 +12,7 @@ interface SupplierListingRow {
 interface SupplierProductRow {
   id: string
   source_url: string | null
+  source_site: string | null
   original_title: string | null
   original_price: number | null
   purchase_price_jpy: number | null
@@ -98,6 +99,8 @@ export interface SupplierCheckResult {
   // ユーザー要望: 公式ツール同様にタイトルの差分も検知する。仕入先の最新
   // タイトルが抽出時(original_title)から変わっていた件数。
   title_changed: number
+  // 仕入先URLが不明(eBayから復元したまま)のため仕入不可として在庫0にした件数
+  no_supplier: number
   // 「〇〇様専用」等の取り置きになっていた件数(unavailable に含まれる)
   reserved: number
 }
@@ -168,6 +171,7 @@ export async function checkSupplierListings(
     price_recalculated: 0,
     title_changed: 0,
     reserved: 0,
+    no_supplier: 0,
   }
 
   const { data: listings, error: listingsError } = await db
@@ -190,7 +194,7 @@ export async function checkSupplierListings(
   const productIds = Array.from(new Set(targets.map(listing => listing.product_id)))
   const { data: products, error: productsError } = await db
     .from('products')
-    .select('id, source_url, original_title, original_price, purchase_price_jpy, ebay_price, pricing_jpy_per_usd, extraction_id')
+    .select('id, source_url, source_site, original_title, original_price, purchase_price_jpy, ebay_price, pricing_jpy_per_usd, extraction_id')
     .eq('user_id', userId)
     .in('id', productIds)
 
@@ -267,7 +271,16 @@ export async function checkSupplierListings(
     let supplierPriceJpy: number | null | undefined
     let supplierDiff: SupplierDiffKind[] | undefined
 
-    if (sourceUrl && findScraper(sourceUrl)) {
+    if (product?.source_site === 'ebay') {
+      // 実データで確認した不具合: eBayから復元した商品で仕入先URLが不明のもの
+      // (仮のeBay URL)は「仕入先なし→取り下げ対象」として在庫0にしていたが、
+      // 毎朝のeBay同期で在庫数がeBayの値(1)に戻り、仕入先チェックはskipped
+      // のため取り下げられなかった。仕入先がない商品は毎回「仕入不可」として
+      // 在庫0にし、取り下げ処理の対象にする。
+      outcome = 'unavailable'
+      quantity = 0
+      result.no_supplier += 1
+    } else if (sourceUrl && findScraper(sourceUrl)) {
       try {
         const scrapedProducts = await scrapeUrl(sourceUrl, { limit: 1 })
         const scraped = scrapedProducts[0] as { availability?: string; price?: number | null; title?: string | null } | undefined
