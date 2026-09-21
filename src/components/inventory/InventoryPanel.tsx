@@ -671,6 +671,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       let endedTotal = 0
       let discoveredTotal = 0
       let discoveryTruncated = false
+      let rounds = 0
       for (let requestNumber = 1; requestNumber <= 50; requestNumber++) {
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 50_000)
@@ -701,6 +702,15 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             setSyncProgress(`${json.progress.processed}/${json.progress.total}件`)
           }
           if (json.done) {
+            // 新規出品の走査が終わっていなければ、続きから自動でもう一周する
+            // (最大3周)。ユーザーが何度も押し直さなくて済むようにする。
+            if (json.discovery_truncated && rounds < 3) {
+              rounds += 1
+              discoveryTruncated = false
+              cursor = null
+              setSyncProgress(`新規出品の走査を継続中（${rounds + 1}周目）`)
+              continue
+            }
             completed = { total: json.total, matched: json.matched, ended: endedTotal, discovered: discoveredTotal, discoveryTruncated }
             break
           }
