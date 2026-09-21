@@ -321,17 +321,17 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const runRecover = async () => {
     if (!confirm('eBay上のKakehashi出品から商品を復元します（eBay側は変更しません）。よろしいですか？')) return
     setRecoverBusy('recover'); setRecoverError(null); setRecoverMessage(null)
-    let recovered = 0; let failed = 0
+    let recovered = 0; let linked = 0; let failed = 0
     try {
       for (let i = 0; i < 30; i++) {
         const json = await callRecover('recover')
-        recovered += json.recovered ?? 0; failed += (json.failed ?? []).length
+        recovered += json.recovered ?? 0; linked += json.linked ?? 0; failed += (json.failed ?? []).length
         const firstError = (json.failed ?? [])[0]?.error
-        setRecoverMessage(`復元中… ${recovered}件完了${failed ? `（失敗 ${failed}件${firstError ? `: ${firstError}` : ''}）` : ''}`)
+        setRecoverMessage(`復元中… 再作成 ${recovered}件 / 既存商品に紐付け ${linked}件${failed ? `（失敗 ${failed}件${firstError ? `: ${firstError}` : ''}）` : ''}`)
         // 1件も進まなければ(全件失敗など)繰り返しても同じ結果になるので止める
-        if (json.done || (json.recovered ?? 0) === 0) break
+        if (json.done || ((json.recovered ?? 0) + (json.linked ?? 0)) === 0) break
       }
-      setRecoverMessage(`復元完了: ${recovered}件の商品を再作成し在庫管理に紐付けました${failed ? `（失敗 ${failed}件。失敗理由は上の行を参照）` : ''}。ページを再読み込みすると集計に反映されます。`)
+      setRecoverMessage(`復元完了: ${recovered}件の商品を再作成、${linked}件の既存商品(下書き)を出品済みとして紐付けました${failed ? `（失敗 ${failed}件。失敗理由は上の行を参照）` : ''}。ページを再読み込みすると集計に反映されます。`)
       await checkRecoverStatus()
     } catch (e) { setRecoverError(e instanceof Error ? e.message : String(e)) }
     finally { setRecoverBusy('idle') }
@@ -1496,6 +1496,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             <p className="text-xs text-gray-500 mb-3">
               抽出の削除などでKakehashiの商品データが消えた場合に、eBay上のKakehashi出品（管理番号 kakehashi_…）から商品を同じ商品IDで再作成し、在庫管理に紐付けます。
               eBayの新しい順600件を自動で走査するほか、eBayのItemIDを貼り付けて指定することもできます。仕入先URLは復元できないため、復元後に別途設定してください。
+              CSVで出品したのに「下書き」のまま残っている商品も、そのeBay ItemIDを貼り付けて実行すると出品済みとして紐付けます。
             </p>
             <textarea value={recoverItemIds} onChange={e => setRecoverItemIds(e.target.value)} rows={3}
               placeholder="eBay ItemID（任意・改行/カンマ区切り）例: 318865179224, 298670540821"
