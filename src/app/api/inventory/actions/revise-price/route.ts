@@ -89,15 +89,22 @@ export async function POST(req: NextRequest) {
     for (const p of products ?? []) productMap.set(p.id, p)
   }
 
-  const entries = []
+  const entries: Array<{ itemId: string; price: number }> = []
+  const beforePrices = new Map<string, number>()
   for (const l of listings ?? []) {
     const p = productMap.get(l.product_id!)
     if (!p?.ebay_price || !l.current_price) continue
     if (Math.abs(p.ebay_price - l.current_price) <= 0.5) continue
     entries.push({ itemId: l.ebay_item_id as string, price: p.ebay_price })
+    beforePrices.set(l.ebay_item_id as string, Number(l.current_price))
   }
   // 4件ずつまとめて並行に送る(件数が多くても時間内に終わるように)
   const { results } = await reviseInventoryStatusBatch(accessToken, entries)
+  const items = results.map(r => {
+    const after = entries.find(e => e.itemId === r.itemId)?.price ?? null
+    const before = beforePrices.get(r.itemId) ?? null
+    return { ebay_item_id: r.itemId, price_before: before, price_after: after, diff: after !== null && before !== null ? Math.round((after - before) * 100) / 100 : null, success: r.success, error: r.error ?? null }
+  })
 
   const succeeded = results.filter(r => r.success).length
   const failed = results.filter(r => !r.success)
@@ -108,7 +115,7 @@ export async function POST(req: NextRequest) {
     run_type: 'revise_price',
     status: runSummary.status,
     error_message: runSummary.errorMessage,
-    result_summary: { total: results.length, succeeded, failed: failed.map(f => ({ id: f.itemId, error: f.error })) },
+    result_summary: { total: results.length, succeeded, failed: failed.map(f => ({ id: f.itemId, error: f.error })), items },
     started_at: new Date().toISOString(),
     finished_at: new Date().toISOString(),
   })

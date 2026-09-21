@@ -4,11 +4,13 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import type { InventoryActiveListing } from '@/types/database'
 import { createClient } from '@/lib/supabase/client'
 import { extractSourceLookupKeys } from '@/lib/inventory'
+import { RUN_TYPE_LABELS, availableRunCsvKinds, summarizeRun } from '@/lib/inventory-run-csv'
 
 interface InventoryRun {
   id: string; run_type: string; status: string
   items_total: number | null; items_matched: number | null
   error_message: string | null; started_at: string; finished_at: string | null
+  result_summary: Record<string, unknown> | null
 }
 
 interface Settings {
@@ -788,6 +790,16 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     finally { setSavingSettings(false) }
   }
 
+  // 実行ごとの結果CSV(価格追従 / 差分検知 / 取り下げ)
+  const downloadRunCsv = async (runId: string, kind: string) => {
+    try {
+      const res = await fetch(`/api/inventory/runs/${runId}/csv?kind=${encodeURIComponent(kind)}`)
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? 'ダウンロード失敗')
+      downloadCsvBlob(json.csv, json.filename)
+    } catch (e) { showMsg('error', e instanceof Error ? e.message : 'ダウンロード失敗') }
+  }
+
   // 稼働状況DLモーダル
   const handleDownload = async () => {
     setDownloading(true)
@@ -1321,21 +1333,24 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               <table className="w-full text-sm border-collapse">
                 <thead>
                   <tr className="bg-gray-50 border-b">
-                    {['チェック日時', 'タイプ', 'active件数', 'マッチ件数', '稼働状況', '稼働結果ファイル'].map(h => (
+                    {['チェック日時', 'タイプ', '結果', '稼働状況', '稼働結果ファイル'].map(h => (
                       <th key={h} className="text-left px-3 py-2 text-xs font-medium text-gray-500">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {runs.length === 0 ? (
-                    <tr><td colSpan={6} className="px-3 py-8 text-center text-gray-400 text-sm">実行履歴がありません</td></tr>
+                    <tr><td colSpan={5} className="px-3 py-8 text-center text-gray-400 text-sm">実行履歴がありません</td></tr>
                   ) : runs.map(run => (
                     <>
                       <tr key={run.id} className="border-b hover:bg-gray-50">
                         <td className="px-3 py-2 text-xs text-gray-600">{new Date(run.started_at).toLocaleString('ja-JP')}</td>
-                        <td className="px-3 py-2 text-xs text-gray-600">{run.run_type === 'sync' ? 'eBay同期' : 'CSVアップロード'}</td>
-                        <td className="px-3 py-2 text-xs text-gray-600 text-right">{run.items_total ?? '—'}</td>
-                        <td className="px-3 py-2 text-xs text-gray-600 text-right">{run.items_matched ?? '—'}</td>
+                        <td className="px-3 py-2 text-xs text-gray-600 whitespace-nowrap">{RUN_TYPE_LABELS[run.run_type] ?? run.run_type}</td>
+                        <td className="px-3 py-2 text-xs text-gray-600">
+                          {run.run_type === 'sync' || run.run_type === 'upload'
+                            ? `対象 ${run.items_total ?? '—'}件 / 更新 ${run.items_matched ?? '—'}件${summarizeRun(run) ? ` / ${summarizeRun(run)}` : ''}`
+                            : summarizeRun(run) || '—'}
+                        </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-1">
                             <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${run.status === 'completed' ? 'bg-green-100 text-green-700' : run.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
@@ -1350,17 +1365,26 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                           </div>
                         </td>
                         <td className="px-3 py-2">
-                          {run.status === 'completed' && (
-                            <button onClick={() => setDlModal({ runId: run.id })}
-                              className="px-2 py-1 border border-green-600 text-green-600 text-xs rounded hover:bg-green-50">
-                              DL
-                            </button>
-                          )}
+                          <div className="flex flex-wrap gap-1">
+                            {/* ユーザー要望: 公式ツールのように、この実行の結果(価格追従/差分検知/取り下げ)をCSVで出力する */}
+                            {availableRunCsvKinds(run).map(k => (
+                              <button key={k.kind} onClick={() => downloadRunCsv(run.id, k.kind)}
+                                className="px-2 py-1 border border-green-600 text-green-600 text-xs rounded hover:bg-green-50 whitespace-nowrap">
+                                {k.label} {k.count}件
+                              </button>
+                            ))}
+                            {run.status === 'completed' && (run.run_type === 'sync' || run.run_type === 'upload') && (
+                              <button onClick={() => setDlModal({ runId: run.id })}
+                                className="px-2 py-1 border border-gray-400 text-gray-600 text-xs rounded hover:bg-gray-50 whitespace-nowrap">
+                                現在の状態からDL
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                       {expandedError === run.id && run.error_message && (
                         <tr className="bg-red-50">
-                          <td colSpan={6} className="px-4 py-2 text-xs text-red-700 font-mono whitespace-pre-wrap">{run.error_message}</td>
+                          <td colSpan={5} className="px-4 py-2 text-xs text-red-700 font-mono whitespace-pre-wrap">{run.error_message}</td>
                         </tr>
                       )}
                     </>
