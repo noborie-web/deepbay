@@ -29,6 +29,7 @@ import { calculateAutomaticEbayPrice } from '@/lib/extraction-run'
 interface ProductFixture {
   id: string
   source_url: string | null
+  source_site?: string | null
   original_title?: string | null
   original_price?: number | null
   purchase_price_jpy?: number | null
