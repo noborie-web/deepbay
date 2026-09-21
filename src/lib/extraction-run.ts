@@ -1,5 +1,5 @@
 import { scrapeUrl } from '@/lib/scrapers'
-import { extractBrandsSafely, translateDescriptionsWithFailures, translateTitlesWithFailures } from '@/lib/translate'
+import { extractBrandsSafely, generateDescriptionsSafely, normalizeAiDescriptionMode, translateDescriptionsWithFailures, translateTitlesWithFailures } from '@/lib/translate'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { calcProfit, DEFAULT_AUTO_PRICING, validateProfitParams } from '@/lib/pricing'
 import { matchesVeroBrandInTitle } from '@/lib/product-exclusion'
@@ -395,7 +395,7 @@ export async function runScrape(
     const descriptionEngine: string = extractionSettings?.description_engine ?? 'high'
     const descriptionEnabled: boolean = extractionSettings?.description_enabled ?? true
     const originalDescriptions = translationFilteredList.map((s: { description: string }) => s.description ?? '')
-    let translatedDescriptions: string[] = originalDescriptions
+    let translatedDescriptions: string[] = [...originalDescriptions]
     if (descriptionEnabled && process.env.OPENAI_API_KEY) {
       try {
         translatedDescriptions = (await translateDescriptionsWithFailures(originalDescriptions, descriptionEngine))
@@ -421,6 +421,45 @@ export async function runScrape(
         )
       } catch (e) {
         console.error('Brand extraction failed entirely:', e)
+      }
+    }
+
+    // ユーザー要望: 説明文をAIで生成する。'missing' は仕入先から説明文が取れなかった
+    // 商品だけ(Yahoo!フリマは商品ページの取得制限で説明文だけ遅れる)、'all' は
+    // 全商品について元の説明文も材料にして生成する。生成に失敗した商品は翻訳/元の
+    // 説明文のまま。
+    const aiDescriptionMode = normalizeAiDescriptionMode(extractionSettings?.ai_description_mode)
+    const aiGeneratedIndexes = new Set<number>()
+    if (aiDescriptionMode !== 'off' && process.env.OPENAI_API_KEY) {
+      const targetIndexes = translationFilteredList
+        .map((s: { description: string }, idx: number) => idx)
+        .filter((idx: number) => aiDescriptionMode === 'all' || !(originalDescriptions[idx] ?? '').trim())
+      if (targetIndexes.length > 0) {
+        try {
+          const generated = await generateDescriptionsSafely(
+            targetIndexes.map((idx: number) => {
+              const s = translationFilteredList[idx] as { title: string; condition: string | null; category: string | null; rawData?: Record<string, unknown> | null }
+              const raw = s.rawData ?? {}
+              return {
+                title: s.title,
+                condition: s.condition,
+                category: s.category,
+                brand: extractedBrands[idx] ?? (typeof raw.brand === 'string' ? raw.brand : null),
+                hashtags: Array.isArray(raw.hashtags) ? raw.hashtags.filter((t): t is string => typeof t === 'string') : null,
+                originalDescription: originalDescriptions[idx],
+              }
+            }),
+            descriptionEngine,
+          )
+          generated.forEach((g, i) => {
+            if (g.description) {
+              translatedDescriptions[targetIndexes[i]] = g.description
+              aiGeneratedIndexes.add(targetIndexes[i])
+            }
+          })
+        } catch (e) {
+          console.error('Description generation failed entirely:', e)
+        }
       }
     }
 
@@ -500,6 +539,7 @@ export async function runScrape(
         shipping_days: scraped.shippingDays,
         source_updated_at: scraped.sourceUpdatedAt,
         raw_source_data: scraped.rawData ?? null,
+        ai_description_generated_at: aiGeneratedIndexes.has(idx) ? new Date().toISOString() : null,
         // 抽出中に商品ページの詳細を取れなかった(説明文が空の)ヤフオク・Yahoo!フリマ
         // 商品は、抽出完了後に /api/extractions/[id]/enrich-details で補完する
         detail_enriched_at: (scraped.sourceSite === 'yahoo_flea' || scraped.sourceSite === 'yahoo_auction') && !scraped.description

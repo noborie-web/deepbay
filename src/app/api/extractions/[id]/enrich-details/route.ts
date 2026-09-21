@@ -5,7 +5,7 @@ import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { YahooFleaScraper, FLEA_DETAIL_PER_RUN, FLEA_RATE_LIMIT_WINDOW_MS } from '@/lib/scrapers/yahoo_flea'
 import { YahooAuctionScraper } from '@/lib/scrapers/yahoo_auction'
 import { fetchWithRetry, mapThrottled, RateLimitedError } from '@/lib/scrapers/throttled-fetch'
-import { translateDescriptionsWithFailures } from '@/lib/translate'
+import { generateDescriptionsSafely, normalizeAiDescriptionMode, translateDescriptionsWithFailures } from '@/lib/translate'
 import type { ScrapedProduct } from '@/lib/scrapers/types'
 
 // ユーザー要望: ヤフオク・Yahoo!フリマの抽出で「必要なものは取得できるように」。
@@ -84,11 +84,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const { data: settings } = await db
     .from('extraction_settings')
-    .select('description_engine, description_enabled')
+    .select('description_engine, description_enabled, ai_description_mode')
     .eq('user_id', user.id)
     .maybeSingle()
   const descriptionEnabled: boolean = settings?.description_enabled ?? true
   const descriptionEngine: string = settings?.description_engine ?? 'high'
+  const aiDescriptionMode = normalizeAiDescriptionMode(settings?.ai_description_mode)
 
   const flea = new YahooFleaScraper()
   const auction = new YahooAuctionScraper()
@@ -133,14 +134,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   }
 
-  // 説明文の英訳(抽出時と同じ設定)
+  // 説明文の英訳(抽出時と同じ設定)。AI生成が 'all' なら元の説明文を材料に生成し直す
   const descriptions = enriched.map(e => e.detail.description ?? '')
-  let translated: string[] = descriptions
+  let translated: string[] = [...descriptions]
   if (descriptionEnabled && process.env.OPENAI_API_KEY && descriptions.some(d => d.trim())) {
     try {
       translated = (await translateDescriptionsWithFailures(descriptions, descriptionEngine)).map(r => r.description)
     } catch (err) {
       console.error('[enrich-details] description translation failed:', err instanceof Error ? err.message : err)
+    }
+  }
+  if (aiDescriptionMode === 'all' && process.env.OPENAI_API_KEY && enriched.length > 0) {
+    try {
+      const generated = await generateDescriptionsSafely(enriched.map(({ detail }) => {
+        const raw = (detail.rawData ?? {}) as Record<string, unknown>
+        return {
+          title: detail.title,
+          condition: detail.condition,
+          category: detail.category,
+          brand: typeof raw.brand === 'string' ? raw.brand : null,
+          hashtags: Array.isArray(raw.hashtags) ? raw.hashtags.filter((t): t is string => typeof t === 'string') : null,
+          originalDescription: detail.description,
+        }
+      }), descriptionEngine)
+      generated.forEach((g, i) => { if (g.description) translated[i] = g.description })
+    } catch (err) {
+      console.error('[enrich-details] description generation failed:', err instanceof Error ? err.message : err)
     }
   }
 
@@ -151,6 +170,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const update: Record<string, unknown> = { detail_enriched_at: now }
     if (detail.description && !product.original_description) {
       update.original_description = detail.description
+      // 抽出時にAIで仮生成した説明文があっても、本物の説明文(翻訳/生成)で置き換える
       update.ebay_description = translated[i] || detail.description
     }
     if (detail.condition) { update.original_condition = detail.condition; update.ebay_condition = detail.condition }

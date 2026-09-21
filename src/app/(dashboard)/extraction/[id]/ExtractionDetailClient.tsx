@@ -102,6 +102,35 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
     return () => clearInterval(timer)
   }, [enrichResumeAt])
 
+  // ユーザー要望: 説明文をAIで生成する(手動)。未取得分だけ / 全商品
+  const [genBusy, setGenBusy] = useState<'idle' | 'missing' | 'all'>('idle')
+  const [genMessage, setGenMessage] = useState<string | null>(null)
+  const runGenerate = async (scope: 'missing' | 'all') => {
+    const label = scope === 'all' ? '全商品（出品済みを除く）の説明文をAIで生成し直します' : '説明文が無い商品の説明文をAIで生成します'
+    if (!confirm(`${label}。よろしいですか？`)) return
+    setGenBusy(scope); setGenMessage(null)
+    let processed = 0; let failed = 0
+    try {
+      for (let i = 0; i < 50; i++) {
+        const res = await fetch(`/api/extractions/${extraction.id}/generate-descriptions`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'run', scope }),
+        })
+        const json = await res.json()
+        if (!res.ok) throw new Error(json.error ?? '生成に失敗しました')
+        processed += json.processed ?? 0; failed += json.failed ?? 0
+        setGenMessage(`生成中… ${processed}件完了${failed ? `（失敗 ${failed}件）` : ''}、残り ${json.pending} 件`)
+        if (!json.pending || (json.processed ?? 0) === 0) break
+      }
+      setGenMessage(`説明文の生成完了: ${processed}件${failed ? `（失敗 ${failed}件）` : ''}`)
+      const refreshed = await fetch(`/api/extraction-status/${extraction.id}`)
+      if (refreshed.ok) setProducts((await refreshed.json()).products)
+    } catch (e) {
+      setGenMessage(`エラー: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setGenBusy('idle')
+    }
+  }
+
   const isProcessing = extraction.status === 'processing'
   const progress = extraction.progress ?? 0
 
@@ -152,6 +181,20 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
       {enrichError && (
         <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
           商品詳細の補完でエラー: {enrichError}（ページを再読み込みすると再開します）
+        </div>
+      )}
+
+      {extraction.status === 'completed' && (
+        <div className="mb-6 flex flex-wrap items-center gap-2 text-sm">
+          <button onClick={() => runGenerate('missing')} disabled={genBusy !== 'idle'}
+            className="px-3 py-1.5 border rounded text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+            {genBusy === 'missing' ? '生成中...' : '説明文が無い商品をAIで生成'}
+          </button>
+          <button onClick={() => runGenerate('all')} disabled={genBusy !== 'idle'}
+            className="px-3 py-1.5 border rounded text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+            {genBusy === 'all' ? '生成中...' : '全商品の説明文をAIで生成'}
+          </button>
+          {genMessage && <span className="text-xs text-gray-600">{genMessage}</span>}
         </div>
       )}
 

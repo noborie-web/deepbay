@@ -23,6 +23,8 @@ interface ExtractionSettings {
   spot_check_description: boolean
   // ヤフオク検索URLで抽出するとき、同じ条件でYahoo!フリマも検索して合算する
   yahoo_auction_include_flea: boolean
+  // 説明文のAI生成: off=しない / missing=仕入先から説明文が取れなかった商品だけ / all=全商品
+  ai_description_mode: 'off' | 'missing' | 'all'
 }
 
 interface DangerSeller { id: string; seller_url: string }
@@ -49,6 +51,7 @@ const DEFAULT_SETTINGS: ExtractionSettings = {
   spot_check_title: true,
   spot_check_description: true,
   yahoo_auction_include_flea: true,
+  ai_description_mode: 'missing',
 }
 
 function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
@@ -528,6 +531,22 @@ export default function ExtractionSettingsPage() {
                   </div>
                 </div>
               ))}
+              <div>
+                <p className="text-sm text-gray-600 mb-1">説明文のAI生成</p>
+                <p className="text-xs text-gray-500 mb-2">
+                  タイトル・商品の状態・カテゴリ・ブランド（あれば元の説明文）から、eBay向けの英語説明文をAIが作成します。元情報に無い付属品・傷などは書きません。
+                  Yahoo!フリマは商品ページの取得制限で説明文の取得に時間がかかるため、「取れなかった商品だけ」にしておくと抽出直後から説明文付きで出品できます。
+                </p>
+                <select
+                  value={settings.ai_description_mode}
+                  onChange={(e) => setSettings((prev) => ({ ...prev, ai_description_mode: e.target.value as ExtractionSettings['ai_description_mode'] }))}
+                  className="border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300 w-80"
+                >
+                  <option value="off">生成しない（仕入先の説明文を翻訳のみ）</option>
+                  <option value="missing">説明文が取れなかった商品だけ生成する（推奨）</option>
+                  <option value="all">全商品の説明文をAIで生成する</option>
+                </select>
+              </div>
             </div>
           </div>
 
