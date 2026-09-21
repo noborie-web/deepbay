@@ -57,8 +57,7 @@ vi.mock('@/lib/inventory-supplier-check', async (importOriginal) => ({
 
 vi.mock('@/lib/ebay-actions', () => ({
   endItem: vi.fn(),
-  reviseQuantityToZero: vi.fn(),
-  revisePrice: vi.fn(),
+  reviseInventoryStatusBatch: vi.fn(async () => ({ results: [], deferred: 0 })),
   addFixedPriceItem: vi.fn(),
 }))
 

@@ -1,7 +1,7 @@
 // Vercel Cron Job — Hobbyプラン向けに毎日0時UTC（9時台JST）に1回起動
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { endItem, reviseQuantityToZero, revisePrice, addFixedPriceItem } from '@/lib/ebay-actions'
+import { endItem, reviseInventoryStatusBatch, addFixedPriceItem } from '@/lib/ebay-actions'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
@@ -164,12 +164,13 @@ export async function GET(req: NextRequest) {
       const { data: listings } = await delistQuery
 
       const delistResults = []
+      const quantityZeroEntries = []
       for (const l of listings ?? []) {
-        const r = l.product_id
-          ? await reviseQuantityToZero(accessToken, l.ebay_item_id)
-          : await endItem(accessToken, l.ebay_item_id)
-        delistResults.push(r)
+        if (l.product_id) quantityZeroEntries.push({ itemId: l.ebay_item_id as string, quantity: 0 })
+        else delistResults.push(await endItem(accessToken, l.ebay_item_id))
       }
+      // 4件ずつまとめて在庫0にする(件数が多くても時間内に終わるように)
+      delistResults.push(...(await reviseInventoryStatusBatch(accessToken, quantityZeroEntries)).results)
       try {
         await markListingsDelisted(db, userId, delistResults.filter(r => r.success).map(r => r.itemId))
       } catch {
@@ -205,16 +206,17 @@ export async function GET(req: NextRequest) {
       // 本番で確認した不具合: 価格改定が135件になった日に、Vercelの実行時間
       // 上限(300秒)に達して途中で打ち切られ、実行ログも残らなかった。
       // 時間予算内で処理し、残りは翌日に回す(ログは必ず残す)。
+      // 4件ずつまとめて並行に送り、時間予算内で処理し切れない分だけ翌日に回す。
       const reviseStartedAt = Date.now()
-      const reviseResults = []
-      let reviseDeferred = 0
+      const reviseEntries = []
       for (const l of listings ?? []) {
         const p = productMap.get(l.product_id!)
         if (!p?.ebay_price || !l.current_price || Math.abs(p.ebay_price - l.current_price) <= 0.5) continue
-        if (Date.now() - reviseStartedAt > REVISE_PRICE_TIME_BUDGET_MS) { reviseDeferred += 1; continue }
-        const r = await revisePrice(accessToken, l.ebay_item_id, p.ebay_price)
-        reviseResults.push(r)
+        reviseEntries.push({ itemId: l.ebay_item_id as string, price: p.ebay_price })
       }
+      const { results: reviseResults, deferred: reviseDeferred } = await reviseInventoryStatusBatch(
+        accessToken, reviseEntries, { deadlineMs: reviseStartedAt + REVISE_PRICE_TIME_BUDGET_MS },
+      )
       userResult.revise_price = { total: reviseResults.length, succeeded: reviseResults.filter(r => r.success).length, deferred: reviseDeferred }
       const reviseRun = summarizeInventoryActionRun(reviseResults)
 

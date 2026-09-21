@@ -97,6 +97,85 @@ export async function revisePrice(accessToken: string, itemId: string, newPrice:
   return runItemAction(accessToken, 'ReviseInventoryStatus', xml, itemId)
 }
 
+// ReviseInventoryStatus — 複数件を1回の呼び出しでまとめて更新する。
+// ユーザー要望: 価格改定が110件のうち62件で時間切れになり48件が翌日に
+// 持ち越された。ReviseInventoryStatusは1リクエストに最大4件まで含められる
+// ため4件ずつまとめ、さらに数リクエストを並行して送ることで、同じ時間で
+// 10倍以上の件数を処理する。まとめたリクエストがエラーになった場合は、
+// どの商品が失敗したかを特定するため1件ずつ送り直す。
+export interface InventoryStatusEntry {
+  itemId: string
+  price?: number
+  quantity?: number
+}
+
+const REVISE_INVENTORY_STATUS_MAX_PER_REQUEST = 4
+const DEFAULT_REVISE_CONCURRENCY = 3
+
+function inventoryStatusXml(entries: InventoryStatusEntry[]): string {
+  const blocks = entries.map(e => `  <InventoryStatus>
+    <ItemID>${escapeXml(e.itemId)}</ItemID>${e.price !== undefined ? `
+    <StartPrice currencyID="USD">${e.price.toFixed(2)}</StartPrice>` : ''}${e.quantity !== undefined ? `
+    <Quantity>${Math.max(0, Math.floor(e.quantity))}</Quantity>` : ''}
+  </InventoryStatus>`).join('\n')
+  return `<?xml version="1.0" encoding="utf-8"?>
+<ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+${blocks}
+</ReviseInventoryStatusRequest>`
+}
+
+async function reviseInventoryStatusChunk(accessToken: string, entries: InventoryStatusEntry[]): Promise<EbayActionResult[]> {
+  if (entries.length === 1) {
+    return [await runItemAction(accessToken, 'ReviseInventoryStatus', inventoryStatusXml(entries), entries[0].itemId)]
+  }
+  try {
+    const response = await tradingCall(accessToken, 'ReviseInventoryStatus', inventoryStatusXml(entries))
+    const parsed = parseActionResponse(response)
+    if (parsed.success) return entries.map(e => ({ itemId: e.itemId, success: true }))
+  } catch {
+    // まとめて送れなかった場合も1件ずつ送り直して結果を確定させる
+  }
+  const results: EbayActionResult[] = []
+  for (const entry of entries) {
+    results.push(await runItemAction(accessToken, 'ReviseInventoryStatus', inventoryStatusXml([entry]), entry.itemId))
+  }
+  return results
+}
+
+export interface ReviseInventoryStatusOptions {
+  concurrency?: number
+  // この時刻(Date.now()基準のms)を過ぎたら残りは送らず deferred に数える
+  deadlineMs?: number
+}
+
+export interface ReviseInventoryStatusBatchResult {
+  results: EbayActionResult[]
+  deferred: number
+}
+
+export async function reviseInventoryStatusBatch(
+  accessToken: string,
+  entries: InventoryStatusEntry[],
+  options: ReviseInventoryStatusOptions = {},
+): Promise<ReviseInventoryStatusBatchResult> {
+  const chunks: InventoryStatusEntry[][] = []
+  for (let i = 0; i < entries.length; i += REVISE_INVENTORY_STATUS_MAX_PER_REQUEST) {
+    chunks.push(entries.slice(i, i + REVISE_INVENTORY_STATUS_MAX_PER_REQUEST))
+  }
+  const results: EbayActionResult[] = []
+  let deferred = 0
+  let next = 0
+  const concurrency = Math.max(1, Math.floor(options.concurrency ?? DEFAULT_REVISE_CONCURRENCY))
+  await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, async () => {
+    while (next < chunks.length) {
+      const chunk = chunks[next++]
+      if (options.deadlineMs !== undefined && Date.now() > options.deadlineMs) { deferred += chunk.length; continue }
+      results.push(...await reviseInventoryStatusChunk(accessToken, chunk))
+    }
+  }))
+  return { results, deferred }
+}
+
 // ReviseItem — 説明文(HTML)の差し替え。ユーザー要望: 出品済み商品の日本語
 // 説明文を英訳してeBayに反映する。
 export async function reviseDescription(accessToken: string, itemId: string, descriptionHtml: string): Promise<EbayActionResult> {

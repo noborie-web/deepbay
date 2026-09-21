@@ -117,3 +117,58 @@ describe('eBay action response handling', () => {
     expect(body.has('scope')).toBe(false)
   })
 })
+
+// ユーザー要望: 価格改定が110件のうち62件で時間切れになり48件が翌日に
+// 持ち越された。ReviseInventoryStatusで4件ずつまとめ、並行して送る。
+describe('reviseInventoryStatusBatch', () => {
+  it('4件ずつ1リクエストにまとめ、成功なら全件成功として返す', async () => {
+    const { reviseInventoryStatusBatch } = await import('@/lib/ebay-actions')
+    const bodies: string[] = []
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''))
+      return new Response('<ReviseInventoryStatusResponse><Ack>Success</Ack></ReviseInventoryStatusResponse>', { status: 200 })
+    })
+
+    const entries = Array.from({ length: 6 }, (_, i) => ({ itemId: `item-${i}`, price: 10 + i }))
+    const { results, deferred } = await reviseInventoryStatusBatch('token', entries, { concurrency: 1 })
+
+    expect(bodies).toHaveLength(2)
+    expect(bodies[0].match(/<InventoryStatus>/g)).toHaveLength(4)
+    expect(bodies[1].match(/<InventoryStatus>/g)).toHaveLength(2)
+    expect(bodies[0]).toContain('<ItemID>item-0</ItemID>')
+    expect(bodies[0]).toContain('<StartPrice currencyID="USD">10.00</StartPrice>')
+    expect(results.map(r => r.itemId).sort()).toEqual(entries.map(e => e.itemId).sort())
+    expect(results.every(r => r.success)).toBe(true)
+    expect(deferred).toBe(0)
+  })
+
+  it('まとめたリクエストが失敗したら1件ずつ送り直して失敗した商品を特定する', async () => {
+    const { reviseInventoryStatusBatch } = await import('@/lib/ebay-actions')
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      const body = String(init?.body ?? '')
+      const count = (body.match(/<InventoryStatus>/g) ?? []).length
+      if (count > 1 || body.includes('<ItemID>bad</ItemID>')) {
+        return new Response('<ReviseInventoryStatusResponse><Ack>Failure</Ack><Errors><LongMessage>rejected</LongMessage></Errors></ReviseInventoryStatusResponse>', { status: 200 })
+      }
+      return new Response('<ReviseInventoryStatusResponse><Ack>Success</Ack></ReviseInventoryStatusResponse>', { status: 200 })
+    })
+
+    const { results } = await reviseInventoryStatusBatch('token', [
+      { itemId: 'ok-1', quantity: 0 }, { itemId: 'bad', quantity: 0 }, { itemId: 'ok-2', quantity: 0 },
+    ])
+    expect(results).toEqual([
+      { itemId: 'ok-1', success: true },
+      { itemId: 'bad', success: false, error: 'rejected' },
+      { itemId: 'ok-2', success: true },
+    ])
+  })
+
+  it('期限を過ぎたら残りは送らず deferred に数える', async () => {
+    const { reviseInventoryStatusBatch } = await import('@/lib/ebay-actions')
+    fetchMock.mockResolvedValue(new Response('<ReviseInventoryStatusResponse><Ack>Success</Ack></ReviseInventoryStatusResponse>', { status: 200 }))
+    const entries = Array.from({ length: 8 }, (_, i) => ({ itemId: `item-${i}`, price: 10 }))
+    const { results, deferred } = await reviseInventoryStatusBatch('token', entries, { concurrency: 1, deadlineMs: Date.now() - 1 })
+    expect(results).toHaveLength(0)
+    expect(deferred).toBe(8)
+  })
+})
