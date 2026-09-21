@@ -508,6 +508,10 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         if (fields.ebay_price !== undefined) out.ebay_price = fields.ebay_price
         if (fields.ebay_condition !== undefined) out.ebay_condition = fields.ebay_condition
         if (fields.purchase_price_jpy !== undefined) out.purchase_price_jpy = fields.purchase_price_jpy
+        // 実データで確認した不具合: 一括価格編集で為替レートを編集内容に入れて
+        // いたが、保存リクエストに含めておらず常にnullのままだった(出品時の
+        // 為替との差分検知ができない)。
+        if (fields.pricing_jpy_per_usd !== undefined) out.pricing_jpy_per_usd = fields.pricing_jpy_per_usd
         return out
       })
 
