@@ -509,9 +509,10 @@ export async function syncKnownInventoryListingBatch(
   if (!Number.isInteger(batchIndex) || batchIndex < 1) throw new Error(`Invalid inventory sync batch: ${batchIndex}`)
   if (!Number.isInteger(batchSize) || batchSize < 1) throw new Error(`Invalid inventory sync batch size: ${batchSize}`)
 
-  const discovery = batchIndex === 1
-    ? await discoverNewListings(db, userId, accessToken, options)
-    : { discovered: 0, truncated: false }
+  // 実データで確認した不具合: 1回の手動同期(最初のバッチだけ15秒)では
+  // 走査が数日分しか進まず、CSVで出品した29件が下書きのまま残った。
+  // 各バッチで走査を続け、1回の同期で走査に使える時間を増やす。
+  const discovery = await discoverNewListings(db, userId, accessToken, options)
 
   const knownIds = await collectKnownItemIds(db, userId)
   const totalBatches = Math.max(1, Math.ceil(knownIds.length / batchSize))

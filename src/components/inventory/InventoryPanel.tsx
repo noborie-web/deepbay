@@ -671,6 +671,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       let endedTotal = 0
       let discoveredTotal = 0
       let discoveryTruncated = false
+      let rounds = 0
       for (let requestNumber = 1; requestNumber <= 50; requestNumber++) {
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 50_000)
@@ -701,6 +702,15 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             setSyncProgress(`${json.progress.processed}/${json.progress.total}件`)
           }
           if (json.done) {
+            // 新規出品の走査が終わっていなければ、続きから自動でもう一周する
+            // (最大3周)。ユーザーが何度も押し直さなくて済むようにする。
+            if (json.discovery_truncated && rounds < 3) {
+              rounds += 1
+              discoveryTruncated = false
+              cursor = null
+              setSyncProgress(`新規出品の走査を継続中（${rounds + 1}周目）`)
+              continue
+            }
             completed = { total: json.total, matched: json.matched, ended: endedTotal, discovered: discoveredTotal, discoveryTruncated }
             break
           }
@@ -1440,7 +1450,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               <p className="text-sm font-medium text-gray-800 mb-1">① APIで同期する（推奨）</p>
               <p className="text-xs text-gray-500 mb-2">
                 接続済みのeBayアカウントに対して、Kakehashiで出品した商品だけをItemID単位で個別照会し、在庫数・価格・出品状態を最新にします（他ツールの出品は照会しません）。
-                新しく出品した商品は、直近の出品400件の中から自動検出します。それより古い場合は②のCSV取込で登録してください。
+                CSVで新しく出品した商品は、前回の同期以降にeBayで出品開始されたものを全件確認して自動で取り込みます（他ツールの出品数には影響されません）。
               </p>
               <button onClick={handleSync} disabled={syncing || !settings.has_token}
                 className={`px-4 py-2 text-sm rounded ${syncing || !settings.has_token ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
