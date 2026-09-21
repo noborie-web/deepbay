@@ -39,6 +39,9 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
   const [enrichPending, setEnrichPending] = useState<number | null>(null)
   const [enrichDone, setEnrichDone] = useState(0)
   const [enrichError, setEnrichError] = useState<string | null>(null)
+  // Yahoo!フリマの制限(約15件/15分)で待機中のとき、次の再開時刻
+  const [enrichResumeAt, setEnrichResumeAt] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
   const enrichStartedRef = useRef(false)
 
   useEffect(() => {
@@ -51,21 +54,32 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? '詳細の補完に失敗しました')
-      return json as { pending: number; processed?: number }
+      return json as { pending: number; processed?: number; retry_after_ms?: number; flea_rate_limited?: boolean }
     }
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
     ;(async () => {
       try {
         const status = await call('status')
         if (cancelled) return
         setEnrichPending(status.pending)
         let pending = status.pending
-        for (let i = 0; i < 60 && pending > 0 && !cancelled; i++) {
+        for (let i = 0; i < 200 && pending > 0 && !cancelled; i++) {
           const result = await call('run')
           if (cancelled) return
           setEnrichDone(prev => prev + (result.processed ?? 0))
-          if (result.pending >= pending && (result.processed ?? 0) === 0) break
+          const progressed = (result.processed ?? 0) > 0 || result.pending < pending
           pending = result.pending
           setEnrichPending(pending)
+          if (pending === 0) break
+          if (result.retry_after_ms && result.retry_after_ms > 0) {
+            // Yahoo!フリマの制限: 次の1回分まで待つ
+            const resumeAt = Date.now() + result.retry_after_ms
+            setEnrichResumeAt(resumeAt)
+            while (!cancelled && Date.now() < resumeAt) await sleep(1000)
+            setEnrichResumeAt(null)
+            continue
+          }
+          if (!progressed) break
         }
         if (!cancelled) {
           const refreshed = await fetch(`/api/extraction-status/${extraction.id}`)
@@ -80,6 +94,13 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
     })()
     return () => { cancelled = true }
   }, [extraction.status, extraction.id])
+
+  // 待機中のカウントダウン表示用
+  useEffect(() => {
+    if (enrichResumeAt === null) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [enrichResumeAt])
 
   const isProcessing = extraction.status === 'processing'
   const progress = extraction.progress ?? 0
@@ -116,7 +137,10 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
 
       {enrichPending !== null && enrichPending > 0 && !enrichError && (
         <div className="mb-6 bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
-          商品ページから説明文・商品の状態・発送日数・評価数を補完中… 残り {enrichPending} 件（補完済み {enrichDone} 件）。
+          商品ページから説明文・画像などを補完中… 残り {enrichPending} 件（補完済み {enrichDone} 件）。
+          {enrichResumeAt !== null && (
+            <> Yahoo!フリマのアクセス制限（約15件ごとに15分待機）のため、あと {Math.max(0, Math.ceil((enrichResumeAt - now) / 60000))} 分後に再開します。</>
+          )}
           このページを開いたままお待ちください（閉じても次回開いたときに続きから再開します）。
         </div>
       )}

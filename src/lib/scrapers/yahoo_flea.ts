@@ -2,7 +2,7 @@ import * as cheerio from 'cheerio'
 import { BaseScraper } from './base'
 import { ScraperError } from './types'
 import type { ScrapedProduct, ScraperOptions } from './types'
-import { fetchWithRetry, mapThrottled } from './throttled-fetch'
+import { fetchWithRetry, mapThrottled, RateLimitedError } from './throttled-fetch'
 
 // Yahoo!フリマ(旧PayPayフリマ)のスクレイパー。
 //
@@ -29,14 +29,19 @@ const SEARCH_URL_PATTERN = /paypayfleamarket\.yahoo\.co\.jp\/search\//
 const ITEM_URL_PATTERN = /paypayfleamarket\.yahoo\.co\.jp\/item\/([a-z0-9]+)/
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const PAGE_SIZE = 100
-// 実データで確認(2026-09-21): 並行8件では数十件で429になる。並行2・間隔400msで
-// 安定して取得できる範囲に抑え、429時は待って再試行する。
-const DETAIL_CONCURRENCY = 2
-const DETAIL_INTERVAL_MS = 400
-const DETAIL_RETRIES = 3
-// 抽出全体(Vercelの300秒、翻訳等も含む)のうち商品ページ取得に使う上限。超えた分は
-// 基本情報のまま登録し、抽出完了後に /api/extractions/[id]/enrich-details で補完する。
-const DETAIL_TIME_BUDGET_MS = 60_000
+// 実データで計測(2026-09-21): Yahoo!フリマの商品ページは 1つのIPから約15件
+// 取得すると429になり、約15分間ブロックされる(UAを変えても解除されない)。
+// 制限に従い、1回の抽出/補完で取得する商品ページは FLEA_DETAIL_PER_RUN 件に
+// 抑え、429が出た時点でそれ以上は取得しない(残りは抽出完了後に
+// /api/extractions/[id]/enrich-details が15分おきに補完する)。
+// 状態・評価数・出品日時・カテゴリは検索API(/api/v1/search)から全件取れるため、
+// 商品ページでしか取れないのは説明文と2枚目以降の画像だけ。
+export const FLEA_DETAIL_PER_RUN = 12
+export const FLEA_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000
+const DETAIL_INTERVAL_MS = 1000
+const DETAIL_RETRIES = 0
+const DETAIL_TIME_BUDGET_MS = 40_000
+const SEARCH_API_PAGE_SIZE = 100
 const ORIGIN = 'https://paypayfleamarket.yahoo.co.jp'
 
 // 検索結果のサムネイルはリサイズ指定付き(w=298&h=298)なので、クエリを外して元画像にする
@@ -218,6 +223,117 @@ export async function buildYahooFleaSearchUrlFromAuction(
   return dest.toString()
 }
 
+// ---------------------------------------------------------------------------
+// 検索API(/api/v1/search)
+//
+// 実データで確認(2026-09-21): 検索ページが内部で呼ぶJSON API。パラメータは
+// results(最大100)/offset/itemStatus(open|sold)/query/minPrice/maxPrice/
+// itemConditions(NEW,USED10,...)/genreCategoryIds(表示カテゴリID)。
+// 1件あたり id/title/price/thumbnailImageUrl/imageCount/category/brand/
+// seller.numRating/condition(new|used10..used80)/openTime/itemStatus/hashtag。
+// 商品ページと違い100件まとめて取れるため、状態・評価数・出品日時はこれで補完する。
+// ---------------------------------------------------------------------------
+
+const CONDITION_LABELS: Record<string, string> = {
+  new: '未使用',
+  used10: '未使用に近い',
+  used20: '目立った傷や汚れなし',
+  used40: 'やや傷や汚れあり',
+  used60: '傷や汚れあり',
+  used80: '全体的に状態が悪い',
+}
+
+export interface YahooFleaSearchApiItem {
+  id: string
+  title: string
+  price: number
+  thumbnailImageUrl?: string
+  imageCount?: number
+  category?: { id: number; name: string; path?: Array<{ id: number; name: string }> }
+  brand?: { id: number; name: string } | null
+  seller?: { id: string; numRating?: number; goodRatio?: number }
+  sellerId?: string
+  condition?: string
+  openTime?: string
+  itemStatus?: string
+  hashtag?: string[]
+}
+
+export function buildYahooFleaSearchApiUrl(searchUrl: string, offset: number, results = SEARCH_API_PAGE_SIZE): string {
+  const src = new URL(searchUrl)
+  const keyword = decodeURIComponent(src.pathname.replace(/^\/search\//, '')).trim()
+  const api = new URL(`${ORIGIN}/api/v1/search`)
+  api.searchParams.set('results', String(results))
+  api.searchParams.set('offset', String(offset))
+  api.searchParams.set('itemStatus', src.searchParams.get('sold') === '1' ? 'sold' : 'open')
+  if (keyword) api.searchParams.set('query', keyword)
+  for (const key of ['minPrice', 'maxPrice', 'brandIds'] as const) {
+    const value = src.searchParams.get(key)
+    if (value) api.searchParams.set(key, value)
+  }
+  const conditions = src.searchParams.get('conditions')
+  if (conditions) api.searchParams.set('itemConditions', conditions)
+  // 検索ページのcategoryIdsは階層のID列(例: 2511,2161,16899,16904,16908)。APIは末尾のIDだけを使う
+  const categoryIds = src.searchParams.get('categoryIds')
+  if (categoryIds) {
+    const leaf = categoryIds.split(',').map(v => v.trim()).filter(Boolean).pop()
+    if (leaf) api.searchParams.set('genreCategoryIds', leaf)
+  }
+  return api.toString()
+}
+
+export function searchApiItemToProduct(item: YahooFleaSearchApiItem, siteKey: string): ScrapedProduct | null {
+  const itemId = typeof item.id === 'string' ? item.id : ''
+  const title = typeof item.title === 'string' ? item.title.trim() : ''
+  if (!itemId || !title) return null
+  const isAuctionItem = !itemId.startsWith('z')
+  const sellerId = item.seller?.id ?? item.sellerId ?? null
+  const numRating = typeof item.seller?.numRating === 'number' ? item.seller.numRating : null
+  const openTime = item.openTime ? new Date(item.openTime) : null
+  return {
+    sourceUrl: isAuctionItem ? `https://auctions.yahoo.co.jp/jp/auction/${itemId}` : `${ORIGIN}/item/${itemId}`,
+    sourceSite: isAuctionItem ? 'yahoo_auction' : siteKey,
+    sourceItemId: itemId,
+    title,
+    price: typeof item.price === 'number' && item.price > 0 ? item.price : null,
+    description: '',
+    images: item.thumbnailImageUrl ? [originalImageUrl(item.thumbnailImageUrl)] : [],
+    condition: item.condition ? (CONDITION_LABELS[item.condition] ?? item.condition) : null,
+    category: item.category?.name ?? null,
+    sellerRatingCount: numRating,
+    shippingDays: null,
+    sourceUpdatedAt: openTime && !Number.isNaN(openTime.getTime()) ? openTime.toISOString() : null,
+    availability: item.itemStatus === 'SOLD' ? 'sold_out' : 'available',
+    sellerUrl: sellerId ? (isAuctionItem ? `https://auctions.yahoo.co.jp/seller/${sellerId}` : `${ORIGIN}/user/${sellerId}`) : null,
+    rawData: {
+      searchApi: item,
+      brand: item.brand?.name ?? null,
+      hashtags: item.hashtag ?? [],
+      imageCount: item.imageCount ?? null,
+      categoryPath: item.category?.path?.map(c => c.name) ?? [],
+    },
+  }
+}
+
+// 商品ページから取れた詳細で検索結果の情報を補う(検索結果にしか無い情報は残す)
+export function mergeDetail(product: ScrapedProduct, detail: ScrapedProduct): ScrapedProduct {
+  return {
+    ...product,
+    title: detail.title || product.title,
+    price: detail.price ?? product.price,
+    description: detail.description || product.description,
+    images: detail.images.length > 0 ? detail.images : product.images,
+    condition: detail.condition ?? product.condition,
+    category: detail.category ?? product.category,
+    sellerRatingCount: detail.sellerRatingCount ?? product.sellerRatingCount,
+    shippingDays: detail.shippingDays ?? product.shippingDays,
+    sourceUpdatedAt: detail.sourceUpdatedAt ?? product.sourceUpdatedAt,
+    availability: detail.availability ?? product.availability,
+    sellerUrl: detail.sellerUrl ?? product.sellerUrl,
+    rawData: { ...(product.rawData ?? {}), ...(detail.rawData ?? {}) },
+  }
+}
+
 export class YahooFleaScraper extends BaseScraper {
   name = 'Yahoo!フリマ'
   siteKey = 'yahoo_flea'
@@ -294,6 +410,61 @@ export class YahooFleaScraper extends BaseScraper {
   }
 
   private async scrapeSearch(url: string, options: ScraperOptions): Promise<ScrapedProduct[]> {
+    const { limit = 600, onPage } = options
+    let products: ScrapedProduct[]
+    try {
+      products = await this.scrapeSearchApi(url, options)
+    } catch (err) {
+      // APIが使えない場合は検索ページ(HTML)から一覧だけ取る
+      console.warn('[yahoo flea] search API failed, falling back to HTML:', err instanceof Error ? err.message : err)
+      products = await this.scrapeSearchHtml(url, options)
+    }
+    if (products.length === 0) {
+      throw new ScraperError('検索結果が0件です', this.siteKey, url)
+    }
+    onPage?.(products.length, limit)
+    return this.enrichDetails(products.slice(0, limit), options)
+  }
+
+  // 検索APIで一覧+状態・評価数・出品日時をまとめて取得する
+  private async scrapeSearchApi(url: string, options: ScraperOptions): Promise<ScrapedProduct[]> {
+    const { userAgent = DEFAULT_UA, timeoutMs = 15000, limit = 600, onPage } = options
+    const all: ScrapedProduct[] = []
+    const seen = new Set<string>()
+    for (let offset = 0; offset < limit + SEARCH_API_PAGE_SIZE; offset += SEARCH_API_PAGE_SIZE) {
+      const apiUrl = buildYahooFleaSearchApiUrl(url, offset, Math.min(SEARCH_API_PAGE_SIZE, limit))
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      let json: { totalResultsAvailable?: number; items?: YahooFleaSearchApiItem[] }
+      try {
+        const res = await fetch(apiUrl, {
+          headers: { 'User-Agent': userAgent, Accept: 'application/json', 'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3' },
+          signal: controller.signal,
+        })
+        if (!res.ok) throw new ScraperError(`HTTP ${res.status}: ${res.statusText}`, this.siteKey, apiUrl)
+        json = await res.json()
+      } finally {
+        clearTimeout(timer)
+      }
+      const items = Array.isArray(json.items) ? json.items : []
+      let added = 0
+      for (const item of items) {
+        const product = searchApiItemToProduct(item, this.siteKey)
+        if (!product || seen.has(product.sourceItemId!)) continue
+        seen.add(product.sourceItemId!)
+        all.push(product)
+        added += 1
+        if (all.length >= limit) break
+      }
+      onPage?.(all.length, Math.min(limit, json.totalResultsAvailable ?? limit))
+      const total = typeof json.totalResultsAvailable === 'number' ? json.totalResultsAvailable : null
+      if (added === 0 || items.length < SEARCH_API_PAGE_SIZE || all.length >= limit) break
+      if (total !== null && offset + SEARCH_API_PAGE_SIZE >= total) break
+    }
+    return all
+  }
+
+  private async scrapeSearchHtml(url: string, options: ScraperOptions): Promise<ScrapedProduct[]> {
     const { userAgent = DEFAULT_UA, timeoutMs = 15000, limit = 600, onPage } = options
     const baseUrl = new URL(url)
     // 販売中のみを対象にする(売り切れは抽出に含めない)。URLに指定が無ければ付与する。
@@ -333,55 +504,67 @@ export class YahooFleaScraper extends BaseScraper {
       onPage?.(allProducts.length, limit)
       if (pageProducts.length < PAGE_SIZE) break
     }
-
-    if (allProducts.length === 0) {
-      throw new ScraperError('検索結果が0件です', this.siteKey, url)
-    }
-
-    return this.enrichDetails(allProducts.slice(0, limit), options)
+    return allProducts.slice(0, limit)
   }
 
-  // 検索結果には説明文・状態・発送日数・評価数が無いため、商品ページを取得して補完する
+  // 検索結果には説明文・2枚目以降の画像(・発送日数)が無いため、商品ページを取得して
+  // 補完する。Yahoo!フリマの制限(約15件/15分/IP)に従い、1回の実行では先頭
+  // FLEA_DETAIL_PER_RUN 件だけ取得し、429が出たらそれ以上は取得しない。残りは
+  // 抽出完了後に enrich-details が補完する。フリマ側の検索に混ざるヤフオク出品は
+  // ヤフオク側の制限で扱う。
   private async enrichDetails(products: ScrapedProduct[], options: ScraperOptions): Promise<ScrapedProduct[]> {
     if (options.skipDetailEnrichment) return products
     const { userAgent = DEFAULT_UA, timeoutMs = 15000, onPage } = options
+    const fleaIndexes = products.map((p, i) => (p.sourceSite === this.siteKey ? i : -1)).filter(i => i >= 0).slice(0, FLEA_DETAIL_PER_RUN)
+    const auctionIndexes = products.map((p, i) => (p.sourceSite === 'yahoo_auction' ? i : -1)).filter(i => i >= 0)
+    const results = [...products]
+    let rateLimited = false
     let failed = 0
-    const { results, skipped } = await mapThrottled(products, async (product) => {
+
+    const fetchDetail = async (product: ScrapedProduct, retries: number): Promise<ScrapedProduct> => {
+      const html = await fetchWithRetry(product.sourceUrl, {
+        userAgent, timeoutMs, intervalMs: DETAIL_INTERVAL_MS, retries, siteKey: this.siteKey,
+      })
+      const detail = product.sourceSite === 'yahoo_auction'
+        ? new (await import('./yahoo_auction')).YahooAuctionScraper().parse(cheerio.load(html), product.sourceUrl)
+        : this.parse(cheerio.load(html), product.sourceUrl)
+      return mergeDetail(product, detail)
+    }
+
+    // フリマ商品: 1件ずつ間隔を置いて、429が出たら打ち切る
+    const startedAt = Date.now()
+    let done = 0
+    for (const index of fleaIndexes) {
+      if (rateLimited || Date.now() - startedAt > DETAIL_TIME_BUDGET_MS) break
       try {
-        const html = await fetchWithRetry(product.sourceUrl, {
-          userAgent, timeoutMs, intervalMs: DETAIL_INTERVAL_MS, retries: DETAIL_RETRIES, siteKey: this.siteKey,
-        })
-        const detail = product.sourceSite === 'yahoo_auction'
-          ? new (await import('./yahoo_auction')).YahooAuctionScraper().parse(cheerio.load(html), product.sourceUrl)
-          : this.parse(cheerio.load(html), product.sourceUrl)
-        return {
-          ...product,
-          title: detail.title || product.title,
-          price: detail.price ?? product.price,
-          description: detail.description || product.description,
-          images: detail.images.length > 0 ? detail.images : product.images,
-          condition: detail.condition ?? product.condition,
-          category: detail.category ?? product.category,
-          sellerRatingCount: detail.sellerRatingCount ?? product.sellerRatingCount,
-          shippingDays: detail.shippingDays ?? product.shippingDays,
-          sourceUpdatedAt: detail.sourceUpdatedAt ?? product.sourceUpdatedAt,
-          availability: detail.availability ?? product.availability,
-          sellerUrl: detail.sellerUrl ?? product.sellerUrl,
-          rawData: detail.rawData ?? null,
-        }
+        results[index] = await fetchDetail(products[index], DETAIL_RETRIES)
       } catch (err) {
+        if (err instanceof RateLimitedError) { rateLimited = true; break }
         failed += 1
-        console.error('[yahoo flea enrich] failed for', product.sourceItemId, err instanceof Error ? err.message : err)
-        return product
+        console.error('[yahoo flea enrich] failed for', products[index].sourceItemId, err instanceof Error ? err.message : err)
       }
-    }, {
-      concurrency: DETAIL_CONCURRENCY,
-      intervalMs: DETAIL_INTERVAL_MS,
-      timeBudgetMs: DETAIL_TIME_BUDGET_MS,
-      onProgress: (done, total) => onPage?.(done, total),
-    })
-    if (failed > 0 || skipped > 0) {
-      console.warn(`[yahoo flea enrich] ${products.length}件中 失敗${failed}件 / 時間切れ${skipped}件は基本情報のまま登録`)
+      done += 1
+      onPage?.(done, fleaIndexes.length + auctionIndexes.length)
+      await new Promise(resolve => setTimeout(resolve, DETAIL_INTERVAL_MS))
+    }
+
+    // フリマ検索に混ざったヤフオク出品: ヤフオク側のペースで取得する
+    if (auctionIndexes.length > 0) {
+      const { results: auctionResults } = await mapThrottled(auctionIndexes.map(i => products[i]), async (product) => {
+        try {
+          return await fetchDetail(product, 2)
+        } catch (err) {
+          failed += 1
+          console.error('[yahoo flea enrich] auction item failed for', product.sourceItemId, err instanceof Error ? err.message : err)
+          return product
+        }
+      }, { concurrency: 3, intervalMs: 250, timeBudgetMs: DETAIL_TIME_BUDGET_MS, onProgress: (n) => onPage?.(done + n, fleaIndexes.length + auctionIndexes.length) })
+      auctionIndexes.forEach((index, i) => { results[index] = auctionResults[i] })
+    }
+
+    const notFetched = products.filter(p => p.sourceSite === this.siteKey).length - fleaIndexes.length
+    if (failed > 0 || rateLimited || notFetched > 0) {
+      console.warn(`[yahoo flea enrich] 商品ページ: 取得${done}件 / 失敗${failed}件 / 429で打ち切り=${rateLimited} / 未取得${notFetched + (fleaIndexes.length - done)}件は抽出後に補完`)
     }
     return results
   }
