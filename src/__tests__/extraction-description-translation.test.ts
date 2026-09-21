@@ -174,4 +174,20 @@ describe('extraction description translation / brand extraction', () => {
     await runScrape('user-1', 'extraction-1', 'https://jp.mercari.com/search', null, db)
     expect(mocks.generateDescriptionsSafely).not.toHaveBeenCalled()
   })
+
+  // ユーザー指摘: 翻訳結果に「メルカリ便で発送」等が残ることがある。残っていた
+  // 商品は事実ベースのAI生成に切り替える(AI生成OFFでも適用)。
+  it('翻訳結果に国内向けの文言が残っていたら、その商品だけAI生成に切り替える', async () => {
+    mocks.translateDescriptionsWithFailures.mockResolvedValue([
+      { description: 'Korean drama OST. Shipped by Rakuraku Mercari-bin with anonymous shipping.', failed: false },
+    ])
+    mocks.generateDescriptionsSafely.mockResolvedValue([{ description: 'Korean drama OST "The King\'s Face", Korean edition. Brand new, sealed.', failed: false }])
+    const { db, insertedProducts } = makeDatabase({ description_enabled: true, ai_description_mode: 'off' })
+
+    await runScrape('user-1', 'extraction-1', 'https://jp.mercari.com/search', null, db)
+
+    expect(mocks.generateDescriptionsSafely).toHaveBeenCalledTimes(1)
+    expect(mocks.generateDescriptionsSafely.mock.calls[0][0][0]).toMatchObject({ originalDescription: scrapedProduct.description })
+    expect(insertedProducts[0].ebay_description).toBe('Korean drama OST "The King\'s Face", Korean edition. Brand new, sealed.')
+  })
 })

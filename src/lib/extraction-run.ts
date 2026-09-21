@@ -1,5 +1,6 @@
 import { scrapeUrl } from '@/lib/scrapers'
 import { extractBrandsSafely, generateDescriptionsSafely, translateDescriptionsWithFailures, translateTitlesWithFailures } from '@/lib/translate'
+import { checkTranslatedDescription } from '@/lib/description-translation'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { calcProfit, DEFAULT_AUTO_PRICING, validateProfitParams } from '@/lib/pricing'
 import { matchesVeroBrandInTitle } from '@/lib/product-exclusion'
@@ -433,10 +434,21 @@ export async function runScrape(
       ? extractionSettings.ai_description_mode
       : 'missing'
     const aiGeneratedIndexes = new Set<number>()
-    if (aiDescriptionMode !== 'off' && process.env.OPENAI_API_KEY) {
+    // ユーザー指摘: 翻訳結果に「メルカリ便で発送」「匿名配送」等の国内向け文言が
+    // 残ることがある。翻訳した説明文をチェックし、残っていた商品は事実ベースの
+    // AI生成(元文は材料として渡す)に切り替える(安全網。AI生成OFFでも適用)。
+    const leakedIndexes = new Set<number>()
+    if (descriptionEnabled && process.env.OPENAI_API_KEY) {
+      translatedDescriptions.forEach((text, idx) => {
+        if ((originalDescriptions[idx] ?? '').trim() && !checkTranslatedDescription(text).ok) leakedIndexes.add(idx)
+      })
+    }
+    if ((aiDescriptionMode !== 'off' || leakedIndexes.size > 0) && process.env.OPENAI_API_KEY) {
       const targetIndexes = translationFilteredList
         .map((s: { description: string }, idx: number) => idx)
-        .filter((idx: number) => aiDescriptionMode === 'all' || !(originalDescriptions[idx] ?? '').trim())
+        .filter((idx: number) => (aiDescriptionMode === 'all')
+          || (aiDescriptionMode === 'missing' && !(originalDescriptions[idx] ?? '').trim())
+          || leakedIndexes.has(idx))
       if (targetIndexes.length > 0) {
         try {
           const generated = await generateDescriptionsSafely(

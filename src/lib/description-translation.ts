@@ -18,13 +18,16 @@ export function hasJapaneseDescription(product: Pick<Product, 'ebay_description'
 const JAPANESE_CHARS_GLOBAL = /[\u3040-\u30ff\u3400-\u9fff]/g
 const MAX_JAPANESE_RATIO = 0.2
 const DOMESTIC_ONLY_WORDS = /ゆうパック|ヤマト|佐川|クリックポスト|ネコポス|ゆうパケット|メルカリ便|匿名配送|送料込み|送料無料|翌月払い|即購入|専用|取り置き|取置|プロフ|コメント逃げ|値下げ交渉|神経質な方/
+// ユーザー指摘: 翻訳結果に国内配送等が英語のまま残ることがある(例: "Shipped by
+// Mercari-bin", "Yu-Pack", "anonymous shipping")。英語表記も混入とみなす。
+const DOMESTIC_ONLY_WORDS_EN = /\b(yu-?pack|yu-?packet|yamato|sagawa|click ?post|neko ?pos(u|t)?|mercari|rakuraku|yuyu|paypay|anonymous (shipping|delivery)|reserved for|price negotiation)\b/i
 
 export type TranslationCheck = { ok: true } | { ok: false; reason: string }
 
 export function checkTranslatedDescription(text: string): TranslationCheck {
   const trimmed = text.trim()
   if (!trimmed) return { ok: false, reason: '翻訳結果が空です' }
-  const domestic = trimmed.match(DOMESTIC_ONLY_WORDS)
+  const domestic = trimmed.match(DOMESTIC_ONLY_WORDS) ?? trimmed.match(DOMESTIC_ONLY_WORDS_EN)
   if (domestic) return { ok: false, reason: `国内向けの文言が残っています: ${domestic[0]}` }
   const japaneseCount = (trimmed.match(JAPANESE_CHARS_GLOBAL) ?? []).length
   const ratio = japaneseCount / trimmed.length
