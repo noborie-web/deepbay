@@ -4,6 +4,7 @@ import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { endItem, reviseInventoryStatusBatch, addFixedPriceItem } from '@/lib/ebay-actions'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
+import { isSlotActive, normalizeDailyRunCount, normalizeRevisePriceSchedule, resolveRunSlot, shouldRevisePriceInSlot } from '@/lib/inventory-schedule'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
 import { checkSupplierListings, normalizePriceChangeFilter } from '@/lib/inventory-supplier-check'
@@ -30,10 +31,13 @@ export async function GET(req: NextRequest) {
 
   const db = admin()
 
-  // Vercel側で日次スケジュールを制御するため、ユーザー別の時刻照合は行わない
+  // ユーザー要望: 1日最大4回(03/09/15/21 JST)。pg_cron からは ?slot=JST時 で呼ばれ、
+  // Vercel cron(朝のみ・時刻不定)からは現在時刻から時間帯を求める。
+  const slot = resolveRunSlot(req.nextUrl.searchParams.get('slot'))
+
   const { data: allSettings } = await db
     .from('inventory_settings')
-    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, payment_profile_name, return_profile_name, shipping_profile_name')
+    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, payment_profile_name, return_profile_name, shipping_profile_name, daily_run_count, revise_price_schedule')
     .eq('sync_enabled', true)
 
   const results: Record<string, unknown>[] = []
@@ -41,7 +45,30 @@ export async function GET(req: NextRequest) {
   for (const settings of allSettings ?? []) {
     const hasEnabledAction = settings.ebay_auto_sync || settings.auto_delist || settings.auto_revise_price || settings.auto_stack
     const userId = settings.user_id
-    const userResult: Record<string, unknown> = { user_id: userId }
+    const userResult: Record<string, unknown> = { user_id: userId, slot }
+
+    // この時間帯が稼働回数の対象でなければスキップ
+    if (!isSlotActive(normalizeDailyRunCount(settings.daily_run_count), slot)) {
+      userResult.skipped = 'slot_inactive'
+      results.push(userResult)
+      continue
+    }
+    // 同じ時間帯に二重起動しない(Vercel cron と pg_cron の朝の重なり等)
+    const { data: recentRun } = await db
+      .from('inventory_runs')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('run_type', 'sync')
+      .gte('started_at', new Date(Date.now() - 90 * 60 * 1000).toISOString())
+      .limit(1)
+      .maybeSingle()
+    if (recentRun) {
+      userResult.skipped = 'recently_ran'
+      results.push(userResult)
+      continue
+    }
+    // 価格改定を「朝のみ」にしている場合、朝以外の時間帯ではeBayへの反映を行わない
+    const revisePriceThisSlot = shouldRevisePriceInSlot(normalizeRevisePriceSchedule(settings.revise_price_schedule), slot)
     const runSupplierCheck = async () => {
       const startedAt = new Date().toISOString()
       try {
@@ -197,7 +224,7 @@ export async function GET(req: NextRequest) {
     }
 
     // 価格改定
-    if (settings.auto_revise_price) {
+    if (settings.auto_revise_price && revisePriceThisSlot) {
       const { data: listings } = await db
         .from('inventory_active_listings')
         .select('ebay_item_id, current_price, product_id')

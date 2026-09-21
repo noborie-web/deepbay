@@ -18,7 +18,7 @@ export async function GET() {
   const db = admin()
   const { data, error } = await db
     .from('inventory_settings')
-    .select('id, sync_enabled, ebay_auto_sync, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, daily_run_count, ebay_token_expires_at, ebay_token, auto_delist, auto_revise_price, auto_stack, schedule_time, payment_profile_name, return_profile_name, shipping_profile_name, created_at, updated_at')
+    .select('id, sync_enabled, ebay_auto_sync, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, daily_run_count, revise_price_schedule, ebay_token_expires_at, ebay_token, auto_delist, auto_revise_price, auto_stack, schedule_time, payment_profile_name, return_profile_name, shipping_profile_name, created_at, updated_at')
     .eq('user_id', user.id)
     .maybeSingle()
 
@@ -44,6 +44,7 @@ export async function GET() {
       price_change_direction: data.price_change_direction ?? 'any',
       price_change_threshold_rate: Number(data.price_change_threshold_rate ?? 1),
       daily_run_count: data.daily_run_count ?? 1,
+      revise_price_schedule: data.revise_price_schedule ?? 'every',
       ebay_token_expires_at: data.ebay_token_expires_at,
       auto_delist: data.auto_delist ?? false,
       auto_revise_price: data.auto_revise_price ?? false,
@@ -64,6 +65,7 @@ export async function GET() {
       price_change_direction: 'any',
       price_change_threshold_rate: 1,
       daily_run_count: 1,
+      revise_price_schedule: 'every',
       ebay_token_expires_at: null,
       auto_delist: false,
       auto_revise_price: false,
@@ -96,7 +98,8 @@ export async function PUT(req: NextRequest) {
   if (typeof body.delist_on_sold_out === 'boolean') allowed.delist_on_sold_out = body.delist_on_sold_out
   if (body.price_change_direction === 'any' || body.price_change_direction === 'up' || body.price_change_direction === 'down') allowed.price_change_direction = body.price_change_direction
   if (typeof body.price_change_threshold_rate === 'number' && Number.isFinite(body.price_change_threshold_rate) && body.price_change_threshold_rate >= 0 && body.price_change_threshold_rate <= 100) allowed.price_change_threshold_rate = body.price_change_threshold_rate
-  if (typeof body.daily_run_count === 'number') allowed.daily_run_count = body.daily_run_count
+  if (typeof body.daily_run_count === 'number' && [1, 2, 3, 4].includes(body.daily_run_count)) allowed.daily_run_count = body.daily_run_count
+  if (body.revise_price_schedule === 'every' || body.revise_price_schedule === 'morning') allowed.revise_price_schedule = body.revise_price_schedule
   if (typeof body.ebay_token === 'string') allowed.ebay_token = body.ebay_token
   if (typeof body.ebay_refresh_token === 'string') allowed.ebay_refresh_token = body.ebay_refresh_token
   if (typeof body.ebay_token_expires_at === 'string') allowed.ebay_token_expires_at = body.ebay_token_expires_at
