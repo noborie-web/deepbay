@@ -135,6 +135,23 @@ describe('checkSupplierListings', () => {
     vi.useRealTimers()
   })
 
+  // 実データで確認した不具合: eBayから復元して仕入先URLが不明(仮のeBay URL)の
+  // 商品は、毎朝のeBay同期で在庫数が1に戻り、仕入先チェックもskippedのため
+  // 取り下げられなかった。仕入先がない商品は毎回「仕入不可」として在庫0にする。
+  it('仕入先URLが不明(source_site=ebay)の商品は毎回在庫0にして取り下げ対象にする', async () => {
+    const { db, calls } = makeDatabase({
+      listings: [{ id: 'listing-ebay', product_id: 'product-ebay' }],
+      products: [{ id: 'product-ebay', source_url: 'https://www.ebay.com/itm/123', source_site: 'ebay' }],
+    })
+    mocks.findScraper.mockReturnValue(null)
+
+    const result = await checkSupplierListings(db as never, 'user-1')
+
+    expect(result).toMatchObject({ total: 1, unavailable: 1, skipped: 0, no_supplier: 1 })
+    expect(mocks.scrapeUrl).not.toHaveBeenCalled()
+    expect(updateCalls(calls)[0].payload).toEqual(expect.objectContaining({ quantity: 0 }))
+  })
+
   it('sets quantity to zero when the supplier page returns 404 and continues with later rows', async () => {
     const { db, calls } = makeDatabase({
       listings: [
@@ -152,7 +169,7 @@ describe('checkSupplierListings', () => {
 
     const result = await checkSupplierListings(db as never, 'user-1')
 
-    expect(result).toEqual({ total: 2, available: 1, unavailable: 1, skipped: 0, failed: 0, price_increased: 0, price_recalculated: 0, title_changed: 0, reserved: 0 })
+    expect(result).toEqual({ total: 2, available: 1, unavailable: 1, skipped: 0, failed: 0, price_increased: 0, price_recalculated: 0, title_changed: 0, reserved: 0, no_supplier: 0 })
     expect(updateCalls(calls)).toEqual([
       expect.objectContaining({ payload: expect.objectContaining({ supplier_checked_at: '2026-08-27T00:00:00.000Z', quantity: 0 }) }),
       expect.objectContaining({ payload: expect.objectContaining({ supplier_checked_at: '2026-08-27T00:00:00.000Z' }) }),
@@ -266,7 +283,7 @@ describe('checkSupplierListings', () => {
 
     const result = await checkSupplierListings(db as never, 'user-1')
 
-    expect(result).toEqual({ total: 2, available: 1, unavailable: 0, skipped: 0, failed: 1, price_increased: 0, price_recalculated: 0, title_changed: 0, reserved: 0 })
+    expect(result).toEqual({ total: 2, available: 1, unavailable: 0, skipped: 0, failed: 1, price_increased: 0, price_recalculated: 0, title_changed: 0, reserved: 0, no_supplier: 0 })
     expect(updateCalls(calls)).toHaveLength(2)
   })
 
