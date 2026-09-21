@@ -33,6 +33,54 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // ユーザー要望: ヤフオク・Yahoo!フリマは相手サイトのアクセス制限で抽出中に
+  // 全件の詳細(説明文・状態・発送日数・評価数)を取り切れないことがあるため、
+  // 抽出完了後に残りを少しずつ補完する(このページを開いている間に自動で進む)。
+  const [enrichPending, setEnrichPending] = useState<number | null>(null)
+  const [enrichDone, setEnrichDone] = useState(0)
+  const [enrichError, setEnrichError] = useState<string | null>(null)
+  const enrichStartedRef = useRef(false)
+
+  useEffect(() => {
+    if (extraction.status !== 'completed' || enrichStartedRef.current) return
+    enrichStartedRef.current = true
+    let cancelled = false
+    const call = async (mode: 'status' | 'run') => {
+      const res = await fetch(`/api/extractions/${extraction.id}/enrich-details`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? '詳細の補完に失敗しました')
+      return json as { pending: number; processed?: number }
+    }
+    ;(async () => {
+      try {
+        const status = await call('status')
+        if (cancelled) return
+        setEnrichPending(status.pending)
+        let pending = status.pending
+        for (let i = 0; i < 60 && pending > 0 && !cancelled; i++) {
+          const result = await call('run')
+          if (cancelled) return
+          setEnrichDone(prev => prev + (result.processed ?? 0))
+          if (result.pending >= pending && (result.processed ?? 0) === 0) break
+          pending = result.pending
+          setEnrichPending(pending)
+        }
+        if (!cancelled) {
+          const refreshed = await fetch(`/api/extraction-status/${extraction.id}`)
+          if (refreshed.ok) {
+            const data = await refreshed.json()
+            setProducts(data.products)
+          }
+        }
+      } catch (e) {
+        if (!cancelled) setEnrichError(e instanceof Error ? e.message : String(e))
+      }
+    })()
+    return () => { cancelled = true }
+  }, [extraction.status, extraction.id])
+
   const isProcessing = extraction.status === 'processing'
   const progress = extraction.progress ?? 0
 
@@ -63,6 +111,23 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
             />
           </div>
           <p className="text-xs text-blue-500 mt-2">現在 {products.length} 件取得済み。3秒ごとに自動更新されます。</p>
+        </div>
+      )}
+
+      {enrichPending !== null && enrichPending > 0 && !enrichError && (
+        <div className="mb-6 bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
+          商品ページから説明文・商品の状態・発送日数・評価数を補完中… 残り {enrichPending} 件（補完済み {enrichDone} 件）。
+          このページを開いたままお待ちください（閉じても次回開いたときに続きから再開します）。
+        </div>
+      )}
+      {enrichPending === 0 && enrichDone > 0 && (
+        <div className="mb-6 bg-green-50 border border-green-200 rounded-lg p-4 text-sm text-green-800">
+          商品詳細の補完が完了しました（{enrichDone} 件）。
+        </div>
+      )}
+      {enrichError && (
+        <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
+          商品詳細の補完でエラー: {enrichError}（ページを再読み込みすると再開します）
         </div>
       )}
 
