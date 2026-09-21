@@ -91,6 +91,8 @@ export async function POST(req: NextRequest) {
   const limit = Math.min(Math.max(1, Math.floor(body.limit ?? RECOVER_LIMIT_MAX)), RECOVER_LIMIT_MAX)
   const targets = pending.slice(0, limit)
   const recovered: Array<{ product_id: string; ebay_item_id: string; title: string }> = []
+  // 商品は存在していて出品情報の紐付けだけを行ったもの(下書き→出品中)
+  const linked: Array<{ product_id: string; ebay_item_id: string; title: string }> = []
   const failed: Array<{ ebay_item_id: string; error: string }> = []
   const listingInputs = []
 
@@ -101,8 +103,27 @@ export async function POST(req: NextRequest) {
       const sku = details.sku ?? skuByItemId.get(candidate.itemId) ?? candidate.sku
       const productId = extractProductIdFromCustomLabel(sku)
       if (!productId) throw new Error(`Kakehashiの管理番号(SKU)ではありません: ${sku || '(なし)'}`)
+      // 実データで確認した不具合: CSVでeBayに出品した下書き商品のItemIDを貼り付けても、
+      // 商品が既に存在する場合は「復元済み」扱いで在庫管理に紐付けず、下書きのまま
+      // 残っていた。既存商品は再作成せず、出品情報だけを紐付ける(listing_status /
+      // ebay_item_id は storeInventoryListings が更新する)。
       const { data: already } = await db.from('products').select('id').eq('id', productId).maybeSingle()
-      if (already) { recovered.push({ product_id: productId, ebay_item_id: candidate.itemId, title: details.title }); continue }
+      if (already) {
+        linked.push({ product_id: productId, ebay_item_id: candidate.itemId, title: details.title })
+        listingInputs.push({
+          ebayItemId: candidate.itemId,
+          customLabel: sku,
+          title: details.title,
+          imageUrl: details.pictureUrls[0] ?? null,
+          currentPrice: details.currentPrice,
+          quantity: details.quantity,
+          quantitySold: details.quantitySold,
+          listingStatus: details.listingStatus,
+          startTime: details.startTime,
+          endTime: null,
+        })
+        continue
+      }
 
       const now = new Date().toISOString()
       const status = details.listingStatus !== 'Active'
@@ -164,6 +185,6 @@ export async function POST(req: NextRequest) {
     try { await storeInventoryListings(db, user.id, listingInputs) } catch (error) { console.warn('recover-products: inventory link failed', error) }
   }
 
-  const remaining = Math.max(0, pending.length - recovered.length - failed.length)
-  return NextResponse.json({ ok: true, recovered: recovered.length, failed, remaining, done: remaining <= 0, items: recovered })
+  const remaining = Math.max(0, pending.length - recovered.length - linked.length - failed.length)
+  return NextResponse.json({ ok: true, recovered: recovered.length, linked: linked.length, failed, remaining, done: remaining <= 0, items: [...recovered, ...linked] })
 }
