@@ -164,19 +164,27 @@ export async function GET(req: NextRequest) {
       const { data: listings } = await delistQuery
 
       const delistResults = []
-      const quantityZeroEntries = []
+      const quantityZeroEntries: Array<{ itemId: string; quantity: number }> = []
       for (const l of listings ?? []) {
         if (l.product_id) quantityZeroEntries.push({ itemId: l.ebay_item_id as string, quantity: 0 })
         else delistResults.push(await endItem(accessToken, l.ebay_item_id))
       }
       // 4件ずつまとめて在庫0にする(件数が多くても時間内に終わるように)
       delistResults.push(...(await reviseInventoryStatusBatch(accessToken, quantityZeroEntries)).results)
+      // 実行履歴のCSV出力用に1件ごとの結果を残す
+      const delistItems = delistResults.map(r => ({
+        ebay_item_id: r.itemId,
+        action: quantityZeroEntries.some(e => e.itemId === r.itemId) ? 'Revise' : 'End',
+        reason: 'sold_out',
+        success: r.success,
+        error: r.error ?? null,
+      }))
       try {
         await markListingsDelisted(db, userId, delistResults.filter(r => r.success).map(r => r.itemId))
       } catch {
         // 記録の失敗で取り下げ結果自体は変わらないため続行する
       }
-      userResult.delist = { total: delistResults.length, succeeded: delistResults.filter(r => r.success).length, immediate: delistEligibility.immediate }
+      userResult.delist = { total: delistResults.length, succeeded: delistResults.filter(r => r.success).length, immediate: delistEligibility.immediate, items: delistItems }
       const delistRun = summarizeInventoryActionRun(delistResults)
 
       await db.from('inventory_runs').insert({
@@ -208,16 +216,31 @@ export async function GET(req: NextRequest) {
       // 時間予算内で処理し、残りは翌日に回す(ログは必ず残す)。
       // 4件ずつまとめて並行に送り、時間予算内で処理し切れない分だけ翌日に回す。
       const reviseStartedAt = Date.now()
-      const reviseEntries = []
+      const reviseEntries: Array<{ itemId: string; price: number }> = []
+      const beforePrices = new Map<string, number>()
       for (const l of listings ?? []) {
         const p = productMap.get(l.product_id!)
         if (!p?.ebay_price || !l.current_price || Math.abs(p.ebay_price - l.current_price) <= 0.5) continue
         reviseEntries.push({ itemId: l.ebay_item_id as string, price: p.ebay_price })
+        beforePrices.set(l.ebay_item_id as string, Number(l.current_price))
       }
       const { results: reviseResults, deferred: reviseDeferred } = await reviseInventoryStatusBatch(
         accessToken, reviseEntries, { deadlineMs: reviseStartedAt + REVISE_PRICE_TIME_BUDGET_MS },
       )
-      userResult.revise_price = { total: reviseResults.length, succeeded: reviseResults.filter(r => r.success).length, deferred: reviseDeferred }
+      // 実行履歴のCSV出力用(公式ツールの revise ファイルと同じ内容)
+      const reviseItems = reviseResults.map(r => {
+        const after = reviseEntries.find(e => e.itemId === r.itemId)?.price ?? null
+        const before = beforePrices.get(r.itemId) ?? null
+        return {
+          ebay_item_id: r.itemId,
+          price_before: before,
+          price_after: after,
+          diff: after !== null && before !== null ? Math.round((after - before) * 100) / 100 : null,
+          success: r.success,
+          error: r.error ?? null,
+        }
+      })
+      userResult.revise_price = { total: reviseResults.length, succeeded: reviseResults.filter(r => r.success).length, deferred: reviseDeferred, items: reviseItems }
       const reviseRun = summarizeInventoryActionRun(reviseResults)
 
       await db.from('inventory_runs').insert({

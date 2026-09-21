@@ -103,17 +103,21 @@ export async function POST(req: NextRequest) {
   const accessToken = await resolveInventoryAccessToken(db, user.id, settings ?? {})
 
   const results = []
+  const actions = new Map<string, 'Revise' | 'End'>()
   for (const l of listings ?? []) {
     let result
     if (l.product_id) {
       // 管理商品 → quantity=0にRevise（出品継続）
       result = await reviseQuantityToZero(accessToken, l.ebay_item_id)
+      actions.set(l.ebay_item_id, 'Revise')
     } else {
       // 非管理商品 → End（完全取り下げ）
       result = await endItem(accessToken, l.ebay_item_id)
+      actions.set(l.ebay_item_id, 'End')
     }
     results.push(result)
   }
+  const items = results.map(r => ({ ebay_item_id: r.itemId, action: actions.get(r.itemId) ?? 'Revise', reason: 'sold_out', success: r.success, error: r.error ?? null }))
 
   const succeeded = results.filter(r => r.success).length
   const failed = results.filter(r => !r.success)
@@ -126,7 +130,7 @@ export async function POST(req: NextRequest) {
     run_type: 'delist',
     status: runSummary.status,
     error_message: runSummary.errorMessage,
-    result_summary: { total: results.length, succeeded, failed: failed.map(f => ({ id: f.itemId, error: f.error })) },
+    result_summary: { total: results.length, succeeded, failed: failed.map(f => ({ id: f.itemId, error: f.error })), items },
     started_at: new Date().toISOString(),
     finished_at: new Date().toISOString(),
   })

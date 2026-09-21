@@ -7,6 +7,26 @@ import { calcModelPrice, loadPricingModel, type PricingModel } from '@/lib/inven
 interface SupplierListingRow {
   id: string
   product_id: string
+  ebay_item_id: string
+}
+
+// ユーザー要望: 公式ツールのように価格追従・差分検知の「結果」を実行ごとに
+// 残し、CSV(revise / diff 形式)で出力できるようにする。1商品ごとの結果。
+export interface SupplierCheckItemDetail {
+  ebay_item_id: string
+  product_id: string
+  source_url: string | null
+  outcome: 'available' | 'unavailable' | 'skipped'
+  title_changed: boolean
+  reserved: boolean
+  old_title: string | null
+  new_title: string | null
+  purchase_price_before: number | null
+  purchase_price_after: number | null
+  // 価格追従で ebay_price を更新した場合の変更前後(USD)
+  ebay_price_before: number | null
+  ebay_price_after: number | null
+  jpy_per_usd: number | null
 }
 
 interface SupplierProductRow {
@@ -103,6 +123,8 @@ export interface SupplierCheckResult {
   no_supplier: number
   // 「〇〇様専用」等の取り置きになっていた件数(unavailable に含まれる)
   reserved: number
+  // 1商品ごとの結果(実行履歴のCSV出力用)
+  items: SupplierCheckItemDetail[]
 }
 
 export type SupplierDiffKind = 'title' | 'price' | 'reserved'
@@ -172,11 +194,12 @@ export async function checkSupplierListings(
     title_changed: 0,
     reserved: 0,
     no_supplier: 0,
+    items: [],
   }
 
   const { data: listings, error: listingsError } = await db
     .from('inventory_active_listings')
-    .select('id, product_id')
+    .select('id, product_id, ebay_item_id')
     .eq('user_id', userId)
     .not('product_id', 'is', null)
     .gt('quantity', 0)
@@ -392,6 +415,21 @@ export async function checkSupplierListings(
       result[outcome] += 1
       if (supplierDiff?.includes('title')) result.title_changed += 1
       if (supplierDiff?.includes('reserved')) result.reserved += 1
+      result.items.push({
+        ebay_item_id: listing.ebay_item_id,
+        product_id: listing.product_id,
+        source_url: sourceUrl,
+        outcome,
+        title_changed: supplierDiff?.includes('title') ?? false,
+        reserved: supplierDiff?.includes('reserved') ?? false,
+        old_title: product?.original_title ?? null,
+        new_title: supplierTitle ?? null,
+        purchase_price_before: product?.purchase_price_jpy ?? product?.original_price ?? null,
+        purchase_price_after: supplierPriceJpy ?? null,
+        ebay_price_before: newEbayPrice !== undefined ? (product?.ebay_price ?? null) : null,
+        ebay_price_after: newEbayPrice ?? null,
+        jpy_per_usd: jpyPerUsd,
+      })
     } catch {
       // 1件の更新失敗で、残りの仕入れ元チェックを中断しない。
       result.failed += 1

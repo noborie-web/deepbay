@@ -39,7 +39,7 @@ interface ProductFixture {
 }
 
 function makeDatabase(options: {
-  listings: Array<{ id: string; product_id: string }>
+  listings: Array<{ id: string; product_id: string; ebay_item_id?: string }>
   products: Array<ProductFixture>
   extractions?: Array<{ id: string; bulk_edit_setting_id: string | null }>
   bulkEditSettings?: Array<{
@@ -156,8 +156,8 @@ describe('checkSupplierListings', () => {
   it('sets quantity to zero when the supplier page returns 404 and continues with later rows', async () => {
     const { db, calls } = makeDatabase({
       listings: [
-        { id: 'listing-404', product_id: 'product-404' },
-        { id: 'listing-ok', product_id: 'product-ok' },
+        { id: 'listing-404', product_id: 'product-404', ebay_item_id: 'item-404' },
+        { id: 'listing-ok', product_id: 'product-ok', ebay_item_id: 'item-ok' },
       ],
       products: [
         { id: 'product-404', source_url: 'https://jp.mercari.com/item/deleted' },
@@ -170,7 +170,8 @@ describe('checkSupplierListings', () => {
 
     const result = await checkSupplierListings(db as never, 'user-1')
 
-    expect(result).toEqual({ total: 2, available: 1, unavailable: 1, skipped: 0, failed: 0, price_increased: 0, price_recalculated: 0, title_changed: 0, reserved: 0, no_supplier: 0 })
+    expect(result).toMatchObject({ total: 2, available: 1, unavailable: 1, skipped: 0, failed: 0, price_increased: 0, price_recalculated: 0, title_changed: 0, reserved: 0, no_supplier: 0 })
+    expect(result.items.map(i => [i.ebay_item_id, i.outcome])).toEqual([["item-404", "unavailable"], ["item-ok", "available"]])
     expect(updateCalls(calls)).toEqual([
       expect.objectContaining({ payload: expect.objectContaining({ supplier_checked_at: '2026-08-27T00:00:00.000Z', quantity: 0 }) }),
       expect.objectContaining({ payload: expect.objectContaining({ supplier_checked_at: '2026-08-27T00:00:00.000Z' }) }),
@@ -284,7 +285,7 @@ describe('checkSupplierListings', () => {
 
     const result = await checkSupplierListings(db as never, 'user-1')
 
-    expect(result).toEqual({ total: 2, available: 1, unavailable: 0, skipped: 0, failed: 1, price_increased: 0, price_recalculated: 0, title_changed: 0, reserved: 0, no_supplier: 0 })
+    expect(result).toMatchObject({ total: 2, available: 1, unavailable: 0, skipped: 0, failed: 1, price_increased: 0, price_recalculated: 0, title_changed: 0, reserved: 0, no_supplier: 0 })
     expect(updateCalls(calls)).toHaveLength(2)
   })
 
