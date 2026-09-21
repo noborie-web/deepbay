@@ -1,5 +1,5 @@
 import { scrapeUrl } from '@/lib/scrapers'
-import { extractBrandsSafely, generateDescriptionsSafely, normalizeAiDescriptionMode, translateDescriptionsWithFailures, translateTitlesWithFailures } from '@/lib/translate'
+import { extractBrandsSafely, generateDescriptionsSafely, translateDescriptionsWithFailures, translateTitlesWithFailures } from '@/lib/translate'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { calcProfit, DEFAULT_AUTO_PRICING, validateProfitParams } from '@/lib/pricing'
 import { matchesVeroBrandInTitle } from '@/lib/product-exclusion'
@@ -428,7 +428,10 @@ export async function runScrape(
     // 商品だけ(Yahoo!フリマは商品ページの取得制限で説明文だけ遅れる)、'all' は
     // 全商品について元の説明文も材料にして生成する。生成に失敗した商品は翻訳/元の
     // 説明文のまま。
-    const aiDescriptionMode = normalizeAiDescriptionMode(extractionSettings?.ai_description_mode)
+    // (翻訳モジュールをモックしたテストでも動くよう、モードの正規化はここで行う)
+    const aiDescriptionMode: 'off' | 'missing' | 'all' = extractionSettings?.ai_description_mode === 'all' || extractionSettings?.ai_description_mode === 'off'
+      ? extractionSettings.ai_description_mode
+      : 'missing'
     const aiGeneratedIndexes = new Set<number>()
     if (aiDescriptionMode !== 'off' && process.env.OPENAI_API_KEY) {
       const targetIndexes = translationFilteredList

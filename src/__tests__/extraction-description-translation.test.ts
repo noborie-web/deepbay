@@ -18,7 +18,6 @@ vi.mock('@/lib/translate', () => ({
   translateDescriptionsWithFailures: mocks.translateDescriptionsWithFailures,
   extractBrandsSafely: mocks.extractBrandsSafely,
   generateDescriptionsSafely: mocks.generateDescriptionsSafely,
-  normalizeAiDescriptionMode: (v: unknown) => (v === 'all' || v === 'off' ? v : 'missing'),
 }))
 vi.mock('@/lib/exchange-rate', () => ({ fetchUsdJpyRate: mocks.fetchUsdJpyRate }))
 
