@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import * as cheerio from 'cheerio'
 import { YahooAuctionScraper } from '../lib/scrapers/yahoo_auction'
 
@@ -153,7 +153,7 @@ describe('YahooAuctionScraper.scrape 検索ページの一括抽出', () => {
 
     try {
       const scraper = new YahooAuctionScraper()
-      const results = await scraper.scrape('https://auctions.yahoo.co.jp/search/search?p=nike', { limit: 2 })
+      const results = await scraper.scrape('https://auctions.yahoo.co.jp/search/search?p=nike', { limit: 2, skipDetailEnrichment: true })
       expect(results).toHaveLength(2)
       expect(results[0]).toMatchObject({
         sourceItemId: 't100',
@@ -180,7 +180,7 @@ describe('YahooAuctionScraper.scrape 検索ページの一括抽出', () => {
 
     try {
       const scraper = new YahooAuctionScraper()
-      const results = await scraper.scrape('https://auctions.yahoo.co.jp/search/search?p=nike', { limit: 2 })
+      const results = await scraper.scrape('https://auctions.yahoo.co.jp/search/search?p=nike', { limit: 2, skipDetailEnrichment: true })
       expect(results[0].sellerUrl).toBe('https://auctions.yahoo.co.jp/seller/CrW43BeNqpH9Xy5qjVL2RcpLeqcgH')
       // セラーID属性が無いカードはnullのまま(判定対象外)
       expect(results[1].sellerUrl).toBeNull()
@@ -209,7 +209,7 @@ describe('YahooAuctionScraper.scrape 検索ページの一括抽出', () => {
 
     try {
       const scraper = new YahooAuctionScraper()
-      const results = await scraper.scrape('https://auctions.yahoo.co.jp/search/search?p=nike', { limit: 600 })
+      const results = await scraper.scrape('https://auctions.yahoo.co.jp/search/search?p=nike', { limit: 600, skipDetailEnrichment: true })
       expect(results).toHaveLength(5)
       expect(requestCount).toBe(2) // 総件数5に達した時点で3ページ目は取得しない
     } finally {
@@ -232,7 +232,7 @@ describe('YahooAuctionScraper.scrape 検索ページの一括抽出', () => {
 
     try {
       const scraper = new YahooAuctionScraper()
-      const results = await scraper.scrape('https://auctions.yahoo.co.jp/search/search?p=nike', { limit: 600 })
+      const results = await scraper.scrape('https://auctions.yahoo.co.jp/search/search?p=nike', { limit: 600, skipDetailEnrichment: true })
       expect(results).toHaveLength(1)
       expect(requestCount).toBe(2)
     } finally {
@@ -352,6 +352,39 @@ describe('YahooAuctionScraper.scrape セラーページの一括抽出', () => {
     try {
       const scraper = new YahooAuctionScraper()
       await expect(scraper.scrape('https://auctions.yahoo.co.jp/seller/emptyseller')).rejects.toThrow()
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+})
+
+// ユーザー要望: 検索結果は一覧のタイトル・価格・画像だけなので、商品ページから
+// 説明文・状態・発送日数・評価数を補完する。
+describe('YahooAuctionScraper.scrape 検索結果の詳細補完', () => {
+  it('検索結果の各商品ページを取得して説明文・状態などを補完する', async () => {
+    const origFetch = globalThis.fetch
+    try {
+      globalThis.fetch = vi.fn(async (url: string) => {
+        if (url.includes('/search/search')) {
+          const page = Number(new URL(url).searchParams.get('b'))
+          if (page > 1) return new Response('<html><body></body></html>', { status: 200 })
+          return new Response(`<html><body><div class="Result__header">1件</div>
+<a class="Product__imageLink" data-auction-id="t1241554842" data-auction-title="一覧のタイトル" data-auction-price="7500" data-auction-img="https://x.jpg?w=300&h=300"></a>
+</body></html>`, { status: 200 })
+        }
+        return new Response(NEXT_DATA_ITEM_HTML, { status: 200 })
+      }) as unknown as typeof fetch
+
+      const results = await new YahooAuctionScraper().scrape('https://auctions.yahoo.co.jp/search/search?p=nike', { limit: 10 })
+      expect(results).toHaveLength(1)
+      expect(results[0]).toMatchObject({
+        sourceItemId: 't1241554842',
+        title: 'NIKE SHOX ブラック',
+        description: '説明文1行目\n説明文2行目',
+        condition: 'やや傷や汚れあり',
+        shippingDays: 1,
+        sellerRatingCount: 22,
+      })
     } finally {
       globalThis.fetch = origFetch
     }

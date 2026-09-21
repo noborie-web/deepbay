@@ -500,6 +500,11 @@ export async function runScrape(
         shipping_days: scraped.shippingDays,
         source_updated_at: scraped.sourceUpdatedAt,
         raw_source_data: scraped.rawData ?? null,
+        // 抽出中に商品ページの詳細を取れなかった(説明文が空の)ヤフオク・Yahoo!フリマ
+        // 商品は、抽出完了後に /api/extractions/[id]/enrich-details で補完する
+        detail_enriched_at: (scraped.sourceSite === 'yahoo_flea' || scraped.sourceSite === 'yahoo_auction') && !scraped.description
+          ? null
+          : new Date().toISOString(),
       }
     })
 

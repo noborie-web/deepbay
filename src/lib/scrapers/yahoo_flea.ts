@@ -2,6 +2,7 @@ import * as cheerio from 'cheerio'
 import { BaseScraper } from './base'
 import { ScraperError } from './types'
 import type { ScrapedProduct, ScraperOptions } from './types'
+import { fetchWithRetry, mapThrottled } from './throttled-fetch'
 
 // Yahoo!フリマ(旧PayPayフリマ)のスクレイパー。
 //
@@ -28,7 +29,14 @@ const SEARCH_URL_PATTERN = /paypayfleamarket\.yahoo\.co\.jp\/search\//
 const ITEM_URL_PATTERN = /paypayfleamarket\.yahoo\.co\.jp\/item\/([a-z0-9]+)/
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const PAGE_SIZE = 100
-const DETAIL_CONCURRENCY = 8
+// 実データで確認(2026-09-21): 並行8件では数十件で429になる。並行2・間隔400msで
+// 安定して取得できる範囲に抑え、429時は待って再試行する。
+const DETAIL_CONCURRENCY = 2
+const DETAIL_INTERVAL_MS = 400
+const DETAIL_RETRIES = 3
+// 抽出全体(Vercelの300秒、翻訳等も含む)のうち商品ページ取得に使う上限。超えた分は
+// 基本情報のまま登録し、抽出完了後に /api/extractions/[id]/enrich-details で補完する。
+const DETAIL_TIME_BUDGET_MS = 60_000
 const ORIGIN = 'https://paypayfleamarket.yahoo.co.jp'
 
 // 検索結果のサムネイルはリサイズ指定付き(w=298&h=298)なので、クエリを外して元画像にする
@@ -337,37 +345,43 @@ export class YahooFleaScraper extends BaseScraper {
   private async enrichDetails(products: ScrapedProduct[], options: ScraperOptions): Promise<ScrapedProduct[]> {
     if (options.skipDetailEnrichment) return products
     const { userAgent = DEFAULT_UA, timeoutMs = 15000, onPage } = options
-    const results: ScrapedProduct[] = []
-    for (let index = 0; index < products.length; index += DETAIL_CONCURRENCY) {
-      const chunk = products.slice(index, index + DETAIL_CONCURRENCY)
-      const enriched = await Promise.all(chunk.map(async (product) => {
-        try {
-          const html = await this.fetchHtml(product.sourceUrl, userAgent, timeoutMs)
-          const detail = product.sourceSite === 'yahoo_auction'
-            ? new (await import('./yahoo_auction')).YahooAuctionScraper().parse(cheerio.load(html), product.sourceUrl)
-            : this.parse(cheerio.load(html), product.sourceUrl)
-          return {
-            ...product,
-            title: detail.title || product.title,
-            price: detail.price ?? product.price,
-            description: detail.description || product.description,
-            images: detail.images.length > 0 ? detail.images : product.images,
-            condition: detail.condition ?? product.condition,
-            category: detail.category ?? product.category,
-            sellerRatingCount: detail.sellerRatingCount ?? product.sellerRatingCount,
-            shippingDays: detail.shippingDays ?? product.shippingDays,
-            sourceUpdatedAt: detail.sourceUpdatedAt ?? product.sourceUpdatedAt,
-            availability: detail.availability ?? product.availability,
-            sellerUrl: detail.sellerUrl ?? product.sellerUrl,
-            rawData: detail.rawData ?? null,
-          }
-        } catch (err) {
-          console.error('[yahoo flea enrich] failed for', product.sourceItemId, err instanceof Error ? err.message : err)
-          return product
+    let failed = 0
+    const { results, skipped } = await mapThrottled(products, async (product) => {
+      try {
+        const html = await fetchWithRetry(product.sourceUrl, {
+          userAgent, timeoutMs, intervalMs: DETAIL_INTERVAL_MS, retries: DETAIL_RETRIES, siteKey: this.siteKey,
+        })
+        const detail = product.sourceSite === 'yahoo_auction'
+          ? new (await import('./yahoo_auction')).YahooAuctionScraper().parse(cheerio.load(html), product.sourceUrl)
+          : this.parse(cheerio.load(html), product.sourceUrl)
+        return {
+          ...product,
+          title: detail.title || product.title,
+          price: detail.price ?? product.price,
+          description: detail.description || product.description,
+          images: detail.images.length > 0 ? detail.images : product.images,
+          condition: detail.condition ?? product.condition,
+          category: detail.category ?? product.category,
+          sellerRatingCount: detail.sellerRatingCount ?? product.sellerRatingCount,
+          shippingDays: detail.shippingDays ?? product.shippingDays,
+          sourceUpdatedAt: detail.sourceUpdatedAt ?? product.sourceUpdatedAt,
+          availability: detail.availability ?? product.availability,
+          sellerUrl: detail.sellerUrl ?? product.sellerUrl,
+          rawData: detail.rawData ?? null,
         }
-      }))
-      results.push(...enriched)
-      onPage?.(results.length, products.length)
+      } catch (err) {
+        failed += 1
+        console.error('[yahoo flea enrich] failed for', product.sourceItemId, err instanceof Error ? err.message : err)
+        return product
+      }
+    }, {
+      concurrency: DETAIL_CONCURRENCY,
+      intervalMs: DETAIL_INTERVAL_MS,
+      timeBudgetMs: DETAIL_TIME_BUDGET_MS,
+      onProgress: (done, total) => onPage?.(done, total),
+    })
+    if (failed > 0 || skipped > 0) {
+      console.warn(`[yahoo flea enrich] ${products.length}件中 失敗${failed}件 / 時間切れ${skipped}件は基本情報のまま登録`)
     }
     return results
   }

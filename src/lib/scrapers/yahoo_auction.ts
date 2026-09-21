@@ -3,11 +3,18 @@ import { BaseScraper } from './base'
 import { ScraperError } from './types'
 import type { ScrapedProduct, ScraperOptions } from './types'
 import { YahooFleaScraper, buildYahooFleaSearchUrlFromAuction } from './yahoo_flea'
+import { fetchWithRetry, mapThrottled } from './throttled-fetch'
 
 const SEARCH_URL_PATTERN = /auctions\.yahoo\.co\.jp\/search\/search/
 const SELLER_URL_PATTERN = /auctions\.yahoo\.co\.jp\/seller\/[^/?#]+/
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const PAGE_SIZE = 50
+// 商品ページからの詳細補完(説明文・状態・発送日数・評価数)。ヤフオクは
+// フリマより制限が緩いが、同じ仕組みで並行数・間隔を抑えて取得する。
+const DETAIL_CONCURRENCY = 3
+const DETAIL_INTERVAL_MS = 250
+const DETAIL_RETRIES = 3
+const DETAIL_TIME_BUDGET_MS = 40_000
 
 // 検索結果のサムネイルはデフォルトでは小さい(w=300&h=300)ため、
 // 画像URLのリサイズ指定を大きい値に書き換えて元画像に近いサイズを取得する。
@@ -149,6 +156,11 @@ export class YahooAuctionScraper extends BaseScraper {
       if (numFound !== null && allProducts.length >= numFound) break
     }
 
+    // ユーザー要望: 検索結果は一覧のタイトル・価格・画像だけなので、商品ページを
+    // 取得して説明文・状態・発送日数・評価数を補完する(翻訳・除外設定・CSV出力に必要)。
+    const enrichedAuction = await this.enrichDetails(allProducts.slice(0, limit), options)
+    allProducts.splice(0, allProducts.length, ...enrichedAuction)
+
     // ユーザー要望: ヤフオクの検索結果にYahoo!フリマの出品が混ざって表示される
     // 利用者がいるが、サーバー側の取得では含まれない。同じ条件でYahoo!フリマも
     // 検索し、結果を合算する(フリマ側に混ざるヤフオク定額出品はIDで重複除去)。
@@ -168,6 +180,49 @@ export class YahooAuctionScraper extends BaseScraper {
     }
 
     return allProducts.slice(0, limit)
+  }
+
+  // 商品ページを取得して詳細を補完する(失敗・時間切れの商品は一覧の情報のまま)。
+  private async enrichDetails(products: ScrapedProduct[], options: ScraperOptions): Promise<ScrapedProduct[]> {
+    if (options.skipDetailEnrichment || products.length === 0) return products
+    const { userAgent = DEFAULT_UA, timeoutMs = 15000, onPage } = options
+    let failed = 0
+    const { results, skipped } = await mapThrottled(products, async (product) => {
+      try {
+        const html = await fetchWithRetry(product.sourceUrl, {
+          userAgent, timeoutMs, intervalMs: DETAIL_INTERVAL_MS, retries: DETAIL_RETRIES, siteKey: this.siteKey,
+        })
+        const detail = this.parse(cheerio.load(html), product.sourceUrl)
+        return {
+          ...product,
+          title: detail.title || product.title,
+          price: detail.price ?? product.price,
+          description: detail.description || product.description,
+          images: detail.images.length > 0 ? detail.images : product.images,
+          condition: detail.condition ?? product.condition,
+          category: detail.category ?? product.category,
+          sellerRatingCount: detail.sellerRatingCount ?? product.sellerRatingCount,
+          shippingDays: detail.shippingDays ?? product.shippingDays,
+          sourceUpdatedAt: detail.sourceUpdatedAt ?? product.sourceUpdatedAt,
+          availability: detail.availability ?? product.availability,
+          sellerUrl: detail.sellerUrl ?? product.sellerUrl,
+          rawData: detail.rawData ?? product.rawData ?? null,
+        }
+      } catch (err) {
+        failed += 1
+        console.error('[yahoo auction enrich] failed for', product.sourceItemId, err instanceof Error ? err.message : err)
+        return product
+      }
+    }, {
+      concurrency: DETAIL_CONCURRENCY,
+      intervalMs: DETAIL_INTERVAL_MS,
+      timeBudgetMs: DETAIL_TIME_BUDGET_MS,
+      onProgress: (done, total) => onPage?.(done, total),
+    })
+    if (failed > 0 || skipped > 0) {
+      console.warn(`[yahoo auction enrich] ${products.length}件中 失敗${failed}件 / 時間切れ${skipped}件は一覧の情報のまま登録`)
+    }
+    return results
   }
 
   // Yahoo!フリマ側の検索に失敗しても、ヤフオク側の結果は返す(合算は加点扱い)。
@@ -207,8 +262,6 @@ export class YahooAuctionScraper extends BaseScraper {
     const allProducts: ScrapedProduct[] = []
     const seenIds = new Set<string>()
     let numFound: number | null = null
-    // Yahoo!フリマ側の検索に使う、検索ページのカテゴリ階層(パンくず)
-    let categoryPath: string[] = []
     // 暴走防止用の安全上限
     const maxPages = Math.ceil(limit / PAGE_SIZE) + 5
 
