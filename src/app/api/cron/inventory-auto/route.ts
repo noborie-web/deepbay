@@ -112,7 +112,7 @@ export async function GET(req: NextRequest) {
       try {
         // ユーザー要望: Kakehashiが出品したItemIDだけをGetItemで個別照会する。
         // 件数はKakehashiの出品数に比例するため、他ツールの出品数に左右されない。
-        const syncResult = await syncKnownInventoryListings(db, userId, accessToken, { fetchTotalTimeoutMs: 240_000 })
+        const syncResult = await syncKnownInventoryListings(db, userId, accessToken, { fetchTotalTimeoutMs: 180_000, discoveryTimeBudgetMs: 60_000 })
         userResult.sync = syncResult
         await db.from('inventory_runs').insert({
           user_id: userId,
@@ -120,6 +120,7 @@ export async function GET(req: NextRequest) {
           status: 'completed',
           items_total: syncResult.total,
           items_matched: syncResult.matched,
+          result_summary: { discovered: syncResult.discovered, ended: syncResult.ended, discovery_truncated: syncResult.discoveryTruncated },
           started_at: startedAt,
           finished_at: new Date().toISOString(),
         })

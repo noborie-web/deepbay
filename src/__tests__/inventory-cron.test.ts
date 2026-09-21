@@ -114,7 +114,7 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 1 })
     expect(mockResolveAccessToken).toHaveBeenCalledOnce()
     // active出品が数十ページあるため、cronでは取得タイムアウトを引き上げて渡す
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 240_000 })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 180_000, discoveryTimeBudgetMs: 60_000 })
     expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 120_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 } })
     expect(mockSyncInventoryListings.mock.invocationCallOrder[0]).toBeLessThan(
       mockCheckSupplierListings.mock.invocationCallOrder[0],
@@ -167,7 +167,7 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 2 })
     expect(json.results[0].auth).toEqual({ error: 'refresh failed' })
     expect(mockSyncInventoryListings).toHaveBeenCalledTimes(1)
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 240_000 })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 180_000, discoveryTimeBudgetMs: 60_000 })
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       user_id: 'user-1',
       status: 'failed',

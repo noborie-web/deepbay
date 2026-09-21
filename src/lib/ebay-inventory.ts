@@ -542,3 +542,115 @@ export async function fetchListingsByItemIds(
     options.signal?.removeEventListener('abort', abortForCaller)
   }
 }
+
+// ---------------------------------------------------------------------------
+// 出品開始日時で絞った新規出品の発見(GetSellerList)
+//
+// ユーザー要望・実データで確認した不具合: CSVでeBayに出品した11件が、同期の
+// 「新しい順400件」の走査に含まれず下書きのまま残った(他ツールの出品が
+// 多く押し出される)。GetSellerListはStartTimeFrom/Toで「この期間に出品
+// されたもの」だけを全件取得できるため、前回走査した時刻以降の出品を
+// 漏れなく確認できる(1ページ200件、期間は最大120日)。
+// ---------------------------------------------------------------------------
+
+export const SELLER_LIST_MAX_RANGE_MS = 119 * 24 * 60 * 60 * 1000
+
+export interface SellerListPageResult {
+  items: InventoryListingInput[]
+  totalPages: number
+}
+
+export async function fetchSellerListPage(
+  tokens: EbayTokenSet,
+  range: { from: Date; to: Date },
+  page: number,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<SellerListPageResult> {
+  if (!Number.isInteger(page) || page < 1) throw new Error(`Invalid eBay seller list page: ${page}`)
+  if (range.to.getTime() - range.from.getTime() > SELLER_LIST_MAX_RANGE_MS) {
+    throw new Error('eBay GetSellerList: time range exceeds 120 days')
+  }
+  const outputSelectors = OUTPUT_SELECTORS
+    .map((field) => `  <OutputSelector>${field}</OutputSelector>`)
+    .join('\n')
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<GetSellerListRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <StartTimeFrom>${range.from.toISOString()}</StartTimeFrom>
+  <StartTimeTo>${range.to.toISOString()}</StartTimeTo>
+  <Pagination>
+    <EntriesPerPage>${PAGE_SIZE}</EntriesPerPage>
+    <PageNumber>${page}</PageNumber>
+  </Pagination>
+  <DetailLevel>ReturnAll</DetailLevel>
+${outputSelectors}
+</GetSellerListRequest>`
+
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS
+  const controller = new AbortController()
+  let timedOut = false
+  const timeout = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
+  const abortForCaller = () => controller.abort(options.signal?.reason)
+  options.signal?.addEventListener('abort', abortForCaller, { once: true })
+
+  try {
+    const res = await fetch(EBAY_TRADING_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml',
+        'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+        'X-EBAY-API-CALL-NAME': 'GetSellerList',
+        'X-EBAY-API-IAF-TOKEN': tokens.accessToken,
+        'X-EBAY-API-SITEID': '0',
+      },
+      body: xml,
+      signal: controller.signal,
+    })
+    if (!res.ok) throw new Error(`eBay API HTTP error: ${res.status}`)
+    const parsed = parseGetMyeBaySellingResponse(await res.text())
+    return { items: parsed.items, totalPages: parsed.totalPages }
+  } catch (error) {
+    if (options.signal?.aborted) {
+      throw options.signal.reason instanceof Error ? options.signal.reason : new Error('eBay inventory sync timeout')
+    }
+    if (timedOut) throw new Error(`eBay API timeout: seller list page ${page} exceeded ${timeoutMs}ms`)
+    throw error
+  } finally {
+    clearTimeout(timeout)
+    options.signal?.removeEventListener('abort', abortForCaller)
+  }
+}
+
+export interface SellerListScanResult {
+  items: InventoryListingInput[]
+  // 全ページを読み切れなかった(時間切れ)
+  truncated: boolean
+  pagesFetched: number
+  totalPages: number
+}
+
+/**
+ * 期間内に出品開始されたものを1ページ目から順に読み、時間切れなら truncated=true で返す。
+ */
+export async function scanSellerListByStartTime(
+  tokens: EbayTokenSet,
+  range: { from: Date; to: Date },
+  options: { timeBudgetMs: number; pageTimeoutMs?: number; signal?: AbortSignal; maxPages?: number },
+): Promise<SellerListScanResult> {
+  const startedAt = Date.now()
+  const items: InventoryListingInput[] = []
+  const maxPages = options.maxPages ?? MAX_PAGES
+  let totalPages = 1
+  let page = 1
+  for (; page <= totalPages && page <= maxPages; page++) {
+    const remaining = options.timeBudgetMs - (Date.now() - startedAt)
+    if (remaining <= 1_000) break
+    const result = await fetchSellerListPage(tokens, range, page, {
+      timeoutMs: Math.min(options.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS, remaining),
+      signal: options.signal,
+    })
+    items.push(...result.items)
+    totalPages = Math.max(1, result.totalPages)
+  }
+  const pagesFetched = page - 1
+  return { items, truncated: pagesFetched < totalPages, pagesFetched, totalPages }
+}
