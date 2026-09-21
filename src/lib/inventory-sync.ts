@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { fetchActiveListingsBatch, fetchAllActiveListings, fetchListingsByItemIds } from './ebay-inventory'
+import { fetchActiveListingsBatch, fetchAllActiveListings, fetchListingsByItemIds, scanSellerListByStartTime, SELLER_LIST_MAX_RANGE_MS } from './ebay-inventory'
 import {
   extractProductIdFromCustomLabel,
   extractSourceLookupKeys,
@@ -18,6 +18,8 @@ export interface InventorySyncOptions {
   // eBayからの全ページ取得に許容する合計時間。日次cron(maxDuration=300秒)
   // では既定の45秒だと数十ページの取得に足りないため引き上げて渡す。
   fetchTotalTimeoutMs?: number
+  // 新規出品の発見(GetSellerListの期間走査)に許容する時間
+  discoveryTimeBudgetMs?: number
 }
 
 export interface InventorySyncBatchResult extends InventorySyncResult {
@@ -344,13 +346,26 @@ export async function syncInventoryListings(
 // 出品 + 直接出品で得たebay_item_id)だけをGetItemで個別に照会する方式に
 // 変更し、他ツールの出品数に左右されないようにする。
 //
-// 新しく出品された商品の発見: eBay側の全active出品を新しい順に並べた
-// 先頭2ページ(400件)だけを追加で確認し、Kakehashiの商品に紐付く出品が
-// あれば取り込む(Kakehashiの出品は直近のものが多いため、ここに含まれる
-// 可能性が高い。含まれない場合はCSV取込で登録できる)。
+// 新しく出品された商品の発見: 以前はeBay側の全active出品を新しい順に
+// 並べた先頭400件だけを確認していたが、他ツールの出品が多いとCSVで出品
+// したKakehashiの商品が押し出されて下書きのまま残った(実データで11件)。
+// GetSellerListで「前回走査した時刻以降に出品開始されたもの」を全件確認する
+// 方式に変更し、出品数の多寡に関わらず確実に発見する。
 // ---------------------------------------------------------------------------
 
-const DISCOVERY_PAGES = 2
+// 前回走査時刻からの重なり(eBay側の反映遅れを吸収する)
+const DISCOVERY_OVERLAP_MS = 2 * 60 * 60 * 1000
+// 1回の走査区間
+const DISCOVERY_CHUNK_MS = 24 * 60 * 60 * 1000
+// 走査時刻の記録がない場合に遡る期間
+const DISCOVERY_DEFAULT_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000
+const DEFAULT_DISCOVERY_TIME_BUDGET_MS = 20_000
+
+export interface DiscoveryResult {
+  discovered: number
+  // 期間内の出品を読み切れなかった(次回同期で同じ期間から再走査する)
+  truncated: boolean
+}
 
 export interface KnownInventorySyncBatchResult {
   // 照会対象のKakehashi出品の総数
@@ -363,6 +378,7 @@ export interface KnownInventorySyncBatchResult {
   ended: number
   // 新規に発見して取り込んだ件数(最初のバッチのみ)
   discovered: number
+  discoveryTruncated: boolean
   nextBatch: number | null
   totalBatches: number
 }
@@ -372,6 +388,7 @@ export interface KnownInventorySyncResult {
   matched: number
   ended: number
   discovered: number
+  discoveryTruncated: boolean
 }
 
 // Kakehashiが把握しているeBay ItemIDを集める(在庫一覧 + 商品テーブル)。
@@ -397,27 +414,69 @@ async function collectKnownItemIds(db: SupabaseClient, userId: string): Promise<
   return Array.from(ids).sort()
 }
 
-// 新しい順の先頭数ページだけを見て、Kakehashiの商品に紐付く新規出品を取り込む。
-// 発見処理の失敗で同期全体を止めない(既知の出品の更新は続行する)。
+// 前回走査した時刻以降に出品開始された出品を全件確認し、Kakehashiの商品に
+// 紐付く新規出品を取り込む。発見処理の失敗で同期全体を止めない。
 async function discoverNewListings(
   db: SupabaseClient,
   userId: string,
   accessToken: string,
   options: InventorySyncOptions,
-): Promise<number> {
+): Promise<DiscoveryResult> {
+  const scanStartedAt = new Date()
   try {
-    const batch = await fetchActiveListingsBatch(
-      { accessToken },
-      1,
-      DISCOVERY_PAGES,
-      { signal: options.signal },
-    )
-    const stored = await storeInventoryListings(db, userId, batch.items, options)
-    return stored.matched
+    const { data: settings, error: settingsError } = await db
+      .from('inventory_settings')
+      .select('discovery_scanned_until')
+      .eq('user_id', userId)
+      .maybeSingle()
+    if (settingsError) throw new Error(settingsError.message)
+
+    const scannedUntil = settings?.discovery_scanned_until ? new Date(settings.discovery_scanned_until) : null
+    let from = scannedUntil
+      ? new Date(scannedUntil.getTime() - DISCOVERY_OVERLAP_MS)
+      : new Date(scanStartedAt.getTime() - DISCOVERY_DEFAULT_LOOKBACK_MS)
+    if (scanStartedAt.getTime() - from.getTime() > SELLER_LIST_MAX_RANGE_MS) {
+      from = new Date(scanStartedAt.getTime() - SELLER_LIST_MAX_RANGE_MS)
+    }
+
+    // 期間を1日ずつに区切って走査し、読み切れた区間まで走査時刻を進める。
+    // 一度に長い期間を読もうとして時間切れになると永久に進まなくなるため、
+    // 1日分が時間内に読める限り必ず前進するようにする。
+    const budgetMs = options.discoveryTimeBudgetMs ?? DEFAULT_DISCOVERY_TIME_BUDGET_MS
+    const startedMs = Date.now()
+    let discovered = 0
+    let truncated = false
+    let cursor = from
+    while (cursor.getTime() < scanStartedAt.getTime()) {
+      const chunkEnd = new Date(Math.min(cursor.getTime() + DISCOVERY_CHUNK_MS, scanStartedAt.getTime()))
+      const remaining = budgetMs - (Date.now() - startedMs)
+      if (remaining <= 1_000) { truncated = true; break }
+      const scan = await scanSellerListByStartTime(
+        { accessToken },
+        { from: cursor, to: chunkEnd },
+        { timeBudgetMs: remaining, signal: options.signal },
+      )
+      // 終了済み(ユーザーが取り下げた等)の出品は在庫管理に入れない
+      const active = scan.items.filter(item => !item.listingStatus || item.listingStatus === 'Active')
+      const stored = await storeInventoryListings(db, userId, active, options)
+      discovered += stored.matched
+      if (scan.truncated) {
+        truncated = true
+        console.warn(`[inventory-sync] discovery truncated: ${scan.pagesFetched}/${scan.totalPages} pages in ${cursor.toISOString()}..${chunkEnd.toISOString()}`)
+        break
+      }
+      cursor = chunkEnd
+      const { error } = await db
+        .from('inventory_settings')
+        .update({ discovery_scanned_until: chunkEnd.toISOString() })
+        .eq('user_id', userId)
+      if (error) console.warn('[inventory-sync] failed to record discovery time:', error.message)
+    }
+    return { discovered, truncated }
   } catch (error) {
     if (options.signal?.aborted) throw error
     console.warn('[inventory-sync] discovery of new listings failed:', error instanceof Error ? error.message : error)
-    return 0
+    return { discovered: 0, truncated: true }
   }
 }
 
@@ -450,9 +509,9 @@ export async function syncKnownInventoryListingBatch(
   if (!Number.isInteger(batchIndex) || batchIndex < 1) throw new Error(`Invalid inventory sync batch: ${batchIndex}`)
   if (!Number.isInteger(batchSize) || batchSize < 1) throw new Error(`Invalid inventory sync batch size: ${batchSize}`)
 
-  const discovered = batchIndex === 1
+  const discovery = batchIndex === 1
     ? await discoverNewListings(db, userId, accessToken, options)
-    : 0
+    : { discovered: 0, truncated: false }
 
   const knownIds = await collectKnownItemIds(db, userId)
   const totalBatches = Math.max(1, Math.ceil(knownIds.length / batchSize))
@@ -474,7 +533,8 @@ export async function syncKnownInventoryListingBatch(
     processedItems,
     updated: stored.matched,
     ended: fetched.endedItemIds.length,
-    discovered,
+    discovered: discovery.discovered,
+    discoveryTruncated: discovery.truncated,
     nextBatch: batchIndex < totalBatches ? batchIndex + 1 : null,
     totalBatches,
   }
@@ -489,7 +549,7 @@ export async function syncKnownInventoryListings(
   accessToken: string,
   options: InventorySyncOptions = {},
 ): Promise<KnownInventorySyncResult> {
-  const discovered = await discoverNewListings(db, userId, accessToken, options)
+  const discovery = await discoverNewListings(db, userId, accessToken, options)
   const knownIds = await collectKnownItemIds(db, userId)
 
   const fetched = await fetchListingsByItemIds(
@@ -505,6 +565,7 @@ export async function syncKnownInventoryListings(
     total: knownIds.length,
     matched: stored.matched,
     ended: fetched.endedItemIds.length,
-    discovered,
+    discovered: discovery.discovered,
+    discoveryTruncated: discovery.truncated,
   }
 }

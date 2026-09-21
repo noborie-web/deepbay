@@ -122,7 +122,7 @@ export async function POST(request: Request) {
         accessToken,
         startBatch,
         ITEMS_PER_REQUEST,
-        { signal: syncController.signal },
+        { signal: syncController.signal, discoveryTimeBudgetMs: 15_000 },
       ),
       new Promise<never>((_, reject) => {
         syncController.signal.addEventListener('abort', () => {
@@ -168,6 +168,7 @@ export async function POST(request: Request) {
     matched,
     ended: syncResult.ended,
     discovered: syncResult.discovered,
+    discovery_truncated: syncResult.discoveryTruncated,
     done,
     cursor: done ? null : createInventorySyncCursor(runId, syncResult.nextBatch!, cursorSecret),
     progress: {

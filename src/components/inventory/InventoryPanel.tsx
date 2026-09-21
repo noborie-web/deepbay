@@ -662,7 +662,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     setSyncProgress('開始中')
     try {
       let cursor: string | null = null
-      let completed: { total: number; matched: number; ended: number; discovered: number } | null = null
+      let completed: { total: number; matched: number; ended: number; discovered: number; discoveryTruncated: boolean } | null = null
 
       // Kakehashiが出品したItemIDだけを1リクエストあたり60件ずつ個別照会する。
       // 最大50回(3,000件)まで継続を許容する。eBay APIの一時的な遅延等で
@@ -670,6 +670,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       let retriesLeft = 2
       let endedTotal = 0
       let discoveredTotal = 0
+      let discoveryTruncated = false
       for (let requestNumber = 1; requestNumber <= 50; requestNumber++) {
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 50_000)
@@ -686,6 +687,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             matched: number
             ended?: number
             discovered?: number
+            discovery_truncated?: boolean
             done: boolean
             cursor: string | null
             progress?: { processed: number; total: number }
@@ -693,12 +695,13 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           if (!res.ok) throw new Error(json.error ?? 'Sync failed')
           endedTotal += json.ended ?? 0
           discoveredTotal += json.discovered ?? 0
+          if (json.discovery_truncated) discoveryTruncated = true
 
           if (json.progress) {
             setSyncProgress(`${json.progress.processed}/${json.progress.total}件`)
           }
           if (json.done) {
-            completed = { total: json.total, matched: json.matched, ended: endedTotal, discovered: discoveredTotal }
+            completed = { total: json.total, matched: json.matched, ended: endedTotal, discovered: discoveredTotal, discoveryTruncated }
             break
           }
           if (typeof json.cursor !== 'string' || !json.cursor) {
@@ -725,7 +728,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
         completed.discovered > 0 ? `新規${completed.discovered}件を発見` : null,
         completed.ended > 0 ? `終了済み${completed.ended}件を除外` : null,
       ].filter(Boolean).join('、')
-      showMsg('success', `同期完了: Kakehashi出品${completed.total}件を更新${extras ? `（${extras}）` : ''}`)
+      showMsg(completed.discoveryTruncated ? 'error' : 'success',
+        `同期完了: Kakehashi出品${completed.total}件を更新${extras ? `（${extras}）` : ''}`
+        + (completed.discoveryTruncated ? '。新規出品の走査が時間内に終わりませんでした。もう一度「同期」を実行してください。' : ''))
       setRunsLoaded(false)
     } catch (e) {
       showMsg('error', e instanceof Error ? e.message : '同期失敗')
