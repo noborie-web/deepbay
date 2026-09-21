@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { revisePrice } from '@/lib/ebay-actions'
+import { reviseInventoryStatusBatch } from '@/lib/ebay-actions'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 
@@ -89,14 +89,15 @@ export async function POST(req: NextRequest) {
     for (const p of products ?? []) productMap.set(p.id, p)
   }
 
-  const results = []
+  const entries = []
   for (const l of listings ?? []) {
     const p = productMap.get(l.product_id!)
     if (!p?.ebay_price || !l.current_price) continue
     if (Math.abs(p.ebay_price - l.current_price) <= 0.5) continue
-    const result = await revisePrice(accessToken, l.ebay_item_id, p.ebay_price)
-    results.push(result)
+    entries.push({ itemId: l.ebay_item_id as string, price: p.ebay_price })
   }
+  // 4件ずつまとめて並行に送る(件数が多くても時間内に終わるように)
+  const { results } = await reviseInventoryStatusBatch(accessToken, entries)
 
   const succeeded = results.filter(r => r.success).length
   const failed = results.filter(r => !r.success)
