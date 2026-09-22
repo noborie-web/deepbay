@@ -20,6 +20,8 @@ export interface InventorySyncOptions {
   fetchTotalTimeoutMs?: number
   // 新規出品の発見(GetSellerListの期間走査)に許容する時間
   discoveryTimeBudgetMs?: number
+  // GetItem個別照会の並行数(既定4。日次cronでは件数が多いため上げる)
+  getItemConcurrency?: number
 }
 
 export interface InventorySyncBatchResult extends InventorySyncResult {
@@ -280,6 +282,31 @@ export async function markListingsDelisted(db: SupabaseClient, userId: string, i
       .eq('user_id', userId)
       .in('id', productIds)
     if (productError) throw new Error(`Product delisted state update failed: ${productError.message}`)
+  }
+}
+
+// 取り下げの取り消し: 在庫を戻した出品の delisted_at を外し、商品を出品中に戻す。
+// 次回の仕入先チェックで改めて売り切れ判定される。
+export async function markListingsRestored(db: SupabaseClient, userId: string, itemIds: string[]): Promise<void> {
+  if (itemIds.length === 0) return
+  const now = new Date().toISOString()
+  for (let index = 0; index < itemIds.length; index += DB_CHUNK_SIZE) {
+    const chunk = itemIds.slice(index, index + DB_CHUNK_SIZE)
+    const { data: rows, error } = await db
+      .from('inventory_active_listings')
+      .update({ delisted_at: null, quantity: 1, supplier_checked_at: null, updated_at: now })
+      .eq('user_id', userId)
+      .in('ebay_item_id', chunk)
+      .select('product_id')
+    if (error) throw new Error(`Restore flag update failed: ${error.message}`)
+    const productIds = (rows ?? []).map(row => row.product_id as string | null).filter((id): id is string => Boolean(id))
+    if (productIds.length === 0) continue
+    const { error: productError } = await db
+      .from('products')
+      .update({ listing_status: 'listed', updated_at: now })
+      .eq('user_id', userId)
+      .in('id', productIds)
+    if (productError) throw new Error(`Product restore state update failed: ${productError.message}`)
   }
 }
 
@@ -556,7 +583,7 @@ export async function syncKnownInventoryListings(
   const fetched = await fetchListingsByItemIds(
     { accessToken },
     knownIds,
-    { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
+    { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs, concurrency: options.getItemConcurrency },
   )
   const stored = await storeInventoryListings(db, userId, fetched.items, options)
   await removeEndedListings(db, userId, fetched.endedItemIds)

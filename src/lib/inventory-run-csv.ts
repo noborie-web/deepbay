@@ -112,6 +112,7 @@ export function summarizeRun(run: RunRecord): string {
       n('no_supplier') ? `仕入先なし ${n('no_supplier')}件` : null, n('skipped') ? `未確認 ${n('skipped')}件` : null,
     ].filter(Boolean).join(' / ')
     case 'auto_delist': case 'delist': return `取り下げ ${n('succeeded') ?? 0}/${n('total') ?? 0}件`
+    case 'undo_delist': return `在庫を戻した ${n('succeeded') ?? 0}/${n('total') ?? 0}件`
     case 'auto_revise_price': case 'revise_price': return `価格改定 ${n('succeeded') ?? 0}/${n('total') ?? 0}件${n('deferred') ? `（翌日持ち越し ${n('deferred')}件）` : ''}`
     case 'auto_stack': case 'stack': return `積み上げ ${n('succeeded') ?? 0}/${n('total') ?? 0}件`
     default: return ''
@@ -129,4 +130,5 @@ export const RUN_TYPE_LABELS: Record<string, string> = {
   auto_stack: '積み上げ（自動）',
   stack: '積み上げ',
   translate_descriptions: '説明文の英訳',
+  undo_delist: '取り下げの取り消し',
 }

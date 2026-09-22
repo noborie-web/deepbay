@@ -4,6 +4,9 @@ import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { calculateAutomaticEbayPrice } from '@/lib/extraction-run'
 import { calcModelPrice, loadPricingModel, type PricingModel } from '@/lib/inventory-pricing'
 
+// Yahoo!フリマの商品ページ取得上限(1回の実行あたり)。制限に達する前に止める。
+const FLEA_SUPPLIER_CHECK_PER_RUN = 12
+
 interface SupplierListingRow {
   id: string
   product_id: string
@@ -123,6 +126,9 @@ export interface SupplierCheckResult {
   no_supplier: number
   // 「〇〇様専用」等の取り置きになっていた件数(unavailable に含まれる)
   reserved: number
+  // 取得エラー(429・ネットワーク等)で確認できなかった件数(skipped に含まれる)
+  check_errors: number
+  rate_limited: number
   // 1商品ごとの結果(実行履歴のCSV出力用)
   items: SupplierCheckItemDetail[]
 }
@@ -194,6 +200,8 @@ export async function checkSupplierListings(
     title_changed: 0,
     reserved: 0,
     no_supplier: 0,
+    check_errors: 0,
+    rate_limited: 0,
     items: [],
   }
 
@@ -272,6 +280,7 @@ export async function checkSupplierListings(
     jpyPerUsd = null
   }
 
+  let fleaChecked = 0
   for (const listing of targets) {
     if (options.timeBudgetMs !== undefined && Date.now() - startedAt > options.timeBudgetMs) {
       result.skipped += 1
@@ -293,6 +302,16 @@ export async function checkSupplierListings(
     let supplierTitle: string | null | undefined
     let supplierPriceJpy: number | null | undefined
     let supplierDiff: SupplierDiffKind[] | undefined
+    let skipCheckedAtUpdate = false
+
+    // Yahoo!フリマは商品ページの取得が約15件/15分/IPに制限される(実測)。1回の
+    // 実行では FLEA_SUPPLIER_CHECK_PER_RUN 件だけ確認し、残りは次回に回す
+    // (checked_at を更新しないので、次回は残りから順に確認される)。
+    if (product?.source_site === 'yahoo_flea' && fleaChecked >= FLEA_SUPPLIER_CHECK_PER_RUN) {
+      result.skipped += 1
+      continue
+    }
+    if (product?.source_site === 'yahoo_flea') fleaChecked += 1
 
     if (product?.source_site === 'ebay') {
       // 実データで確認した不具合: eBayから復元した商品で仕入先URLが不明のもの
@@ -380,10 +399,23 @@ export async function checkSupplierListings(
             }
           }
         }
-      } catch {
-        // 商品詳細を再取得できない場合は、仕入れ元ページの削除として扱う。
-        outcome = 'unavailable'
-        quantity = 0
+      } catch (error) {
+        // 本番で確認した不具合(2026-09-22): Yahoo!フリマの商品ページが429(アクセス
+        // 過多)で取得できなかった64件を「ページ削除=売り切れ」と判定し、eBayの在庫を
+        // 0にしてしまった。ページが無いと確定できる 404/410 だけを削除(売り切れ)と
+        // みなし、429・5xx・ネットワークエラー等は「未確認」にして次回に回す。
+        const message = error instanceof Error ? error.message : String(error)
+        if (/(HTTP|error:) (404|410)\b/.test(message)) {
+          outcome = 'unavailable'
+          quantity = 0
+        } else {
+          outcome = 'skipped'
+          result.check_errors += 1
+          if (/HTTP 429\b/.test(message)) result.rate_limited += 1
+          // 未確認のまま supplier_checked_at を更新すると次回の対象順が後ろに回る。
+          // 429で全く見られていないものは checked_at を更新せず、次回も先に確認する。
+          skipCheckedAtUpdate = /HTTP 429\b/.test(message)
+        }
       }
     }
 
@@ -396,6 +428,11 @@ export async function checkSupplierListings(
       supplier_diff_detected_at?: string | null
     } = {
       supplier_checked_at: checkedAt,
+    }
+    if (skipCheckedAtUpdate) {
+      // 429で確認できなかった: 何も更新せず次回に回す(結果には skipped として数える)
+      result.skipped += 1
+      continue
     }
     if (quantity !== undefined) update.quantity = quantity
     if (supplierDiff !== undefined) {

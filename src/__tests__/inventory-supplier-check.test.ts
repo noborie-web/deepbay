@@ -153,6 +153,46 @@ describe('checkSupplierListings', () => {
     expect(updateCalls(calls)[0].payload).toEqual(expect.objectContaining({ quantity: 0 }))
   })
 
+  // 本番で確認した不具合(2026-09-22): Yahoo!フリマの429を「売り切れ」と誤判定し64件の
+  // 在庫を0にした。404/410 だけを売り切れとし、429 は未確認(次回に回す)にする。
+  it('429(アクセス過多)で取得できなかった商品は在庫0にせず、checked_atも更新しないで次回に回す', async () => {
+    const { db, calls } = makeDatabase({
+      listings: [{ id: 'listing-429', product_id: 'product-429', ebay_item_id: 'item-429' }],
+      products: [{ id: 'product-429', source_url: 'https://paypayfleamarket.yahoo.co.jp/item/z1', source_site: 'yahoo_flea' }],
+    })
+    mocks.scrapeUrl.mockRejectedValueOnce(new Error('HTTP 429: Too Many Requests'))
+
+    const result = await checkSupplierListings(db as never, 'user-1')
+
+    expect(result).toMatchObject({ total: 1, unavailable: 0, skipped: 1, rate_limited: 1, check_errors: 1 })
+    expect(updateCalls(calls)).toHaveLength(0)
+  })
+
+  it('ネットワークエラー等は在庫0にせず未確認として checked_at だけ更新する', async () => {
+    const { db, calls } = makeDatabase({
+      listings: [{ id: 'listing-err', product_id: 'product-err', ebay_item_id: 'item-err' }],
+      products: [{ id: 'product-err', source_url: 'https://jp.mercari.com/item/m1' }],
+    })
+    mocks.scrapeUrl.mockRejectedValueOnce(new Error('fetch failed'))
+
+    const result = await checkSupplierListings(db as never, 'user-1')
+
+    expect(result).toMatchObject({ unavailable: 0, skipped: 1, check_errors: 1, rate_limited: 0 })
+    expect(updateCalls(calls)[0].payload).not.toHaveProperty('quantity')
+  })
+
+  it('Yahoo!フリマの商品は1回の実行で12件までしか商品ページを確認しない', async () => {
+    const listings = Array.from({ length: 15 }, (_, i) => ({ id: `l${i}`, product_id: `p${i}`, ebay_item_id: `item${i}` }))
+    const products = listings.map(l => ({ id: l.product_id, source_url: `https://paypayfleamarket.yahoo.co.jp/item/z${l.id}`, source_site: 'yahoo_flea' }))
+    const { db } = makeDatabase({ listings, products })
+    mocks.scrapeUrl.mockResolvedValue([{ availability: 'available' }])
+
+    const result = await checkSupplierListings(db as never, 'user-1')
+
+    expect(mocks.scrapeUrl).toHaveBeenCalledTimes(12)
+    expect(result).toMatchObject({ total: 15, available: 12, skipped: 3 })
+  })
+
   it('sets quantity to zero when the supplier page returns 404 and continues with later rows', async () => {
     const { db, calls } = makeDatabase({
       listings: [
