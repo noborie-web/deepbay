@@ -5,6 +5,7 @@ import type { InventoryActiveListing } from '@/types/database'
 import { createClient } from '@/lib/supabase/client'
 import { extractSourceLookupKeys } from '@/lib/inventory'
 import { RUN_TYPE_LABELS, availableRunCsvKinds, summarizeRun } from '@/lib/inventory-run-csv'
+import { formatSlotHours, slotsForRunCount } from '@/lib/inventory-schedule'
 
 interface InventoryRun {
   id: string; run_type: string; status: string
@@ -17,6 +18,7 @@ interface Settings {
   has_token: boolean; sync_enabled: boolean; ebay_auto_sync: boolean
   days_until_delist: number; delist_by_age_enabled: boolean; delist_on_sold_out: boolean; daily_run_count: number; ebay_token_expires_at: string | null
   price_change_direction: 'any' | 'up' | 'down'; price_change_threshold_rate: number
+  revise_price_schedule: 'every' | 'morning'
   auto_delist: boolean; auto_revise_price: boolean; auto_stack: boolean
   schedule_time: string
   payment_profile_name: string; return_profile_name: string; shipping_profile_name: string
@@ -210,7 +212,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [settings, setSettings] = useState<Settings>({
     has_token: initialHasToken, sync_enabled: false, ebay_auto_sync: false,
     days_until_delist: 29, delist_by_age_enabled: true, delist_on_sold_out: false, daily_run_count: 1, ebay_token_expires_at: null,
-    price_change_direction: 'any', price_change_threshold_rate: 1,
+    price_change_direction: 'any', price_change_threshold_rate: 1, revise_price_schedule: 'every',
     auto_delist: false, auto_revise_price: false, auto_stack: false,
     schedule_time: '09:00',
     payment_profile_name: '', return_profile_name: '', shipping_profile_name: '',
@@ -1716,7 +1718,32 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           <hr />
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-1">1日の全体在庫管理の稼働回数</h3>
-            <p className="text-xs text-gray-500">毎日1回、9時台（JST）に実行します。Vercel Hobbyプランでは実行時刻が9:00〜9:59の間で変動する場合があります。</p>
+            <p className="text-xs text-gray-500 mb-3">
+              同期 → 仕入先チェック → 取り下げ → 価格改定 を1日に何回実行するかを選びます。回数を増やすと仕入先の売り切れを早く検知して取り下げられます。
+              実行時刻（JST）: 1回=9:00 / 2回=9:00・21:00 / 3回=9:00・15:00・21:00 / 4回=3:00・9:00・15:00・21:00
+            </p>
+            <div className="flex items-center gap-3 flex-wrap mb-3">
+              <span className="text-xs text-gray-500">稼働回数</span>
+              <select value={settings.daily_run_count}
+                onChange={e => saveSetting({ daily_run_count: Number(e.target.value) })}
+                className="border rounded px-2 py-1 text-sm">
+                {[1, 2, 3, 4].map(n => <option key={n} value={n}>{n}回/日（{formatSlotHours(slotsForRunCount(n))}）</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-xs text-gray-500">価格改定（eBayへの価格反映）</span>
+              {([
+                ['every', '毎回行う'],
+                ['morning', '朝9:00のみ行う'],
+              ] as const).map(([value, label]) => (
+                <label key={value} className="flex items-center gap-1 text-sm text-gray-700">
+                  <input type="radio" name="revise_price_schedule" checked={settings.revise_price_schedule === value}
+                    onChange={() => saveSetting({ revise_price_schedule: value })} />
+                  {label}
+                </label>
+              ))}
+              <span className="text-xs text-gray-400">※売り切れの取り下げ・仕入価格の再計算は毎回行います。「朝のみ」は為替の細かな変動で日中に価格が動くのを避けたい場合に</span>
+            </div>
           </div>
           <hr />
           <div>

@@ -37,7 +37,9 @@ vi.mock('@supabase/supabase-js', () => ({
         }
       }
       if (table === 'inventory_runs') {
-        return { insert: mockRunInsert.mockImplementation(async () => ({ error: null })) }
+        // 二重起動防止の「直近の同期があるか」の照会は、無し(null)を返す
+        const recent = { select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), gte: vi.fn().mockReturnThis(), limit: vi.fn().mockReturnThis(), maybeSingle: vi.fn(async () => ({ data: null, error: null })) }
+        return { ...recent, insert: mockRunInsert.mockImplementation(async () => ({ error: null })) }
       }
       if (table === 'inventory_active_listings') return listingQueryMock()
       throw new Error(`Unexpected table: ${table}`)
@@ -103,7 +105,7 @@ describe('GET /api/cron/inventory-auto', () => {
 
   it('processes enabled users whenever the daily Vercel cron invokes the route', async () => {
     const { GET } = await import('@/app/api/cron/inventory-auto/route')
-    const req = new NextRequest('http://localhost/api/cron/inventory-auto', {
+    const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=9', {
       headers: { authorization: 'Bearer cron-secret' },
     })
     const res = await GET(req)
@@ -130,7 +132,7 @@ describe('GET /api/cron/inventory-auto', () => {
   it('stops later inventory actions when automatic sync fails', async () => {
     mockSyncInventoryListings.mockRejectedValue(new Error('sync failed'))
     const { GET } = await import('@/app/api/cron/inventory-auto/route')
-    const req = new NextRequest('http://localhost/api/cron/inventory-auto', {
+    const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=9', {
       headers: { authorization: 'Bearer cron-secret' },
     })
     const res = await GET(req)
@@ -156,7 +158,7 @@ describe('GET /api/cron/inventory-auto', () => {
       .mockResolvedValueOnce('access-token-2')
 
     const { GET } = await import('@/app/api/cron/inventory-auto/route')
-    const req = new NextRequest('http://localhost/api/cron/inventory-auto', {
+    const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=9', {
       headers: { authorization: 'Bearer cron-secret' },
     })
     const res = await GET(req)
@@ -185,7 +187,7 @@ describe('GET /api/cron/inventory-auto', () => {
     }]
 
     const { GET } = await import('@/app/api/cron/inventory-auto/route')
-    const req = new NextRequest('http://localhost/api/cron/inventory-auto', {
+    const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=9', {
       headers: { authorization: 'Bearer cron-secret' },
     })
     const res = await GET(req)
@@ -201,7 +203,7 @@ describe('GET /api/cron/inventory-auto', () => {
     // 約5,000件あり、Kakehashiの自動取り下げがそれらをEndしてはならない。
     mockSettings[0].auto_delist = true
     const { GET } = await import('@/app/api/cron/inventory-auto/route')
-    const req = new NextRequest('http://localhost/api/cron/inventory-auto', {
+    const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=9', {
       headers: { authorization: 'Bearer cron-secret' },
     })
     const res = await GET(req)
@@ -217,7 +219,7 @@ describe('GET /api/cron/inventory-auto', () => {
     mockSettings[0].auto_delist = true
     mockSettings[0].delist_by_age_enabled = false
     const { GET } = await import('@/app/api/cron/inventory-auto/route')
-    const req = new NextRequest('http://localhost/api/cron/inventory-auto', {
+    const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=9', {
       headers: { authorization: 'Bearer cron-secret' },
     })
     const res = await GET(req)
@@ -233,7 +235,7 @@ describe('GET /api/cron/inventory-auto', () => {
     mockSettings[0].delist_by_age_enabled = false
     mockSettings[0].delist_on_sold_out = true
     const { GET } = await import('@/app/api/cron/inventory-auto/route')
-    const req = new NextRequest('http://localhost/api/cron/inventory-auto', {
+    const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=9', {
       headers: { authorization: 'Bearer cron-secret' },
     })
     const res = await GET(req)
@@ -251,6 +253,42 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(config.crons).toContainEqual({
       path: '/api/cron/inventory-auto',
       schedule: '0 0 * * *',
+    })
+  })
+
+  // ユーザー要望: 1日最大4回(03/09/15/21 JST)。稼働回数に含まれない時間帯は
+  // 処理せず、価格改定は「朝のみ」設定なら朝以外の時間帯では行わない。
+  describe('1日複数回の稼働', () => {
+    it('稼働回数1回のユーザーは、朝以外の時間帯(slot=21)では処理しない', async () => {
+      const { GET } = await import('@/app/api/cron/inventory-auto/route')
+      mockSettings = [{ ...mockSettings[0], daily_run_count: 1 }]
+      const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=21', { headers: { authorization: 'Bearer cron-secret' } })
+      const res = await GET(req)
+      const json = await res.json()
+      expect(res.status).toBe(200)
+      expect(json.results[0]).toMatchObject({ slot: 21, skipped: 'slot_inactive' })
+      expect(mockSyncInventoryListings).not.toHaveBeenCalled()
+    })
+
+    it('稼働回数2回のユーザーは slot=21 でも処理し、価格改定が「朝のみ」なら価格改定だけ行わない', async () => {
+      const { GET } = await import('@/app/api/cron/inventory-auto/route')
+      mockSettings = [{ ...mockSettings[0], daily_run_count: 2, auto_revise_price: true, revise_price_schedule: 'morning' }]
+      const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=21', { headers: { authorization: 'Bearer cron-secret' } })
+      const res = await GET(req)
+      const json = await res.json()
+      expect(res.status).toBe(200)
+      expect(mockSyncInventoryListings).toHaveBeenCalledOnce()
+      expect(mockCheckSupplierListings).toHaveBeenCalledOnce()
+      expect(json.results[0].revise_price).toBeUndefined()
+      expect(mockRunInsert.mock.calls.some(c => c[0].run_type === 'auto_revise_price')).toBe(false)
+    })
+
+    it('価格改定が「毎回」なら slot=21 でも価格改定を行う', async () => {
+      const { GET } = await import('@/app/api/cron/inventory-auto/route')
+      mockSettings = [{ ...mockSettings[0], daily_run_count: 2, auto_revise_price: true, revise_price_schedule: 'every' }]
+      const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=21', { headers: { authorization: 'Bearer cron-secret' } })
+      await GET(req)
+      expect(mockRunInsert.mock.calls.some(c => c[0].run_type === 'auto_revise_price')).toBe(true)
     })
   })
 })
