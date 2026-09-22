@@ -238,8 +238,31 @@ export async function checkSupplierListings(
     throw new Error(`Supplier product lookup failed: ${productsError.message}`)
   }
 
+  // 本番で確認した不具合(2026-09-22): numeric 型の列(purchase_price_jpy /
+  // ebay_price / pricing_jpy_per_usd)は PostgREST から文字列で返るため、
+  // `typeof === 'number'` の判定が常に false になり「出品時レート未記録」扱いで
+  // 段階利益設定による再計算にフォールバックしていた(利益額維持が効かず、
+  // 118件が提案Aの価格に書き換えられた)。数値に正規化してから使う。
+  const toNumberOrNull = (value: unknown): number | null => {
+    if (value === null || value === undefined || value === '') return null
+    const n = typeof value === 'string' ? Number(value) : value
+    return typeof n === 'number' && Number.isFinite(n) ? n : null
+  }
   const productMap = new Map(
-    ((products ?? []) as SupplierProductRow[]).map(product => [product.id, product]),
+    ((products ?? []) as Array<Record<string, unknown>>).map(row => {
+      const product: SupplierProductRow = {
+        id: String(row.id),
+        source_url: (row.source_url as string | null) ?? null,
+        source_site: (row.source_site as string | null) ?? null,
+        original_title: (row.original_title as string | null) ?? null,
+        original_price: toNumberOrNull(row.original_price),
+        purchase_price_jpy: toNumberOrNull(row.purchase_price_jpy),
+        ebay_price: toNumberOrNull(row.ebay_price),
+        pricing_jpy_per_usd: toNumberOrNull(row.pricing_jpy_per_usd),
+        extraction_id: (row.extraction_id as string | null) ?? null,
+      }
+      return [product.id, product] as const
+    }),
   )
 
   // 価格再計算に使う一括編集設定(利益率等)を抽出単位でまとめて取得する。
