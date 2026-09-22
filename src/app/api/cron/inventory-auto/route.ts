@@ -34,11 +34,17 @@ export async function GET(req: NextRequest) {
   // ユーザー要望: 1日最大4回(03/09/15/21 JST)。pg_cron からは ?slot=JST時 で呼ばれ、
   // Vercel cron(朝のみ・時刻不定)からは現在時刻から時間帯を求める。
   const slot = resolveRunSlot(req.nextUrl.searchParams.get('slot'))
+  // ユーザー要望: 「全体在庫管理を今すぐ実行」(手動)。対象ユーザーを絞り、
+  // 稼働回数の時間帯や二重起動の判定は行わない(force=1)。
+  const onlyUserId = req.nextUrl.searchParams.get('user_id')
+  const force = req.nextUrl.searchParams.get('force') === '1'
 
-  const { data: allSettings } = await db
+  let settingsQuery = db
     .from('inventory_settings')
     .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, payment_profile_name, return_profile_name, shipping_profile_name, daily_run_count, revise_price_schedule')
     .eq('sync_enabled', true)
+  if (onlyUserId) settingsQuery = settingsQuery.eq('user_id', onlyUserId)
+  const { data: allSettings } = await settingsQuery
 
   const results: Record<string, unknown>[] = []
 
@@ -48,7 +54,7 @@ export async function GET(req: NextRequest) {
     const userResult: Record<string, unknown> = { user_id: userId, slot }
 
     // この時間帯が稼働回数の対象でなければスキップ
-    if (!isSlotActive(normalizeDailyRunCount(settings.daily_run_count), slot)) {
+    if (!force && !isSlotActive(normalizeDailyRunCount(settings.daily_run_count), slot)) {
       userResult.skipped = 'slot_inactive'
       results.push(userResult)
       continue
@@ -62,13 +68,13 @@ export async function GET(req: NextRequest) {
       .gte('started_at', new Date(Date.now() - 90 * 60 * 1000).toISOString())
       .limit(1)
       .maybeSingle()
-    if (recentRun) {
+    if (recentRun && !force) {
       userResult.skipped = 'recently_ran'
       results.push(userResult)
       continue
     }
     // 価格改定を「朝のみ」にしている場合、朝以外の時間帯ではeBayへの反映を行わない
-    const revisePriceThisSlot = shouldRevisePriceInSlot(normalizeRevisePriceSchedule(settings.revise_price_schedule), slot)
+    const revisePriceThisSlot = force || shouldRevisePriceInSlot(normalizeRevisePriceSchedule(settings.revise_price_schedule), slot)
     const runSupplierCheck = async () => {
       const startedAt = new Date().toISOString()
       try {
