@@ -793,6 +793,30 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     finally { setSavingSettings(false) }
   }
 
+  // 全体在庫管理を今すぐ実行(自動実行と同じ流れを手動で)
+  const [runAllBusy, setRunAllBusy] = useState(false)
+  const [runAllMessage, setRunAllMessage] = useState<string | null>(null)
+  const runAllNow = async () => {
+    if (!confirm('自動実行と同じ流れ（同期 → 仕入先チェック → 取り下げ → 価格改定）を今すぐ実行します。設定でONになっている処理はeBayに反映されます。よろしいですか？')) return
+    setRunAllBusy(true); setRunAllMessage(null)
+    try {
+      const res = await fetch('/api/inventory/actions/run-all', { method: 'POST' })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? '実行に失敗しました')
+      const r = json.result ?? {}
+      const parts: string[] = []
+      if (r.sync?.total !== undefined) parts.push(`同期 ${r.sync.matched ?? 0}/${r.sync.total}件${r.sync.discovered ? `（新規${r.sync.discovered}件）` : ''}`)
+      if (r.sync?.error) parts.push(`同期エラー: ${r.sync.error}`)
+      if (r.supplier_check) parts.push(`仕入先チェック ${r.supplier_check.total ?? 0}件（売り切れ${r.supplier_check.unavailable ?? 0}・価格追従${r.supplier_check.price_recalculated ?? 0}）`)
+      if (r.delist) parts.push(`取り下げ ${r.delist.succeeded ?? 0}/${r.delist.total ?? 0}件`)
+      if (r.revise_price) parts.push(`価格改定 ${r.revise_price.succeeded ?? 0}/${r.revise_price.total ?? 0}件${r.revise_price.deferred ? `（持ち越し${r.revise_price.deferred}）` : ''}`)
+      setRunAllMessage(`完了（${Math.round((json.elapsed_ms ?? 0) / 1000)}秒）: ${parts.join(' / ') || '実行する処理がありませんでした（設定を確認してください）'}`)
+      await refreshRuns()
+      loadActionSummary()
+    } catch (e) { setRunAllMessage(`エラー: ${e instanceof Error ? e.message : String(e)}`) }
+    finally { setRunAllBusy(false) }
+  }
+
   // 取り下げの取り消し(誤検知で在庫0にした出品を1に戻す)
   const [undoingRunId, setUndoingRunId] = useState<string | null>(null)
   const undoDelist = async (runId: string) => {
@@ -1302,6 +1326,21 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* ユーザー要望: 全体在庫管理を手動で今すぐ実行 */}
+          <div className="border rounded-lg p-4 bg-gray-50">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-800">全体在庫管理を今すぐ実行</h3>
+                <p className="text-xs text-gray-500 mt-1">自動実行と同じ流れ（eBay同期 → 仕入先チェック → 取り下げ → 価格改定）を、設定のON/OFFに従って今すぐ1回実行します（最大5分）。</p>
+              </div>
+              <button onClick={runAllNow} disabled={runAllBusy || !settings.has_token}
+                className="px-4 py-2 bg-gray-800 text-white text-sm rounded hover:bg-gray-900 disabled:opacity-50 whitespace-nowrap">
+                {runAllBusy ? '実行中...（数分かかります）' : '今すぐ実行'}
+              </button>
+            </div>
+            {runAllMessage && <p className="text-xs text-gray-700 mt-2">{runAllMessage}</p>}
           </div>
 
           {/* 手動データ取得 */}

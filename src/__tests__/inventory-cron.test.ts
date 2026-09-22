@@ -28,13 +28,12 @@ vi.mock('@supabase/supabase-js', () => ({
   createClient: vi.fn(() => ({
     from: vi.fn((table: string) => {
       if (table === 'inventory_settings') {
-        return {
-          select: vi.fn().mockReturnThis(),
-          eq: vi.fn(async () => ({
-            data: mockSettings,
-            error: null,
-          })),
-        }
+        // .select().eq('sync_enabled').eq('user_id')? のチェーンと await の両方に対応
+        const chain: Record<string, unknown> = {}
+        chain.select = vi.fn(() => chain)
+        chain.eq = vi.fn(() => chain)
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: mockSettings, error: null })
+        return chain
       }
       if (table === 'inventory_runs') {
         // 二重起動防止の「直近の同期があるか」の照会は、無し(null)を返す
@@ -290,5 +289,18 @@ describe('GET /api/cron/inventory-auto', () => {
       await GET(req)
       expect(mockRunInsert.mock.calls.some(c => c[0].run_type === 'auto_revise_price')).toBe(true)
     })
+  })
+
+  // ユーザー要望: 「全体在庫管理を今すぐ実行」。user_id で対象を絞り、force=1 なら
+  // 時間帯・二重起動の判定を行わない。
+  it('force=1 なら稼働回数の時間帯に関わらず、指定ユーザーだけを処理する', async () => {
+    const { GET } = await import('@/app/api/cron/inventory-auto/route')
+    mockSettings = [{ ...mockSettings[0], daily_run_count: 1 }]
+    const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=21&force=1&user_id=user-1', { headers: { authorization: 'Bearer cron-secret' } })
+    const res = await GET(req)
+    const json = await res.json()
+    expect(res.status).toBe(200)
+    expect(json.results[0].skipped).toBeUndefined()
+    expect(mockSyncInventoryListings).toHaveBeenCalledOnce()
   })
 })
