@@ -421,6 +421,46 @@ describe('checkSupplierListings', () => {
       expect(payload.ebay_price as number).toBeCloseTo(627.07 * 156.84 / 163, 0)
     })
 
+    it('出品時レートが未記録でも、段階利益で再計算せず現在価格を維持する(為替変動なし扱い)', async () => {
+      const { db, calls } = makeDatabase({
+        listings: [{ id: 'listing-1', product_id: 'product-1' }],
+        products: [{
+          id: 'product-1', source_url: 'https://jp.mercari.com/item/1',
+          purchase_price_jpy: 48000, ebay_price: 627.07, pricing_jpy_per_usd: null,
+        }],
+      })
+      mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 48000 }])
+      mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 157.33, date: '2026-09-22' })
+
+      const result = await checkSupplierListings(db as never, 'user-1', 500, { pricingModel: tierModel })
+
+      // 段階利益(¥10,000)で再計算した $645 にも、提案Aの $605 にもならず、価格は変えない
+      expect(result.price_recalculated).toBe(0)
+      const productUpdates = updateCalls(calls, 'products')
+      // 基準レートだけ記録される
+      expect(productUpdates[0]?.payload).toEqual({ pricing_jpy_per_usd: 157.33 })
+    })
+
+    // ユーザー要望「赤字になるのは絶対に避けて」: 仕入価格が下がっていないのに
+    // 15%超の値下げになる再計算はロジック不具合とみなして適用しない(安全網)。
+    it('仕入価格が下がっていないのに15%超の値下げになる場合は適用しない', async () => {
+      const { db, calls } = makeDatabase({
+        listings: [{ id: 'listing-1', product_id: 'product-1' }],
+        products: [{
+          id: 'product-1', source_url: 'https://jp.mercari.com/item/1',
+          purchase_price_jpy: 48000, ebay_price: 627.07, pricing_jpy_per_usd: 156.84,
+        }],
+      })
+      mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 48000 }])
+      // 為替が20%以上円安に振れた極端なケース(価格は-17%程度になる)
+      mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 190, date: '2026-09-22' })
+
+      const result = await checkSupplierListings(db as never, 'user-1', 500, { pricingModel: tierModel })
+
+      expect(result.price_recalculated).toBe(0)
+      expect(result.guarded).toBe(1)
+    })
+
     it('仕入価格も為替も変わっていなければ、同じ式なので差分が出ず更新しない', async () => {
       const { db, calls } = makeDatabase({
         listings: [{ id: 'listing-1', product_id: 'product-1' }],

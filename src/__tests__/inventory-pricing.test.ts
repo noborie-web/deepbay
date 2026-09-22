@@ -93,8 +93,11 @@ describe('calcListingProfit', () => {
       expect(price).toBeGreaterThan(148.2)
     })
 
-    it('利益を逆算できない(赤字・情報不足)場合は null', () => {
-      expect(calcPriceKeepingProfit(model, 50, 5980, 156.84, 5980, 157)).toBeNull()
+    it('赤字の価格でも「変動分だけ動かす」は成り立つ(為替変動分だけスケール)', () => {
+      expect(calcPriceKeepingProfit(model, 50, 5980, 156.84, 5980, 157)).toBeCloseTo(50 * 156.84 / 157, 1)
+    })
+
+    it('情報不足の場合は null', () => {
       expect(calcPriceKeepingProfit(model, 148.2, 0, 156.84, 5980, 157)).toBeNull()
       expect(calcPriceKeepingProfit(null, 148.2, 5980, 156.84, 5980, 157)).toBeNull()
     })
