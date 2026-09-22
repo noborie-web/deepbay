@@ -378,6 +378,29 @@ describe('checkSupplierListings', () => {
       expect(payload.ebay_price as number).toBeCloseTo(531.5, 0)
     })
 
+    // 本番で確認した不具合(2026-09-22): 別プリセット(提案B)で付けた価格が、保存中の
+    // 段階利益設定(提案A)の価格に書き換えられた(148.2 → 143.08)。出品時の利益額を
+    // 維持して仕入価格・為替の変動分だけ動かす。
+    it('段階利益と違う利益額で付けた価格は、為替が動いても利益額を維持したまま追従する(再ティア化しない)', async () => {
+      const { db, calls } = makeDatabase({
+        listings: [{ id: 'listing-1', product_id: 'product-1' }],
+        products: [{
+          id: 'product-1', source_url: 'https://jp.mercari.com/item/1',
+          purchase_price_jpy: 5980, ebay_price: 148.2, pricing_jpy_per_usd: 156.84,
+        }],
+      })
+      mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 5980 }])
+      // 為替が約4%動いたケース(1%の閾値を超えるので更新対象)
+      mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 163, date: '2026-09-22' })
+
+      const result = await checkSupplierListings(db as never, 'user-1', 500, { pricingModel: tierModel })
+
+      expect(result.price_recalculated).toBe(1)
+      const payload = updateCalls(calls, 'products')[0].payload!
+      // 利益額維持: 148.2 × 156.84 / 163 ≒ 142.6(段階利益¥3,000で再計算した約$146や¥2,200の約$138ではない)
+      expect(payload.ebay_price as number).toBeCloseTo(148.2 * 156.84 / 163, 0)
+    })
+
     it('仕入価格も為替も変わっていなければ、同じ式なので差分が出ず更新しない', async () => {
       const { db, calls } = makeDatabase({
         listings: [{ id: 'listing-1', product_id: 'product-1' }],
