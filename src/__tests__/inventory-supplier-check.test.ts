@@ -401,6 +401,26 @@ describe('checkSupplierListings', () => {
       expect(payload.ebay_price as number).toBeCloseTo(148.2 * 156.84 / 163, 0)
     })
 
+    // 本番で確認した不具合(2026-09-22): numeric列が文字列で返り、出品時レート未記録
+    // 扱いになって段階利益で再計算されていた。文字列でも利益額維持で追従する。
+    it('DBのnumeric列が文字列で返っても、利益額維持で追従する', async () => {
+      const { db, calls } = makeDatabase({
+        listings: [{ id: 'listing-1', product_id: 'product-1' }],
+        products: [{
+          id: 'product-1', source_url: 'https://jp.mercari.com/item/1',
+          purchase_price_jpy: '48000' as unknown as number, ebay_price: '627.07' as unknown as number, pricing_jpy_per_usd: '156.84' as unknown as number,
+        }],
+      })
+      mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 48000 }])
+      mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 163, date: '2026-09-22' })
+
+      await checkSupplierListings(db as never, 'user-1', 500, { pricingModel: tierModel })
+
+      const payload = updateCalls(calls, 'products')[0].payload!
+      // 利益額維持(627.07 × 156.84 / 163 ≒ 603.4)。段階利益¥10,000で再計算した約$623ではない
+      expect(payload.ebay_price as number).toBeCloseTo(627.07 * 156.84 / 163, 0)
+    })
+
     it('仕入価格も為替も変わっていなければ、同じ式なので差分が出ず更新しない', async () => {
       const { db, calls } = makeDatabase({
         listings: [{ id: 'listing-1', product_id: 'product-1' }],
