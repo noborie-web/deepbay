@@ -25,7 +25,7 @@ const TIME_BUDGET_MS = 42_000
 // 429が出たら打ち切って呼び出し側に「15分後に再開」を返す。
 const SITE_PACING: Record<string, { concurrency: number; intervalMs: number; retries: number; maxPerRun: number }> = {
   yahoo_flea: { concurrency: 1, intervalMs: 1000, retries: 0, maxPerRun: FLEA_DETAIL_PER_RUN },
-  yahoo_auction: { concurrency: 3, intervalMs: 250, retries: 2, maxPerRun: BATCH },
+  yahoo_auction: { concurrency: 2, intervalMs: 500, retries: 2, maxPerRun: BATCH },
 }
 const ENRICHABLE_SITES = Object.keys(SITE_PACING)
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -41,6 +41,8 @@ interface PendingProduct {
   original_description: string | null
   ebay_description: string | null
   original_images: string[] | null
+  detail_attempts: number | null
+  detail_retry_after: string | null
 }
 
 async function countPending(db: ReturnType<typeof admin>, userId: string, extractionId: string): Promise<number> {
@@ -53,6 +55,13 @@ async function countPending(db: ReturnType<typeof admin>, userId: string, extrac
     .is('detail_enriched_at', null)
   return count ?? 0
 }
+
+// 本番で確認した不具合(2026-09-22): ヤフオク商品ページの取得が連続で失敗した
+// 98件を「試みた」扱いにして二度と再試行しなかった(説明文・画像が1枚のまま)。
+// 失敗した商品は 10分×試行回数 後に再試行し、5回失敗して初めて諦める。
+const MAX_DETAIL_ATTEMPTS = 5
+const RETRY_BASE_MS = 10 * 60 * 1000
+
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: extractionId } = await params
@@ -69,18 +78,36 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (mode !== 'run') return NextResponse.json({ error: `不明な mode: ${mode}` }, { status: 400 })
 
+  const nowIso = new Date().toISOString()
   const { data: rows, error } = await db
     .from('products')
-    .select('id, source_url, source_site, original_description, ebay_description, original_images')
+    .select('id, source_url, source_site, original_description, ebay_description, original_images, detail_attempts, detail_retry_after')
     .eq('user_id', user.id)
     .eq('extraction_id', extractionId)
     .in('source_site', ENRICHABLE_SITES)
     .is('detail_enriched_at', null)
+    .or(`detail_retry_after.is.null,detail_retry_after.lte.${nowIso}`)
     .order('created_at', { ascending: true })
     .limit(BATCH)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   const targets = (rows ?? []) as PendingProduct[]
-  if (targets.length === 0) return NextResponse.json({ ok: true, processed: 0, failed: 0, pending: 0 })
+  if (targets.length === 0) {
+    // 再試行待ちの商品があれば、次に試せる時刻を返す
+    const { data: waiting } = await db
+      .from('products')
+      .select('detail_retry_after')
+      .eq('user_id', user.id)
+      .eq('extraction_id', extractionId)
+      .in('source_site', ENRICHABLE_SITES)
+      .is('detail_enriched_at', null)
+      .not('detail_retry_after', 'is', null)
+      .order('detail_retry_after', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    const pending = await countPending(db, user.id, extractionId)
+    const retryAfterMs = waiting?.detail_retry_after ? Math.max(0, new Date(waiting.detail_retry_after as string).getTime() - Date.now()) : 0
+    return NextResponse.json({ ok: true, processed: 0, failed: 0, pending, flea_pending: 0, retry_after_ms: pending > 0 ? retryAfterMs + 1000 : 0, flea_rate_limited: false })
+  }
 
   const { data: settings } = await db
     .from('extraction_settings')
@@ -96,6 +123,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const startedAt = Date.now()
   let failed = 0
   let fleaRateLimited = false
+  let auctionRateLimited = false
   const failedIds: string[] = []
   const enriched: Array<{ product: PendingProduct; detail: ScrapedProduct }> = []
 
@@ -118,9 +146,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         return { ...entry, detail }
       } catch (err) {
         if (err instanceof RateLimitedError) {
-          // 制限中は「試みた」扱いにせず、次回(15分後)に回す
+          // 制限中は「試みた」扱いにせず、次回に回す(フリマは15分後、ヤフオクは数分後)
           stop = true
           if (site === 'yahoo_flea') fleaRateLimited = true
+          else auctionRateLimited = true
           return entry
         }
         console.error('[enrich-details] failed for', entry.target.id, err instanceof Error ? err.message : err)
@@ -187,9 +216,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (updateError) { failed += 1; continue }
     processed += 1
   }
-  // 取得に失敗した商品も「試みた」として記録し、無限に再試行しない
-  if (failedIds.length > 0) {
-    await db.from('products').update({ detail_enriched_at: now }).in('id', failedIds).eq('user_id', user.id)
+  // 取得に失敗した商品は時間を置いて再試行する(5回失敗したら諦める)
+  for (const id of failedIds) {
+    const target = targets.find(t => t.id === id)
+    const attempts = (target?.detail_attempts ?? 0) + 1
+    await db.from('products').update(
+      attempts >= MAX_DETAIL_ATTEMPTS
+        ? { detail_enriched_at: now, detail_attempts: attempts }
+        : { detail_attempts: attempts, detail_retry_after: new Date(Date.now() + RETRY_BASE_MS * attempts).toISOString() },
+    ).eq('id', id).eq('user_id', user.id)
   }
 
   const pending = await countPending(db, user.id, extractionId)
@@ -207,7 +242,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     pending,
     flea_pending: fleaPending ?? 0,
     // Yahoo!フリマの制限に達した(または1回分を取り切った)ら、次の呼び出しまで待つ時間
-    retry_after_ms: (fleaPending ?? 0) > 0 && (fleaRateLimited || processed > 0) ? FLEA_RATE_LIMIT_WINDOW_MS : 0,
+    retry_after_ms: (fleaPending ?? 0) > 0 && (fleaRateLimited || processed > 0)
+      ? FLEA_RATE_LIMIT_WINDOW_MS
+      : (auctionRateLimited || (processed === 0 && failed > 0 && pending > 0)) ? 5 * 60 * 1000 : 0,
     flea_rate_limited: fleaRateLimited,
   })
 }
