@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { reviseInventoryStatusBatch } from '@/lib/ebay-actions'
+import { applyRevisedPrices } from '@/lib/inventory-sync'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 
@@ -106,6 +107,11 @@ export async function POST(req: NextRequest) {
     return { ebay_item_id: r.itemId, price_before: before, price_after: after, diff: after !== null && before !== null ? Math.round((after - before) * 100) / 100 : null, success: r.success, error: r.error ?? null }
   })
 
+  try {
+    await applyRevisedPrices(db, user.id, results.filter(r => r.success).map(r => ({ ebay_item_id: r.itemId, price: entries.find(e => e.itemId === r.itemId)?.price ?? 0 })).filter(r => r.price > 0))
+  } catch (error) {
+    console.warn('[revise-price] revised price bookkeeping failed:', error instanceof Error ? error.message : error)
+  }
   const succeeded = results.filter(r => r.success).length
   const failed = results.filter(r => !r.success)
   const runSummary = summarizeInventoryActionRun(results)

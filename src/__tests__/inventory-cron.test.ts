@@ -49,6 +49,7 @@ vi.mock('@supabase/supabase-js', () => ({
 vi.mock('@/lib/inventory-sync', () => ({
   syncKnownInventoryListings: mockSyncInventoryListings,
   markListingsDelisted: vi.fn(async () => {}),
+  applyRevisedPrices: vi.fn(async () => {}),
 }))
 
 vi.mock('@/lib/inventory-supplier-check', async (importOriginal) => ({
