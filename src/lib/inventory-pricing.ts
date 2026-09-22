@@ -138,7 +138,7 @@ export function calcPriceKeepingProfit(
   if (!model) return null
   if (!(currentPriceUsd > 0) || !(oldPurchasePriceJpy > 0) || !(oldJpyPerUsd > 0) || !(newPurchasePriceJpy > 0) || !(newJpyPerUsd > 0)) return null
   const current = calcListingProfit(model, currentPriceUsd, oldPurchasePriceJpy, oldJpyPerUsd)
-  if (!current || current.profitJpy <= 0) return null
+  if (!current) return null
   const params = {
     purchasePriceJpy: newPurchasePriceJpy,
     profitJpy: current.profitJpy,
@@ -150,6 +150,9 @@ export function calcPriceKeepingProfit(
     customsRate: model.customsRate,
     discountRate: model.discountRate,
   }
-  if (validateTieredProfitParams(params)) return null
-  return calcTieredProfit(params).salePriceUsd
+  // 利益がマイナス(赤字)でも「変動分だけ動かす」は成り立つので、価格が正になる限り返す
+  const validationError = validateTieredProfitParams(params)
+  if (validationError && current.profitJpy > 0) return null
+  const price = calcTieredProfit(params).salePriceUsd
+  return Number.isFinite(price) && price > 0 ? price : null
 }

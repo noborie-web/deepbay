@@ -129,6 +129,8 @@ export interface SupplierCheckResult {
   // 取得エラー(429・ネットワーク等)で確認できなかった件数(skipped に含まれる)
   check_errors: number
   rate_limited: number
+  // 安全網で適用しなかった値下げの件数(仕入価格が下がっていないのに15%超の値下げ)
+  guarded: number
   // 1商品ごとの結果(実行履歴のCSV出力用)
   items: SupplierCheckItemDetail[]
 }
@@ -204,6 +206,7 @@ export async function checkSupplierListings(
     no_supplier: 0,
     check_errors: 0,
     rate_limited: 0,
+    guarded: 0,
     items: [],
   }
 
@@ -403,14 +406,26 @@ export async function checkSupplierListings(
             const oldPurchasePriceJpy = typeof product.purchase_price_jpy === 'number' && product.purchase_price_jpy > 0
               ? product.purchase_price_jpy
               : (typeof product.original_price === 'number' && product.original_price > 0 ? product.original_price : null)
-            if (pricingModel && currentEbayPrice !== null && pricingRate !== null && oldPurchasePriceJpy !== null) {
-              // 出品時の利益額(円)を維持したまま、仕入価格・為替の変動分だけ価格を動かす
+            if (pricingModel && currentEbayPrice !== null) {
+              // ユーザー要望: 利益額維持は確実に効かせる。現在のeBay価格がある限り、
+              // 出品時の利益額(円)を維持したまま仕入価格・為替の変動分だけ動かす
               // (価格一括編集で選んだプリセットや手動調整を、保存中の段階利益設定で
-              //  上書きしない)。逆算できない場合は段階利益設定で再計算する。
-              recalculated = calcPriceKeepingProfit(pricingModel, currentEbayPrice, oldPurchasePriceJpy, pricingRate, purchasePriceJpy, jpyPerUsd)
-                ?? calcModelPrice(pricingModel, purchasePriceJpy, jpyPerUsd)
+              //  上書きしない)。出品時レートが未記録なら今回のレート(=為替変動なし)、
+              // 出品時の仕入価格が未記録なら今回の仕入価格(=仕入変動なし)とみなす。
+              // 段階利益設定での再計算は「eBay価格そのものが無い」場合だけ。
+              recalculated = calcPriceKeepingProfit(
+                pricingModel,
+                currentEbayPrice,
+                oldPurchasePriceJpy ?? purchasePriceJpy,
+                pricingRate ?? jpyPerUsd,
+                purchasePriceJpy,
+                jpyPerUsd,
+              )
+              // 出品時レート/仕入価格が未記録なら、今回の値を基準として記録する
+              // (価格を変えない場合でも次回以降の追従の基準になる)
+              if (pricingRate === null) baselineJpyPerUsd = jpyPerUsd
+              if (typeof product.purchase_price_jpy !== 'number') baselinePurchasePriceJpy = purchasePriceJpy
             } else if (pricingModel) {
-              // 出品時の情報が無い(仕入価格や為替が未記録)場合は、保存中の段階利益設定で計算する
               recalculated = calcModelPrice(pricingModel, purchasePriceJpy, jpyPerUsd)
             } else if (purchasePriceChanged || currentEbayPrice === null) {
               const bulkSettingId = product.extraction_id
@@ -425,6 +440,15 @@ export async function checkSupplierListings(
               if (typeof product.purchase_price_jpy !== 'number') baselinePurchasePriceJpy = purchasePriceJpy
             }
 
+            // 安全網(ユーザー要望「赤字になるのは絶対に避けて」): 仕入価格が下がって
+            // いないのに 15% を超える値下げになる再計算は、ロジックの不具合とみなして
+            // 適用しない(記録だけ残す)。
+            const purchaseDecreased = oldPurchasePriceJpy !== null && purchasePriceJpy < oldPurchasePriceJpy - 1
+            if (recalculated !== null && currentEbayPrice !== null && !purchaseDecreased && recalculated < currentEbayPrice * 0.85) {
+              console.warn(`[supplier-check] guarded: ${listing.ebay_item_id} ${currentEbayPrice} -> ${recalculated} (purchase ${oldPurchasePriceJpy} -> ${purchasePriceJpy}, rate ${pricingRate} -> ${jpyPerUsd})`)
+              result.guarded += 1
+              recalculated = null
+            }
             if (recalculated !== null && shouldUpdateEbayPrice(currentEbayPrice, recalculated, priceChangeFilter)) {
               newPurchasePriceJpy = purchasePriceJpy
               newEbayPrice = recalculated
