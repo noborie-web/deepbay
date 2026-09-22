@@ -6,7 +6,7 @@ import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { isSlotActive, normalizeDailyRunCount, normalizeRevisePriceSchedule, resolveRunSlot, shouldRevisePriceInSlot } from '@/lib/inventory-schedule'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
-import { markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
+import { applyRevisedPrices, markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
 import { checkSupplierListings, normalizePriceChangeFilter } from '@/lib/inventory-supplier-check'
 
 // 1回の実行で「①GetItem同期(148件〜)」「②仕入先チェック」「③取り下げ」
@@ -263,6 +263,12 @@ export async function GET(req: NextRequest) {
       const { results: reviseResults, deferred: reviseDeferred } = await reviseInventoryStatusBatch(
         accessToken, reviseEntries, { deadlineMs: reviseStartedAt + REVISE_PRICE_TIME_BUDGET_MS },
       )
+      // 反映した価格を在庫一覧の現在価格にも書く(次回同期を待たずに差分が消える)
+      try {
+        await applyRevisedPrices(db, userId, reviseResults.filter(r => r.success).map(r => ({ ebay_item_id: r.itemId, price: reviseEntries.find(e => e.itemId === r.itemId)?.price ?? 0 })).filter(r => r.price > 0))
+      } catch (error) {
+        console.warn('[inventory-auto] revised price bookkeeping failed:', error instanceof Error ? error.message : error)
+      }
       // 実行履歴のCSV出力用(公式ツールの revise ファイルと同じ内容)
       const reviseItems = reviseResults.map(r => {
         const after = reviseEntries.find(e => e.itemId === r.itemId)?.price ?? null
