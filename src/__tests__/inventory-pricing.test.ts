@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calcListingProfit, calcModelPrice, toPricingModel } from '@/lib/inventory-pricing'
+import { calcListingProfit, calcPriceKeepingProfit, calcModelPrice, toPricingModel } from '@/lib/inventory-pricing'
 
 // 本番のユーザー設定(価格一括編集の段階利益方式)。9/13の出品価格が
 // この式で計算されていることを実データで確認済み
@@ -63,5 +63,40 @@ describe('calcListingProfit', () => {
   it('価格・仕入値・為替が無ければ null', () => {
     expect(calcListingProfit(null, 0, 1000, 150)).toBeNull()
     expect(calcListingProfit(null, 100, 0, 150)).toBeNull()
+  })
+
+  // 本番で確認した不具合(2026-09-22): 別プリセット(提案B)で付けた価格が、翌日の
+  // 追従で保存中の設定(提案A)の価格に書き換えられた。出品時の利益額(円)を維持
+  // したまま仕入価格・為替の変動分だけ動かす。
+  describe('calcPriceKeepingProfit', () => {
+    const model = toPricingModel(userTierSettings)
+
+    it('仕入価格・為替が変わらなければ元の価格をほぼ再現する(利益額を維持)', () => {
+      const price = calcPriceKeepingProfit(model, 148.2, 5980, 156.84, 5980, 156.84)!
+      expect(price).toBeCloseTo(148.2, 1)
+    })
+
+    it('為替だけ動いたら、利益額(円)を維持した価格になる(段階利益の値には戻さない)', () => {
+      const price = calcPriceKeepingProfit(model, 148.2, 5980, 156.84, 5980, 157.32)!
+      // 利益額を維持: 円建て合計(5980 + 利益 + 6000)は不変なので、価格は 156.84/157.32 倍
+      expect(price).toBeCloseTo(148.2 * 156.84 / 157.32, 1)
+      // 保存中の段階利益(¥2,200 → $143.08)には戻さない
+      expect(price).toBeGreaterThan(146)
+    })
+
+    it('仕入価格が上がったら、その分だけ値上げする(利益額は維持)', () => {
+      const before = calcListingProfit(model, 148.2, 5980, 156.84)!.profitJpy
+      const price = calcPriceKeepingProfit(model, 148.2, 5980, 156.84, 6980, 156.84)!
+      const after = calcListingProfit(model, price, 6980, 156.84)!.profitJpy
+      expect(after).toBeGreaterThanOrEqual(before - 2)
+      expect(after).toBeLessThanOrEqual(before + 2)
+      expect(price).toBeGreaterThan(148.2)
+    })
+
+    it('利益を逆算できない(赤字・情報不足)場合は null', () => {
+      expect(calcPriceKeepingProfit(model, 50, 5980, 156.84, 5980, 157)).toBeNull()
+      expect(calcPriceKeepingProfit(model, 148.2, 0, 156.84, 5980, 157)).toBeNull()
+      expect(calcPriceKeepingProfit(null, 148.2, 5980, 156.84, 5980, 157)).toBeNull()
+    })
   })
 })

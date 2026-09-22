@@ -115,3 +115,41 @@ export function calcListingProfit(
     costUsd: Math.round(costUsd * 100) / 100,
   }
 }
+
+/**
+ * 本番で確認した不具合(2026-09-22): 価格追従が「保存されている段階利益設定」で
+ * 毎回再計算していたため、ユーザーが価格一括編集で別のプリセット(例: 提案B)や
+ * 手動調整で付けた価格が、翌日の在庫管理で提案Aの価格に書き換えられた。
+ *
+ * 追従の意図は「仕入価格・為替が動いた分だけ動かす」なので、現在のeBay価格から
+ * 出品時の利益額(円)を逆算し、その利益額を維持したまま新しい仕入価格・為替で
+ * 価格を再計算する(手数料・送料等はユーザーの価格モデルの値を使う)。
+ * 利益額を逆算できない(価格・仕入価格・出品時レートのいずれかが無い、または
+ * 逆算した利益が0以下)場合は null を返し、呼び出し側で段階利益の再計算にフォールバックする。
+ */
+export function calcPriceKeepingProfit(
+  model: PricingModel,
+  currentPriceUsd: number,
+  oldPurchasePriceJpy: number,
+  oldJpyPerUsd: number,
+  newPurchasePriceJpy: number,
+  newJpyPerUsd: number,
+): number | null {
+  if (!model) return null
+  if (!(currentPriceUsd > 0) || !(oldPurchasePriceJpy > 0) || !(oldJpyPerUsd > 0) || !(newPurchasePriceJpy > 0) || !(newJpyPerUsd > 0)) return null
+  const current = calcListingProfit(model, currentPriceUsd, oldPurchasePriceJpy, oldJpyPerUsd)
+  if (!current || current.profitJpy <= 0) return null
+  const params = {
+    purchasePriceJpy: newPurchasePriceJpy,
+    profitJpy: current.profitJpy,
+    jpyPerUsd: newJpyPerUsd,
+    ebayFeeRate: model.ebayFeeRate,
+    shippingUsd: model.shippingJpy / newJpyPerUsd,
+    fixedCostUsd: model.fixedCostUsd,
+    adRate: model.adRate,
+    customsRate: model.customsRate,
+    discountRate: model.discountRate,
+  }
+  if (validateTieredProfitParams(params)) return null
+  return calcTieredProfit(params).salePriceUsd
+}

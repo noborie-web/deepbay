@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { findScraper, scrapeUrl } from '@/lib/scrapers'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { calculateAutomaticEbayPrice } from '@/lib/extraction-run'
-import { calcModelPrice, loadPricingModel, type PricingModel } from '@/lib/inventory-pricing'
+import { calcModelPrice, calcPriceKeepingProfit, loadPricingModel, type PricingModel } from '@/lib/inventory-pricing'
 
 // Yahoo!フリマの商品ページ取得上限(1回の実行あたり)。制限に達する前に止める。
 const FLEA_SUPPLIER_CHECK_PER_RUN = 12
@@ -376,10 +376,18 @@ export async function checkSupplierListings(
               && Math.abs(purchasePriceJpy - product.purchase_price_jpy) >= 1
 
             let recalculated: number | null = null
-            if (pricingModel) {
-              // 段階利益設定あり: 現在の仕入価格 × 現在の為替でユーザーの式から
-              // 再計算する(仕入価格の変動も為替の変動も同じ式で追従。手動
-              // 設定した価格と同じ式なので、変動がなければ差分は出ない)
+            // 出品時の仕入価格(初回チェック前は抽出時の価格)
+            const oldPurchasePriceJpy = typeof product.purchase_price_jpy === 'number' && product.purchase_price_jpy > 0
+              ? product.purchase_price_jpy
+              : (typeof product.original_price === 'number' && product.original_price > 0 ? product.original_price : null)
+            if (pricingModel && currentEbayPrice !== null && pricingRate !== null && oldPurchasePriceJpy !== null) {
+              // 出品時の利益額(円)を維持したまま、仕入価格・為替の変動分だけ価格を動かす
+              // (価格一括編集で選んだプリセットや手動調整を、保存中の段階利益設定で
+              //  上書きしない)。逆算できない場合は段階利益設定で再計算する。
+              recalculated = calcPriceKeepingProfit(pricingModel, currentEbayPrice, oldPurchasePriceJpy, pricingRate, purchasePriceJpy, jpyPerUsd)
+                ?? calcModelPrice(pricingModel, purchasePriceJpy, jpyPerUsd)
+            } else if (pricingModel) {
+              // 出品時の情報が無い(仕入価格や為替が未記録)場合は、保存中の段階利益設定で計算する
               recalculated = calcModelPrice(pricingModel, purchasePriceJpy, jpyPerUsd)
             } else if (purchasePriceChanged || currentEbayPrice === null) {
               const bulkSettingId = product.extraction_id
