@@ -18,7 +18,7 @@ export async function GET() {
   const db = admin()
   const { data, error } = await db
     .from('inventory_settings')
-    .select('id, sync_enabled, ebay_auto_sync, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, daily_run_count, revise_price_schedule, ebay_token_expires_at, ebay_token, auto_delist, auto_revise_price, auto_stack, schedule_time, payment_profile_name, return_profile_name, shipping_profile_name, created_at, updated_at')
+    .select('id, sync_enabled, ebay_auto_sync, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, daily_run_count, revise_price_schedule, flea_check_last_at, ebay_token_expires_at, ebay_token, auto_delist, auto_revise_price, auto_stack, schedule_time, payment_profile_name, return_profile_name, shipping_profile_name, created_at, updated_at')
     .eq('user_id', user.id)
     .maybeSingle()
 
@@ -45,6 +45,7 @@ export async function GET() {
       price_change_threshold_rate: Number(data.price_change_threshold_rate ?? 1),
       daily_run_count: data.daily_run_count ?? 1,
       revise_price_schedule: data.revise_price_schedule ?? 'every',
+      flea_check_last_at: data.flea_check_last_at ?? null,
       ebay_token_expires_at: data.ebay_token_expires_at,
       auto_delist: data.auto_delist ?? false,
       auto_revise_price: data.auto_revise_price ?? false,
@@ -66,6 +67,7 @@ export async function GET() {
       price_change_threshold_rate: 1,
       daily_run_count: 1,
       revise_price_schedule: 'every',
+      flea_check_last_at: null,
       ebay_token_expires_at: null,
       auto_delist: false,
       auto_revise_price: false,
