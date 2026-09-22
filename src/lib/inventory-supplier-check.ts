@@ -180,6 +180,8 @@ export interface SupplierCheckOptions {
   priceChangeFilter?: PriceChangeFilter
   // テスト用: ユーザーの価格モデル(未指定なら price_tier_settings から読む)
   pricingModel?: PricingModel
+  // 対象を仕入先サイトで絞る(Yahoo!フリマ専用の高頻度チェック用)
+  sourceSite?: string
 }
 
 export async function checkSupplierListings(
@@ -205,12 +207,15 @@ export async function checkSupplierListings(
     items: [],
   }
 
-  const { data: listings, error: listingsError } = await db
+  // sourceSite 指定時は商品テーブルを内部結合して仕入先サイトで絞る
+  let listingQuery = db
     .from('inventory_active_listings')
-    .select('id, product_id, ebay_item_id')
+    .select(options.sourceSite ? 'id, product_id, ebay_item_id, products!inner(source_site)' : 'id, product_id, ebay_item_id')
     .eq('user_id', userId)
     .not('product_id', 'is', null)
     .gt('quantity', 0)
+  if (options.sourceSite) listingQuery = listingQuery.eq('products.source_site', options.sourceSite)
+  const { data: listings, error: listingsError } = await listingQuery
     .order('supplier_checked_at', { ascending: true, nullsFirst: true })
     .limit(batchLimit)
 
@@ -218,7 +223,7 @@ export async function checkSupplierListings(
     throw new Error(`Supplier listing lookup failed: ${listingsError.message}`)
   }
 
-  const targets = (listings ?? []) as SupplierListingRow[]
+  const targets = (listings ?? []) as unknown as SupplierListingRow[]
   result.total = targets.length
   if (targets.length === 0) return result
 
