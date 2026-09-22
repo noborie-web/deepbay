@@ -792,6 +792,23 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     finally { setSavingSettings(false) }
   }
 
+  // 取り下げの取り消し(誤検知で在庫0にした出品を1に戻す)
+  const [undoingRunId, setUndoingRunId] = useState<string | null>(null)
+  const undoDelist = async (runId: string) => {
+    if (!confirm('この実行で在庫0にした出品の在庫を1に戻し、出品中に復帰させます（eBayに反映されます）。次回の仕入先チェックで改めて売り切れ判定されます。よろしいですか？')) return
+    setUndoingRunId(runId)
+    try {
+      const res = await fetch('/api/inventory/actions/undo-delist', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ run_id: runId }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? '取り消しに失敗しました')
+      showMsg('success', `在庫を戻しました: ${json.succeeded}/${json.total}件${json.failed?.length ? `（失敗 ${json.failed.length}件）` : ''}`)
+      await refreshRuns()
+    } catch (e) { showMsg('error', e instanceof Error ? e.message : '取り消しに失敗しました') }
+    finally { setUndoingRunId(null) }
+  }
+
   // 実行ごとの結果CSV(価格追従 / 差分検知 / 取り下げ)
   const downloadRunCsv = async (runId: string, kind: string) => {
     try {
@@ -1375,6 +1392,13 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                                 {k.label} {k.count}件
                               </button>
                             ))}
+                            {/* 誤って取り下げた場合に在庫を1に戻す(在庫0にしたものだけ。次回の仕入先チェックで再判定) */}
+                            {(run.run_type === 'auto_delist' || run.run_type === 'delist') && Array.isArray(run.result_summary?.items) && (run.result_summary.items as Array<{ success: boolean; action: string }>).some(i => i.success && i.action === 'Revise') && (
+                              <button onClick={() => undoDelist(run.id)} disabled={undoingRunId !== null}
+                                className="px-2 py-1 border border-orange-500 text-orange-600 text-xs rounded hover:bg-orange-50 whitespace-nowrap disabled:opacity-50">
+                                {undoingRunId === run.id ? '戻し中...' : '取り下げを取り消す（在庫を1に戻す）'}
+                              </button>
+                            )}
                             {run.status === 'completed' && (run.run_type === 'sync' || run.run_type === 'upload') && (
                               <button onClick={() => setDlModal({ runId: run.id })}
                                 className="px-2 py-1 border border-gray-400 text-gray-600 text-xs rounded hover:bg-gray-50 whitespace-nowrap">

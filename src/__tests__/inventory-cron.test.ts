@@ -115,8 +115,8 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 1 })
     expect(mockResolveAccessToken).toHaveBeenCalledOnce()
     // active出品が数十ページあるため、cronでは取得タイムアウトを引き上げて渡す
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 180_000, discoveryTimeBudgetMs: 60_000 })
-    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 120_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 } })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8 })
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 80_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 } })
     expect(mockSyncInventoryListings.mock.invocationCallOrder[0]).toBeLessThan(
       mockCheckSupplierListings.mock.invocationCallOrder[0],
     )
@@ -140,7 +140,7 @@ describe('GET /api/cron/inventory-auto', () => {
 
     expect(res.status).toBe(200)
     expect(json.results[0].sync).toEqual({ error: 'sync failed' })
-    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 120_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 } })
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 80_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 } })
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       run_type: 'sync',
       status: 'failed',
@@ -168,7 +168,7 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 2 })
     expect(json.results[0].auth).toEqual({ error: 'refresh failed' })
     expect(mockSyncInventoryListings).toHaveBeenCalledTimes(1)
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 180_000, discoveryTimeBudgetMs: 60_000 })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8 })
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       user_id: 'user-1',
       status: 'failed',
@@ -195,7 +195,7 @@ describe('GET /api/cron/inventory-auto', () => {
 
     expect(json).toMatchObject({ ok: true, processed: 1 })
     expect(mockResolveAccessToken).not.toHaveBeenCalled()
-    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 120_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 } })
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 80_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 } })
   })
 
   it('自動取り下げはKakehashi商品に紐付く出品だけを対象にする(他ツールの出品を取り下げない)', async () => {

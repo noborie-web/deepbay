@@ -16,7 +16,7 @@ export const maxDuration = 300
 
 // 価格改定(eBayへのRevise)に使う時間の上限。同期(約60秒)+仕入先チェック
 // (最大120秒)+取り下げの後に残る時間の範囲に収める。
-const REVISE_PRICE_TIME_BUDGET_MS = 75_000
+const REVISE_PRICE_TIME_BUDGET_MS = 60_000
 
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
@@ -77,7 +77,7 @@ export async function GET(req: NextRequest) {
         // 一巡するのに3日かかるため、時間予算(150秒)の範囲で最大500件まで
         // 未チェックが古い順に確認する。
         const supplierCheckResult = await checkSupplierListings(db, userId, 500, {
-          timeBudgetMs: 120_000,
+          timeBudgetMs: 80_000,
           priceChangeFilter: normalizePriceChangeFilter(settings),
         })
         userResult.supplier_check = supplierCheckResult
@@ -139,7 +139,10 @@ export async function GET(req: NextRequest) {
       try {
         // ユーザー要望: Kakehashiが出品したItemIDだけをGetItemで個別照会する。
         // 件数はKakehashiの出品数に比例するため、他ツールの出品数に左右されない。
-        const syncResult = await syncKnownInventoryListings(db, userId, accessToken, { fetchTotalTimeoutMs: 180_000, discoveryTimeBudgetMs: 60_000 })
+        // 本番で確認した不具合(2026-09-22): 453件規模で 同期140秒 + 仕入先チェック120秒 +
+        // 取り下げ で300秒に達し、価格改定が実行されなかった。同期はGetItemの並行数を
+        // 上げて短縮し、各工程の時間予算を合計で300秒に収める。
+        const syncResult = await syncKnownInventoryListings(db, userId, accessToken, { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8 })
         userResult.sync = syncResult
         await db.from('inventory_runs').insert({
           user_id: userId,
