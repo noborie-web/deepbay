@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
 
   let settingsQuery = db
     .from('inventory_settings')
-    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, payment_profile_name, return_profile_name, shipping_profile_name, daily_run_count, revise_price_schedule')
+    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, delist_on_title_change, payment_profile_name, return_profile_name, shipping_profile_name, daily_run_count, revise_price_schedule')
     .eq('sync_enabled', true)
   if (onlyUserId) settingsQuery = settingsQuery.eq('user_id', onlyUserId)
   const { data: allSettings } = await settingsQuery
@@ -85,6 +85,7 @@ export async function GET(req: NextRequest) {
         const supplierCheckResult = await checkSupplierListings(db, userId, 500, {
           timeBudgetMs: 80_000,
           priceChangeFilter: normalizePriceChangeFilter(settings),
+          delistOnTitleChange: settings.delist_on_title_change ?? true,
         })
         userResult.supplier_check = supplierCheckResult
         // ユーザー要望: 「仕入れ価格の高騰に確実に対応」。この結果を

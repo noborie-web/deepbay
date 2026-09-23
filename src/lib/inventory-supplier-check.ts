@@ -131,6 +131,8 @@ export interface SupplierCheckResult {
   rate_limited: number
   // 安全網で適用しなかった値下げの件数(仕入価格が下がっていないのに15%超の値下げ)
   guarded: number
+  // 仕入先のタイトルが変わったため取り下げ対象(在庫0)にした件数
+  title_changed_delisted: number
   // 1商品ごとの結果(実行履歴のCSV出力用)
   items: SupplierCheckItemDetail[]
 }
@@ -157,6 +159,17 @@ export function isReservedTitle(title: string | null | undefined): boolean {
 
 // 抽出時のタイトル・価格(円)と、仕入先の最新タイトル・価格を比べて差分の
 // 種類を返す(公式ツールの差分検知ファイルの diff_detail 相当)。
+// 本番で確認した誤検知(2026-09-23): 検索結果と商品ページでタイトルの空白が
+// 異なる(全角/半角・連続空白)だけで「タイトル変更」と判定していた
+// (例: 「FC エイトアイズ」と「FC  エイトアイズ」)。表記ゆれを吸収してから比べる。
+export function normalizeSupplierTitle(title: string | null | undefined): string {
+  return (title ?? '')
+    .normalize('NFKC')
+    .replace(/[\s\u3000]+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
 export function detectSupplierDiff(
   original: { title: string | null; priceJpy: number | null },
   latest: { title: string | null | undefined; priceJpy: number | null | undefined },
@@ -164,7 +177,7 @@ export function detectSupplierDiff(
   const diffs: SupplierDiffKind[] = []
   const originalTitle = (original.title ?? '').trim()
   const latestTitle = (latest.title ?? '').trim()
-  if (originalTitle && latestTitle && originalTitle !== latestTitle) diffs.push('title')
+  if (originalTitle && latestTitle && normalizeSupplierTitle(originalTitle) !== normalizeSupplierTitle(latestTitle)) diffs.push('title')
   // 抽出時は専用ではなかったのに、今は「〇〇様専用」等になっている
   if (latestTitle && isReservedTitle(latestTitle) && !isReservedTitle(originalTitle)) diffs.push('reserved')
   if (
@@ -184,6 +197,9 @@ export interface SupplierCheckOptions {
   pricingModel?: PricingModel
   // 対象を仕入先サイトで絞る(Yahoo!フリマ専用の高頻度チェック用)
   sourceSite?: string
+  // ユーザー要望: 仕入先のタイトルが変わったら別商品に差し替えられた可能性が
+  // 高いので、売り切れと同じく取り下げ対象(在庫0)にする。
+  delistOnTitleChange?: boolean
 }
 
 export async function checkSupplierListings(
@@ -207,6 +223,7 @@ export async function checkSupplierListings(
     check_errors: 0,
     rate_limited: 0,
     guarded: 0,
+    title_changed_delisted: 0,
     items: [],
   }
 
@@ -311,6 +328,7 @@ export async function checkSupplierListings(
     jpyPerUsd = null
   }
 
+  const titleChangeDelist = options.delistOnTitleChange ?? false
   let fleaChecked = 0
   for (const listing of targets) {
     if (options.timeBudgetMs !== undefined && Date.now() - startedAt > options.timeBudgetMs) {
@@ -372,6 +390,14 @@ export async function checkSupplierListings(
           // 「〇〇様専用」等の取り置き: 他の人は買えないので在庫切れと同じ扱い
           outcome = 'unavailable'
           quantity = 0
+        } else if (titleChangeDelist && supplierDiff?.includes('title')) {
+          // ユーザー要望: 仕入先のタイトルが変わった = 別商品に差し替えられた
+          // 可能性が高い(実データ: ¥49,500の宇多田ヒカルCDが「Cubic U / Precious」
+          // ¥400 に差し替えられ、eBay価格が-81%になった)。売り切れと同じく
+          // 在庫0にして取り下げ対象にし、価格の追従は行わない。
+          outcome = 'unavailable'
+          quantity = 0
+          result.title_changed_delisted += 1
         } else {
           outcome = 'available'
 
@@ -444,6 +470,15 @@ export async function checkSupplierListings(
             // いないのに 15% を超える値下げになる再計算は、ロジックの不具合とみなして
             // 適用しない(記録だけ残す)。
             const purchaseDecreased = oldPurchasePriceJpy !== null && purchasePriceJpy < oldPurchasePriceJpy - 1
+            // 仕入価格が急落(30%超)した場合は、別商品への差し替え・取得ミスの
+            // 可能性が高いので自動反映しない(実データ: ¥49,500 → ¥400)
+            const purchaseCollapsed = oldPurchasePriceJpy !== null && purchasePriceJpy < oldPurchasePriceJpy * 0.7
+            if (recalculated !== null && purchaseCollapsed) {
+              console.warn(`[supplier-check] guarded (purchase collapsed): ${listing.ebay_item_id} ${oldPurchasePriceJpy} -> ${purchasePriceJpy}`)
+              result.guarded += 1
+              recalculated = null
+              newPurchasePriceJpy = undefined
+            }
             if (recalculated !== null && currentEbayPrice !== null && !purchaseDecreased && recalculated < currentEbayPrice * 0.85) {
               console.warn(`[supplier-check] guarded: ${listing.ebay_item_id} ${currentEbayPrice} -> ${recalculated} (purchase ${oldPurchasePriceJpy} -> ${purchasePriceJpy}, rate ${pricingRate} -> ${jpyPerUsd})`)
               result.guarded += 1

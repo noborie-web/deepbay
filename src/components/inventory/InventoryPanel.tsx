@@ -19,6 +19,7 @@ interface Settings {
   days_until_delist: number; delist_by_age_enabled: boolean; delist_on_sold_out: boolean; daily_run_count: number; ebay_token_expires_at: string | null
   price_change_direction: 'any' | 'up' | 'down'; price_change_threshold_rate: number
   revise_price_schedule: 'every' | 'morning'
+  delist_on_title_change: boolean
   flea_check_last_at: string | null
   auto_delist: boolean; auto_revise_price: boolean; auto_stack: boolean
   schedule_time: string
@@ -213,7 +214,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [settings, setSettings] = useState<Settings>({
     has_token: initialHasToken, sync_enabled: false, ebay_auto_sync: false,
     days_until_delist: 29, delist_by_age_enabled: true, delist_on_sold_out: false, daily_run_count: 1, ebay_token_expires_at: null,
-    price_change_direction: 'any', price_change_threshold_rate: 1, revise_price_schedule: 'every', flea_check_last_at: null,
+    price_change_direction: 'any', price_change_threshold_rate: 1, revise_price_schedule: 'every', delist_on_title_change: true, flea_check_last_at: null,
     auto_delist: false, auto_revise_price: false, auto_stack: false,
     schedule_time: '09:00',
     payment_profile_name: '', return_profile_name: '', shipping_profile_name: '',
@@ -1777,6 +1778,20 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                   disabled={savingSettings}
                   className="w-20 border rounded px-2 py-1 text-sm text-center disabled:bg-gray-100" />
               </label>
+            </div>
+          </div>
+          <hr />
+          <div>
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">仕入先のタイトル変更</h3>
+            <p className="text-xs text-gray-500 mb-2">
+              仕入先のタイトルが変わった商品は、別の商品に差し替えられた可能性が高いため取り下げ対象（在庫0）にします。
+              実データ: ¥49,500のCDが「Cubic U / Precious」¥400に差し替えられ、eBay価格が-81%になりました。
+              空白や全角・半角の違いだけの場合は変更とみなしません。
+            </p>
+            <div className="flex items-center gap-2">
+              <Toggle checked={settings.delist_on_title_change}
+                onChange={v => saveSetting({ delist_on_title_change: v })} />
+              <span className="text-sm text-gray-600">{settings.delist_on_title_change ? 'タイトルが変わったら取り下げる' : '取り下げない（差分の記録のみ）'}</span>
             </div>
           </div>
           <hr />
