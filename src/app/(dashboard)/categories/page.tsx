@@ -12,7 +12,7 @@ import {
 } from '@/lib/listing-export'
 import type { ListingCategory } from '@/types/database'
 
-interface EbayCategory { id: string; name: string; level?: number }
+interface EbayCategory { id: string; name: string; level?: number; is_leaf?: boolean }
 
 export default function CategoriesPage() {
   const router = useRouter()
@@ -74,9 +74,31 @@ export default function CategoriesPage() {
     setSearchResults(results)
   }
 
+  // 本番で確認した不具合(2026-09-23): 親カテゴリ(例: 222 Diecast & Toy Vehicles)を
+  // 登録してCSV出品すると、eBayが「The category selected is not a leaf category.」で
+  // 全件エラーにする。登録時に末端カテゴリかどうかを確認し、親なら子を選ばせる。
+  async function checkLeaf(ebayId: string): Promise<{ isLeaf: boolean; children: EbayCategory[] }> {
+    try {
+      const res = await fetch(`/api/ebay-categories?mode=children&parent=${encodeURIComponent(ebayId)}`)
+      if (!res.ok) return { isLeaf: true, children: [] }
+      const children = await res.json()
+      return { isLeaf: !Array.isArray(children) || children.length === 0, children: Array.isArray(children) ? children : [] }
+    } catch {
+      return { isLeaf: true, children: [] }
+    }
+  }
+
   async function addCategory(ebayId: string, name: string) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
+
+    const { isLeaf, children } = await checkLeaf(ebayId)
+    if (!isLeaf) {
+      setError(`「${name}」(${ebayId})は親カテゴリのため、eBayに出品できません（The category selected is not a leaf category.）。下の候補から末端カテゴリを選んでください。`)
+      setSearchResults(children)
+      setSuccessMsg('')
+      return
+    }
 
     const alreadyExists = categories.some((c) => c.ebay_category_id === ebayId)
     if (alreadyExists) {
@@ -93,10 +115,16 @@ export default function CategoriesPage() {
       sort_order: categories.length,
     })
     if (!err) {
+      setError('')
       setSuccessMsg(`「${name}」を追加しました`)
       setTimeout(() => setSuccessMsg(''), 3000)
       fetchCategories()
     }
+  }
+
+  async function showChildren(parentId: string) {
+    const { children } = await checkLeaf(parentId)
+    if (children.length > 0) { setSearchResults(children); setError('') }
   }
 
   async function handleAdd() {
@@ -253,20 +281,28 @@ export default function CategoriesPage() {
                   className="grid grid-cols-[100px_1fr_60px_80px] gap-3 px-4 py-3 border-b last:border-0 items-center text-sm"
                 >
                   <span className="text-gray-600 font-mono text-xs">{cat.id}</span>
-                  <span className="text-gray-800">{cat.name}</span>
+                  <span className="text-gray-800">
+                    {cat.name}
+                    {cat.is_leaf === false && (
+                      <button onClick={() => showChildren(cat.id)}
+                        className="ml-2 text-xs text-orange-600 underline hover:text-orange-700">
+                        親カテゴリ（出品不可）→ 下位を表示
+                      </button>
+                    )}
+                  </span>
                   <span className="text-gray-400 text-xs text-center">
                     {registered ? '登録済' : '0'}
                   </span>
                   <button
                     onClick={() => addCategory(cat.id, cat.name)}
-                    disabled={!!registered}
+                    disabled={!!registered || cat.is_leaf === false}
                     className={`border rounded px-3 py-1 text-xs transition-colors ${
-                      registered
+                      registered || cat.is_leaf === false
                         ? 'border-gray-200 text-gray-300 cursor-not-allowed'
                         : 'border-green-400 text-green-600 hover:bg-green-50'
                     }`}
                   >
-                    {registered ? '登録済' : '適用'}
+                    {registered ? '登録済' : cat.is_leaf === false ? '出品不可' : '適用'}
                   </button>
                 </div>
               )
