@@ -123,6 +123,26 @@ function updateCalls(calls: QueryState[], table = 'inventory_active_listings') {
   return calls.filter(call => call.table === table && call.operation === 'update')
 }
 
+// ユーザー要望(2026-09-23): 仕入先のタイトルが変わったら別商品に差し替えられた
+// 可能性が高いので取り下げる。ただし空白・全角半角の違いは変更とみなさない。
+describe('detectSupplierDiff のタイトル比較', () => {
+  it('空白・全角半角の違いだけならタイトル変更とみなさない', async () => {
+    const { detectSupplierDiff } = await import('@/lib/inventory-supplier-check')
+    expect(detectSupplierDiff(
+      { title: 'FC エイトアイズ ファミコン ソフトのみ 8Eyes レア', priceJpy: 6780 },
+      { title: 'FC  エイトアイズ　ファミコン ソフトのみ  8Eyes レア', priceJpy: 6780 },
+    )).toEqual([])
+  })
+
+  it('中身が変わっていればタイトル変更として検知する', async () => {
+    const { detectSupplierDiff } = await import('@/lib/inventory-supplier-check')
+    expect(detectSupplierDiff(
+      { title: 'Cubic U 「 Precious 」宇多田ヒカル　新品シ', priceJpy: 49500 },
+      { title: 'Cubic U / Precious', priceJpy: 400 },
+    )).toEqual(['title', 'price'])
+  })
+})
+
 describe('checkSupplierListings', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -869,5 +889,66 @@ describe('normalizePriceChangeFilter', () => {
       .toEqual({ direction: 'any', thresholdRate: 1 })
     expect(normalizePriceChangeFilter({ price_change_direction: 'up', price_change_threshold_rate: '10' }))
       .toEqual({ direction: 'up', thresholdRate: 10 })
+  })
+})
+
+
+// ユーザー要望(2026-09-23): タイトルが変わったら取り下げ対象にする。
+// 実データ: ¥49,500のCDが「Cubic U / Precious」¥400 に差し替えられ、eBay価格が-81%になった。
+describe('タイトル変更での取り下げ', () => {
+  it('delistOnTitleChange が有効なら、タイトルが変わった商品を在庫0にして価格を追従しない', async () => {
+    const { db, calls } = makeDatabase({
+      listings: [{ id: 'listing-1', product_id: 'product-1' }],
+      products: [{
+        id: 'product-1', source_url: 'https://jp.mercari.com/item/m1',
+        original_title: 'Cubic U 「 Precious 」宇多田ヒカル　新品シ', original_price: 49500,
+        purchase_price_jpy: 49500, ebay_price: 624.24, pricing_jpy_per_usd: 157.38,
+      }],
+    })
+    mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 400, title: 'Cubic U / Precious' }])
+    mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 157.38, date: '2026-09-23' })
+
+    const result = await checkSupplierListings(db as never, 'user-1', 500, { delistOnTitleChange: true })
+
+    expect(result).toMatchObject({ unavailable: 1, title_changed_delisted: 1 })
+    expect(updateCalls(calls)[0].payload).toEqual(expect.objectContaining({ quantity: 0 }))
+    // 価格は追従しない(products は更新しない)
+    expect(updateCalls(calls, 'products')).toHaveLength(0)
+  })
+
+  it('無効なら従来どおり差分の記録だけ行い、在庫は変えない', async () => {
+    const { db, calls } = makeDatabase({
+      listings: [{ id: 'listing-1', product_id: 'product-1' }],
+      products: [{
+        id: 'product-1', source_url: 'https://jp.mercari.com/item/m1',
+        original_title: '旧タイトル', original_price: 5000,
+        purchase_price_jpy: 5000, ebay_price: 135.14, pricing_jpy_per_usd: 156.84,
+      }],
+    })
+    mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 5000, title: '新タイトル' }])
+    mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 156.84, date: '2026-09-23' })
+
+    const result = await checkSupplierListings(db as never, 'user-1', 500, { delistOnTitleChange: false })
+
+    expect(result).toMatchObject({ available: 1, unavailable: 0, title_changed: 1, title_changed_delisted: 0 })
+    expect(updateCalls(calls)[0].payload).not.toHaveProperty('quantity')
+  })
+
+  it('仕入価格が30%超下がった場合は価格を追従しない(別商品・取得ミスの可能性)', async () => {
+    const { db, calls } = makeDatabase({
+      listings: [{ id: 'listing-1', product_id: 'product-1' }],
+      products: [{
+        id: 'product-1', source_url: 'https://jp.mercari.com/item/m1',
+        original_title: '同じタイトル', original_price: 49500,
+        purchase_price_jpy: 49500, ebay_price: 624.24, pricing_jpy_per_usd: 157.38,
+      }],
+    })
+    mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 400, title: '同じタイトル' }])
+    mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 157.38, date: '2026-09-23' })
+
+    const result = await checkSupplierListings(db as never, 'user-1', 500, { delistOnTitleChange: true })
+
+    expect(result).toMatchObject({ guarded: 1, price_recalculated: 0 })
+    expect(updateCalls(calls, 'products')).toHaveLength(0)
   })
 })

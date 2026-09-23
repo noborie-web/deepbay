@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
   const db = admin()
   const { data: allSettings } = await db
     .from('inventory_settings')
-    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, auto_delist, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate')
+    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, auto_delist, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, delist_on_title_change')
     .eq('sync_enabled', true)
 
   const results: Record<string, unknown>[] = []
@@ -44,6 +44,7 @@ export async function GET(req: NextRequest) {
         timeBudgetMs: TIME_BUDGET_MS,
         priceChangeFilter: normalizePriceChangeFilter(settings),
         sourceSite: 'yahoo_flea',
+        delistOnTitleChange: settings.delist_on_title_change ?? true,
       })
       userResult.check = { total: check.total, available: check.available, unavailable: check.unavailable, skipped: check.skipped, rate_limited: check.rate_limited, price_recalculated: check.price_recalculated }
       await db.from('inventory_settings').update({ flea_check_last_at: new Date().toISOString() }).eq('user_id', userId)
