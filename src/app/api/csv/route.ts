@@ -87,6 +87,30 @@ export async function GET(req: NextRequest) {
   // 抽出設定「HTML設定」でアクティブにしたテンプレート(あれば説明文に適用)
   const htmlTemplate = await loadActiveHtmlTemplate(supabase, user.id)
   const typedProducts = products as Product[]
+
+  // 本番で確認した不具合(2026-09-23): 親カテゴリ(例: 222 Diecast & Toy Vehicles)の
+  // CSVをeBayにアップロードすると全件が
+  // 「The category selected is not a leaf category.」でエラーになる。
+  // 出力前に末端カテゴリかどうかを確認し、親なら候補を添えて止める。
+  if (categoryId) {
+    const categoryCheck = createServiceClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    )
+    const { data: childCategories } = await categoryCheck
+      .from('ebay_categories')
+      .select('id, name')
+      .eq('parent_id', categoryId)
+      .order('name', { ascending: true })
+    if (childCategories && childCategories.length > 0) {
+      return NextResponse.json({
+        error: `出品カテゴリ ${categoryId} は親カテゴリのため、eBayに出品できません（The category selected is not a leaf category.）。出品カテゴリー管理で末端カテゴリを登録し、抽出のカテゴリを変更してください。`,
+        category_id: categoryId,
+        leaf_candidates: childCategories.slice(0, 20),
+      }, { status: 422 })
+    }
+  }
+
   const invalid = typedProducts
     .map((product) => ({ productId: product.id, issues: getListingIssues(product, categoryId) }))
     .filter((item) => item.issues.length > 0)
