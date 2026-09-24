@@ -316,7 +316,10 @@ describe('syncInventoryListings', () => {
     const result = await syncInventoryListings(db, 'user-1', 'access-token')
 
     expect(result).toEqual({ total: 205, matched: 0 })
-    expect(productLookupCalls.map(values => values.length)).toEqual([205, 100, 100, 5])
+    // 本番で確認した不具合(2026-09-24): まとめて .in(...) するとURLが長すぎて
+    // PostgREST が 400 Bad Request を返し、同期が失敗していた。ItemID照会も
+    // source_item_id照会と同じく100件ずつに分割する。
+    expect(productLookupCalls.map(values => values.length)).toEqual([100, 100, 5, 100, 100, 5])
     // 紐付かない出品は保存しないため書き込みは発生しない
     expect(mockUpsert).not.toHaveBeenCalled()
   })
