@@ -34,6 +34,12 @@ export interface InventorySyncBatchResult extends InventorySyncResult {
 
 const DB_CHUNK_SIZE = 100
 
+// .in(...) に渡すIDが多すぎるとURLが長くなりすぎて 400 Bad Request になるため、
+// 一定件数ずつに分割する。
+function chunked<T>(items: T[], size = DB_CHUNK_SIZE): T[][] {
+  return Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size))
+}
+
 export async function storeInventoryListings(
   db: SupabaseClient,
   userId: string,
@@ -60,24 +66,32 @@ export async function storeInventoryListings(
 
   const productLookup = new Map<string, string>()
   const sourceProductLookup = new Map<string, Set<string>>()
+  // 本番で確認した不具合(2026-09-24): 出品が700件規模になり、IDをまとめて
+  // .in(...) で照会するとURLが長すぎて PostgREST が 400 Bad Request を返し、
+  // 日次の同期が「Product lookup failed: Bad Request」で失敗していた。
+  // 他の書き込みと同じく DB_CHUNK_SIZE 件ずつに分割して照会する。
   if (productIds.length > 0) {
-    const { data: directProducts, error: directProductError } = await db
-      .from('products')
-      .select('id, source_item_id, ebay_item_id')
-      .eq('user_id', userId)
-      .in('id', productIds)
-    if (directProductError) throw new Error(`Product lookup failed: ${directProductError.message}`)
-    for (const product of directProducts ?? []) productLookup.set(product.id, product.id)
+    for (const chunk of chunked(productIds)) {
+      const { data: directProducts, error: directProductError } = await db
+        .from('products')
+        .select('id, source_item_id, ebay_item_id')
+        .eq('user_id', userId)
+        .in('id', chunk)
+      if (directProductError) throw new Error(`Product lookup failed: ${directProductError.message}`)
+      for (const product of directProducts ?? []) productLookup.set(product.id, product.id)
+    }
   }
   if (ebayItemIds.length > 0 && uniqueListings.some(listing => listing.customLabel)) {
-    const { data: ebayProducts, error: ebayProductError } = await db
-      .from('products')
-      .select('id, source_item_id, ebay_item_id')
-      .eq('user_id', userId)
-      .in('ebay_item_id', ebayItemIds)
-    if (ebayProductError) throw new Error(`Product lookup failed: ${ebayProductError.message}`)
-    for (const product of ebayProducts ?? []) {
-      if (product.ebay_item_id) productLookup.set(`ebay:${product.ebay_item_id}`, product.id)
+    for (const chunk of chunked(ebayItemIds)) {
+      const { data: ebayProducts, error: ebayProductError } = await db
+        .from('products')
+        .select('id, source_item_id, ebay_item_id')
+        .eq('user_id', userId)
+        .in('ebay_item_id', chunk)
+      if (ebayProductError) throw new Error(`Product lookup failed: ${ebayProductError.message}`)
+      for (const product of ebayProducts ?? []) {
+        if (product.ebay_item_id) productLookup.set(`ebay:${product.ebay_item_id}`, product.id)
+      }
     }
   }
   const sourceLookupKeyChunks = Array.from(
@@ -226,34 +240,36 @@ async function markProductsForEndedListings(
   userId: string,
   itemIds: string[],
 ): Promise<void> {
-  const { data, error } = await db
-    .from('inventory_active_listings')
-    .select('product_id, quantity, quantity_sold')
-    .eq('user_id', userId)
-    .in('ebay_item_id', itemIds)
-    .not('product_id', 'is', null)
-  if (error) throw new Error(`Ended listing lookup failed: ${error.message}`)
   const now = new Date().toISOString()
   const soldIds: string[] = []
   const delistedIds: string[] = []
-  for (const row of data ?? []) {
-    const sold = (row.quantity ?? 0) <= 0 && (row.quantity_sold ?? 0) > 0
-    ;(sold ? soldIds : delistedIds).push(row.product_id as string)
+  for (const itemChunk of chunked(itemIds)) {
+    const { data, error } = await db
+      .from('inventory_active_listings')
+      .select('product_id, quantity, quantity_sold')
+      .eq('user_id', userId)
+      .in('ebay_item_id', itemChunk)
+      .not('product_id', 'is', null)
+    if (error) throw new Error(`Ended listing lookup failed: ${error.message}`)
+    for (const row of data ?? []) {
+      const sold = (row.quantity ?? 0) <= 0 && (row.quantity_sold ?? 0) > 0
+      ;(sold ? soldIds : delistedIds).push(row.product_id as string)
+    }
   }
-  if (soldIds.length > 0) {
+  for (const chunk of chunked(soldIds)) {
     const { error: soldError } = await db
       .from('products')
       .update({ listing_status: 'sold', sold_at: now, updated_at: now })
       .eq('user_id', userId)
-      .in('id', soldIds)
+      .in('id', chunk)
     if (soldError) throw new Error(`Product sold state update failed: ${soldError.message}`)
   }
-  if (delistedIds.length > 0) {
+  for (const chunk of chunked(delistedIds)) {
     const { error: delistError } = await db
       .from('products')
       .update({ listing_status: 'delisted', updated_at: now })
       .eq('user_id', userId)
-      .in('id', delistedIds)
+      .in('id', chunk)
       .neq('listing_status', 'sold')
     if (delistError) throw new Error(`Product delisted state update failed: ${delistError.message}`)
   }
