@@ -227,6 +227,8 @@ export interface SupplierCheckOptions {
   pricingModel?: PricingModel
   // 対象を仕入先サイトで絞る(Yahoo!フリマ専用の高頻度チェック用)
   sourceSite?: string
+  // 指定した仕入先サイトを対象から外す(フリマ以外の高頻度チェック用)
+  excludeSourceSites?: string[]
   // ユーザー要望: 仕入先のタイトルが変わったら別商品に差し替えられた可能性が
   // 高いので、売り切れと同じく取り下げ対象(在庫0)にする。
   delistOnTitleChange?: boolean
@@ -258,13 +260,18 @@ export async function checkSupplierListings(
   }
 
   // sourceSite 指定時は商品テーブルを内部結合して仕入先サイトで絞る
-  let listingQuery = db
+  const needsProductJoin = Boolean(options.sourceSite) || (options.excludeSourceSites?.length ?? 0) > 0
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let listingQuery: any = db
     .from('inventory_active_listings')
-    .select(options.sourceSite ? 'id, product_id, ebay_item_id, products!inner(source_site)' : 'id, product_id, ebay_item_id')
+    .select(needsProductJoin ? 'id, product_id, ebay_item_id, products!inner(source_site)' : 'id, product_id, ebay_item_id')
     .eq('user_id', userId)
     .not('product_id', 'is', null)
     .gt('quantity', 0)
   if (options.sourceSite) listingQuery = listingQuery.eq('products.source_site', options.sourceSite)
+  if (options.excludeSourceSites?.length) {
+    listingQuery = listingQuery.not('products.source_site', 'in', `(${options.excludeSourceSites.join(',')})`)
+  }
   const { data: listings, error: listingsError } = await listingQuery
     .order('supplier_checked_at', { ascending: true, nullsFirst: true })
     .limit(batchLimit)

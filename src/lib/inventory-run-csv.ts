@@ -34,7 +34,7 @@ function items<T>(summary: Record<string, unknown> | null): T[] {
 // 実行タイプごとに出力できるCSVの種類
 export function availableRunCsvKinds(run: RunRecord): Array<{ kind: string; label: string; count: number }> {
   const summary = run.result_summary
-  if (run.run_type === 'supplier_check' || run.run_type === 'flea_check') {
+  if (run.run_type === 'supplier_check' || run.run_type === 'flea_check' || run.run_type === 'supplier_quick_check') {
     const list = items<SupplierItem>(summary)
     const revise = list.filter(i => i.ebay_price_after !== null && i.ebay_price_before !== null).length
     const diff = list.filter(i => i.title_changed || i.reserved || (i.purchase_price_after !== null && i.purchase_price_before !== null && i.purchase_price_after !== i.purchase_price_before)).length
@@ -63,7 +63,7 @@ export function buildRunCsv(run: RunRecord, kind: string, seller: string): Built
   const resolved = kind === 'auto' ? kinds[0]?.kind : kind
   if (!resolved || !kinds.some(k => k.kind === resolved)) return null
 
-  if (run.run_type === 'supplier_check' || run.run_type === 'flea_check') {
+  if (run.run_type === 'supplier_check' || run.run_type === 'flea_check' || run.run_type === 'supplier_quick_check') {
     const list = items<SupplierItem>(summary)
     if (resolved === 'revise') {
       const rows = list
@@ -106,8 +106,12 @@ export function summarizeRun(run: RunRecord): string {
   const s = run.result_summary ?? {}
   const n = (k: string) => (typeof s[k] === 'number' ? (s[k] as number) : null)
   switch (run.run_type) {
-    case 'sync': return [n('discovered') ? `新規発見 ${n('discovered')}件` : null, n('ended') ? `終了 ${n('ended')}件` : null].filter(Boolean).join(' / ')
-    case 'supplier_check': case 'flea_check': return [
+    case 'sync': return [
+      n('discovered') ? `新規発見 ${n('discovered')}件` : null,
+      n('ended') ? `終了 ${n('ended')}件` : null,
+      n('remaining') ? `残り ${n('remaining')}件は次回` : null,
+    ].filter(Boolean).join(' / ')
+    case 'supplier_check': case 'flea_check': case 'supplier_quick_check': return [
       `確認 ${n('total') ?? 0}件`, `売り切れ ${n('unavailable') ?? 0}件`, `価格追従 ${n('price_recalculated') ?? 0}件`, `タイトル変更 ${n('title_changed') ?? 0}件`,
       n('no_supplier') ? `仕入先なし ${n('no_supplier')}件` : null, n('skipped') ? `未確認 ${n('skipped')}件` : null,
       n('rate_limited') ? `アクセス制限 ${n('rate_limited')}件` : null,
@@ -133,4 +137,5 @@ export const RUN_TYPE_LABELS: Record<string, string> = {
   translate_descriptions: '説明文の英訳',
   undo_delist: '取り下げの取り消し',
   flea_check: 'Yahoo!フリマ在庫チェック',
+  supplier_quick_check: '仕入先チェック（15分ごと）',
 }

@@ -22,6 +22,11 @@ export interface InventorySyncOptions {
   discoveryTimeBudgetMs?: number
   // GetItem個別照会の並行数(既定4。日次cronでは件数が多いため上げる)
   getItemConcurrency?: number
+  // ユーザー要望(出品1,000件超への備え): 1回の実行で照会する件数の上限と、
+  // 前回の続きから再開するための位置(最後に照会したItemID)。
+  // 実行時間(Vercel 300秒)に収まらない規模でも、複数回に分けて全件を巡回できる。
+  maxItemsPerRun?: number
+  cursorItemId?: string | null
 }
 
 export interface InventorySyncBatchResult extends InventorySyncResult {
@@ -447,6 +452,9 @@ export interface KnownInventorySyncResult {
   ended: number
   discovered: number
   discoveryTruncated: boolean
+  // 今回照会した件数と、続きから再開するための位置(全件終わったら null)
+  processed: number
+  nextCursorItemId: string | null
 }
 
 // Kakehashiが把握しているeBay ItemIDを集める(在庫一覧 + 商品テーブル)。
@@ -611,14 +619,25 @@ export async function syncKnownInventoryListings(
   const discovery = await discoverNewListings(db, userId, accessToken, options)
   const knownIds = await collectKnownItemIds(db, userId)
 
+  // 前回の続きから照会する(ItemIDはソート済み。見つからなければ先頭から)
+  const startIndex = options.cursorItemId
+    ? Math.max(0, knownIds.indexOf(options.cursorItemId) + 1)
+    : 0
+  const maxItems = options.maxItemsPerRun && options.maxItemsPerRun > 0 ? options.maxItemsPerRun : knownIds.length
+  const targetIds = knownIds.slice(startIndex, startIndex + maxItems)
+  const finishedAll = startIndex + targetIds.length >= knownIds.length
+  const nextCursorItemId = finishedAll ? null : targetIds[targetIds.length - 1] ?? null
+
   const fetched = await fetchListingsByItemIds(
     { accessToken },
-    knownIds,
+    targetIds,
     { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs, concurrency: options.getItemConcurrency },
   )
   const stored = await storeInventoryListings(db, userId, fetched.items, options)
   await removeEndedListings(db, userId, fetched.endedItemIds)
-  await purgeUnmanagedListings(db, userId)
+  // 途中までしか照会していない回では、紐付かない出品の掃除は行わない
+  // (未照会の出品を誤って消さないため)
+  if (finishedAll) await purgeUnmanagedListings(db, userId)
 
   return {
     total: knownIds.length,
@@ -626,5 +645,7 @@ export async function syncKnownInventoryListings(
     ended: fetched.endedItemIds.length,
     discovered: discovery.discovered,
     discoveryTruncated: discovery.truncated,
+    processed: targetIds.length,
+    nextCursorItemId,
   }
 }

@@ -21,6 +21,7 @@ interface Settings {
   revise_price_schedule: 'every' | 'morning'
   delist_on_title_change: boolean
   flea_check_last_at: string | null
+  supplier_quick_check_last_at: string | null
   auto_delist: boolean; auto_revise_price: boolean; auto_stack: boolean
   schedule_time: string
   payment_profile_name: string; return_profile_name: string; shipping_profile_name: string
@@ -214,7 +215,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [settings, setSettings] = useState<Settings>({
     has_token: initialHasToken, sync_enabled: false, ebay_auto_sync: false,
     days_until_delist: 29, delist_by_age_enabled: true, delist_on_sold_out: false, daily_run_count: 1, ebay_token_expires_at: null,
-    price_change_direction: 'any', price_change_threshold_rate: 1, revise_price_schedule: 'every', delist_on_title_change: true, flea_check_last_at: null,
+    price_change_direction: 'any', price_change_threshold_rate: 1, revise_price_schedule: 'every', delist_on_title_change: true, flea_check_last_at: null, supplier_quick_check_last_at: null,
     auto_delist: false, auto_revise_price: false, auto_stack: false,
     schedule_time: '09:00',
     payment_profile_name: '', return_profile_name: '', shipping_profile_name: '',
@@ -1824,11 +1825,12 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               <span className="text-xs text-gray-400">※売り切れの取り下げ・仕入価格の再計算は毎回行います。「朝のみ」は為替の細かな変動で日中に価格が動くのを避けたい場合に</span>
             </div>
             <p className="text-xs text-gray-500 mt-3">
-              Yahoo!フリマの商品は上記とは別に <span className="font-medium">15分ごとに12件ずつ</span> 売り切れを確認します（Yahoo!フリマのアクセス制限に合わせた上限。1日約1,150件）。
+              上記とは別に、仕入先の売り切れを <span className="font-medium">15分ごと</span> に確認しています
+              （Yahoo!フリマ 12件ずつ＝1日約1,150件／メルカリ等 40件ずつ＝1日約3,800件）。
               売り切れが見つかると、自動取り下げがONならその場で在庫0にします。
-              {settings.flea_check_last_at
-                ? ` 最終確認: ${new Date(settings.flea_check_last_at).toLocaleString('ja-JP')}`
-                : ' まだ実行されていません（Supabase側の認証キー登録が必要です）。'}
+              {settings.flea_check_last_at && ` 最終確認（フリマ）: ${new Date(settings.flea_check_last_at).toLocaleString('ja-JP')}`}
+              {settings.supplier_quick_check_last_at && ` / （メルカリ等）: ${new Date(settings.supplier_quick_check_last_at).toLocaleString('ja-JP')}`}
+              {!settings.flea_check_last_at && !settings.supplier_quick_check_last_at && ' まだ実行されていません（Supabase側の認証キー登録が必要です）。'}
             </p>
           </div>
           <hr />

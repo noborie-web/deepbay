@@ -28,9 +28,10 @@ vi.mock('@supabase/supabase-js', () => ({
   createClient: vi.fn(() => ({
     from: vi.fn((table: string) => {
       if (table === 'inventory_settings') {
-        // .select().eq('sync_enabled').eq('user_id')? のチェーンと await の両方に対応
+        // .select().eq(...) と .update(...).eq(...) の両方に対応
         const chain: Record<string, unknown> = {}
         chain.select = vi.fn(() => chain)
+        chain.update = vi.fn(() => chain)
         chain.eq = vi.fn(() => chain)
         chain.then = (resolve: (v: unknown) => void) => resolve({ data: mockSettings, error: null })
         return chain
@@ -87,7 +88,7 @@ describe('GET /api/cron/inventory-auto', () => {
       shipping_profile_name: null,
     }]
     mockResolveAccessToken.mockReset().mockResolvedValue('access-token')
-    mockSyncInventoryListings.mockReset().mockResolvedValue({ total: 12, matched: 8, ended: 0, discovered: 0 })
+    mockSyncInventoryListings.mockReset().mockResolvedValue({ total: 12, matched: 8, ended: 0, discovered: 0, processed: 12, nextCursorItemId: null })
     mockCheckSupplierListings.mockReset().mockResolvedValue({
       total: 2,
       available: 1,
@@ -115,7 +116,7 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 1 })
     expect(mockResolveAccessToken).toHaveBeenCalledOnce()
     // active出品が数十ページあるため、cronでは取得タイムアウトを引き上げて渡す
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8 })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null })
     expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 80_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 }, delistOnTitleChange: true })
     expect(mockSyncInventoryListings.mock.invocationCallOrder[0]).toBeLessThan(
       mockCheckSupplierListings.mock.invocationCallOrder[0],
@@ -168,7 +169,7 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 2 })
     expect(json.results[0].auth).toEqual({ error: 'refresh failed' })
     expect(mockSyncInventoryListings).toHaveBeenCalledTimes(1)
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8 })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null })
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       user_id: 'user-1',
       status: 'failed',
