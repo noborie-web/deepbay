@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
 
   let settingsQuery = db
     .from('inventory_settings')
-    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, delist_on_title_change, payment_profile_name, return_profile_name, shipping_profile_name, daily_run_count, revise_price_schedule')
+    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, delist_on_title_change, sync_cursor_item_id, payment_profile_name, return_profile_name, shipping_profile_name, daily_run_count, revise_price_schedule')
     .eq('sync_enabled', true)
   if (onlyUserId) settingsQuery = settingsQuery.eq('user_id', onlyUserId)
   const { data: allSettings } = await settingsQuery
@@ -149,7 +149,16 @@ export async function GET(req: NextRequest) {
         // 本番で確認した不具合(2026-09-22): 453件規模で 同期140秒 + 仕入先チェック120秒 +
         // 取り下げ で300秒に達し、価格改定が実行されなかった。同期はGetItemの並行数を
         // 上げて短縮し、各工程の時間予算を合計で300秒に収める。
-        const syncResult = await syncKnownInventoryListings(db, userId, accessToken, { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8 })
+        // 出品が1,000件を超えても300秒に収まるよう、1回あたりの照会件数を
+        // 上限付きにして、続きは次の実行(3/9/15/21時)から再開する。
+        const syncResult = await syncKnownInventoryListings(db, userId, accessToken, {
+          fetchTotalTimeoutMs: 110_000,
+          discoveryTimeBudgetMs: 30_000,
+          getItemConcurrency: 8,
+          maxItemsPerRun: 800,
+          cursorItemId: settings.sync_cursor_item_id ?? null,
+        })
+        await db.from('inventory_settings').update({ sync_cursor_item_id: syncResult.nextCursorItemId }).eq('user_id', userId)
         userResult.sync = syncResult
         await db.from('inventory_runs').insert({
           user_id: userId,
@@ -157,7 +166,10 @@ export async function GET(req: NextRequest) {
           status: 'completed',
           items_total: syncResult.total,
           items_matched: syncResult.matched,
-          result_summary: { discovered: syncResult.discovered, ended: syncResult.ended, discovery_truncated: syncResult.discoveryTruncated },
+          result_summary: {
+            discovered: syncResult.discovered, ended: syncResult.ended, discovery_truncated: syncResult.discoveryTruncated,
+            processed: syncResult.processed, remaining: syncResult.nextCursorItemId ? syncResult.total - syncResult.processed : 0,
+          },
           started_at: startedAt,
           finished_at: new Date().toISOString(),
         })

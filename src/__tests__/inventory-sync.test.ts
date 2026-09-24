@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { syncInventoryListingBatch, syncInventoryListings } from '@/lib/inventory-sync'
 
-const { mockFetchActiveListingsBatch, mockFetchAllActiveListings, mockUpsert, mockDeleteIs } = vi.hoisted(() => ({
+const { mockFetchActiveListingsBatch, mockFetchAllActiveListings, mockFetchListingsByItemIds, mockScanSellerList, mockUpsert, mockDeleteIs } = vi.hoisted(() => ({
   mockFetchActiveListingsBatch: vi.fn(),
   mockFetchAllActiveListings: vi.fn(),
+  mockFetchListingsByItemIds: vi.fn(),
+  mockScanSellerList: vi.fn(),
   mockUpsert: vi.fn(),
   mockDeleteIs: vi.fn(),
 }))
@@ -59,6 +61,9 @@ function productsTableFor(productIds: string[]) {
 vi.mock('@/lib/ebay-inventory', () => ({
   fetchActiveListingsBatch: mockFetchActiveListingsBatch,
   fetchAllActiveListings: mockFetchAllActiveListings,
+  fetchListingsByItemIds: mockFetchListingsByItemIds,
+  scanSellerListByStartTime: mockScanSellerList,
+  SELLER_LIST_MAX_RANGE_MS: 119 * 24 * 60 * 60 * 1000,
 }))
 
 describe('syncInventoryListings', () => {
@@ -399,5 +404,65 @@ describe('syncInventoryListings', () => {
       totalPages: 12,
       lastFetchedPage: 8,
     })
+  })
+})
+
+// ユーザー要望(出品1,000件超への備え): 1回の実行で照会する件数に上限を設け、
+// 続きは次の実行から再開する(Vercelの300秒に収めるため)。
+describe('syncKnownInventoryListings: 分割実行', () => {
+  it('maxItemsPerRun までを照会し、続きの位置(最後に照会したItemID)を返す', async () => {
+    const { syncKnownInventoryListings } = await import('@/lib/inventory-sync')
+    const known = ['item-1', 'item-2', 'item-3', 'item-4', 'item-5']
+    const db = {
+      from: vi.fn((table: string) => {
+        if (table === 'products') {
+          const chain: Record<string, unknown> = {}
+          chain.select = vi.fn(() => chain)
+          chain.eq = vi.fn(() => chain)
+          chain.not = vi.fn(() => chain)
+          chain.in = vi.fn(async () => ({ data: [], error: null }))
+          chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+          return chain
+        }
+        if (table === 'inventory_active_listings') {
+          const chain: Record<string, unknown> = {}
+          chain.select = vi.fn(() => chain)
+          chain.eq = vi.fn(() => chain)
+          chain.not = vi.fn(() => chain)
+          chain.delete = vi.fn(() => chain)
+          chain.is = vi.fn(async () => ({ error: null }))
+          chain.in = vi.fn(() => chain)
+          chain.upsert = vi.fn(async () => ({ error: null }))
+          chain.then = (resolve: (v: unknown) => void) => resolve({ data: known.map(id => ({ ebay_item_id: id })), error: null })
+          return chain
+        }
+        if (table === 'inventory_settings') {
+          const chain: Record<string, unknown> = {}
+          chain.select = vi.fn(() => chain)
+          chain.eq = vi.fn(() => chain)
+          chain.update = vi.fn(() => chain)
+          chain.maybeSingle = vi.fn(async () => ({ data: { discovery_scanned_until: new Date().toISOString() }, error: null }))
+          chain.then = (resolve: (v: unknown) => void) => resolve({ data: null, error: null })
+          return chain
+        }
+        throw new Error(`Unexpected table: ${table}`)
+      }),
+    } as unknown as SupabaseClient
+
+    mockFetchListingsByItemIds.mockReset().mockResolvedValue({ items: [], endedItemIds: [] })
+    mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: false, pagesFetched: 1, totalPages: 1 })
+
+    const first = await syncKnownInventoryListings(db, 'user-1', 'token', { maxItemsPerRun: 2 })
+    expect(mockFetchListingsByItemIds).toHaveBeenLastCalledWith(expect.anything(), ['item-1', 'item-2'], expect.anything())
+    expect(first).toMatchObject({ total: 5, processed: 2, nextCursorItemId: 'item-2' })
+
+    const second = await syncKnownInventoryListings(db, 'user-1', 'token', { maxItemsPerRun: 2, cursorItemId: 'item-2' })
+    expect(mockFetchListingsByItemIds).toHaveBeenLastCalledWith(expect.anything(), ['item-3', 'item-4'], expect.anything())
+    expect(second).toMatchObject({ processed: 2, nextCursorItemId: 'item-4' })
+
+    const third = await syncKnownInventoryListings(db, 'user-1', 'token', { maxItemsPerRun: 2, cursorItemId: 'item-4' })
+    expect(mockFetchListingsByItemIds).toHaveBeenLastCalledWith(expect.anything(), ['item-5'], expect.anything())
+    // 全件終わったら位置をリセットして次回は先頭から
+    expect(third).toMatchObject({ processed: 1, nextCursorItemId: null })
   })
 })
