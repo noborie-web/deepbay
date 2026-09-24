@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { findScraper, scrapeUrl } from '@/lib/scrapers'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
+import { titleSimilarity } from '@/lib/supplier-match'
 import { calculateAutomaticEbayPrice } from '@/lib/extraction-run'
 import { calcModelPrice, calcPriceKeepingProfit, loadPricingModel, type PricingModel } from '@/lib/inventory-pricing'
 
@@ -137,7 +138,7 @@ export interface SupplierCheckResult {
   items: SupplierCheckItemDetail[]
 }
 
-export type SupplierDiffKind = 'title' | 'price' | 'reserved'
+export type SupplierDiffKind = 'title' | 'price' | 'reserved' | 'title_replaced'
 
 // ユーザー要望: メルカリでは購入者に取り置きするためタイトルを
 // 「〇〇様専用」に変更する出品者がいる。この場合は他の人は買えないので
@@ -170,6 +171,31 @@ export function normalizeSupplierTitle(title: string | null | undefined): string
     .toLowerCase()
 }
 
+// 本番で確認した誤検知(2026-09-24): 復元時に30文字で切れた元タイトルと、
+// 仕入先の完全なタイトルを比べて「タイトル変更」と判定し、9件を誤って取り下げた。
+// 「元タイトルが新タイトルの前方一致(切れている/語句が足された)」なら同じ商品とみなす。
+// それ以外は、語句の大半が違う(類似度 < 0.7)か、仕入価格が急落(30%超)していれば
+// 別商品への差し替えとみなして 'title_replaced'(取り下げ対象)にする。
+// 実データの類似度: 切れている/語句追加=0.97、売り文句の変更(本日限定→SW特価)=0.73〜0.75、
+// 別商品への差し替え(Cubic U…宇多田ヒカル ¥49,500 → Cubic U / Precious ¥400)=0.76だが価格が急落。
+const TITLE_REPLACED_SIMILARITY = 0.7
+const PURCHASE_COLLAPSE_RATIO = 0.7
+
+export function isTitleReplaced(
+  oldTitle: string | null | undefined,
+  newTitle: string | null | undefined,
+  prices?: { oldPriceJpy: number | null | undefined; newPriceJpy: number | null | undefined },
+): boolean {
+  const a = normalizeSupplierTitle(oldTitle)
+  const b = normalizeSupplierTitle(newTitle)
+  if (!a || !b || a === b) return false
+  // 元タイトルが途中で切れている / 語句が足されただけ
+  if (b.startsWith(a)) return false
+  const priceCollapsed = typeof prices?.oldPriceJpy === 'number' && typeof prices?.newPriceJpy === 'number'
+    && prices.oldPriceJpy > 0 && prices.newPriceJpy < prices.oldPriceJpy * PURCHASE_COLLAPSE_RATIO
+  return titleSimilarity(a, b) < TITLE_REPLACED_SIMILARITY || priceCollapsed
+}
+
 export function detectSupplierDiff(
   original: { title: string | null; priceJpy: number | null },
   latest: { title: string | null | undefined; priceJpy: number | null | undefined },
@@ -177,7 +203,11 @@ export function detectSupplierDiff(
   const diffs: SupplierDiffKind[] = []
   const originalTitle = (original.title ?? '').trim()
   const latestTitle = (latest.title ?? '').trim()
-  if (originalTitle && latestTitle && normalizeSupplierTitle(originalTitle) !== normalizeSupplierTitle(latestTitle)) diffs.push('title')
+  if (originalTitle && latestTitle && normalizeSupplierTitle(originalTitle) !== normalizeSupplierTitle(latestTitle)) {
+    diffs.push('title')
+    // 別商品に差し替えられたとみられる場合だけ、取り下げの対象にする
+    if (isTitleReplaced(originalTitle, latestTitle, { oldPriceJpy: original.priceJpy, newPriceJpy: latest.priceJpy })) diffs.push('title_replaced')
+  }
   // 抽出時は専用ではなかったのに、今は「〇〇様専用」等になっている
   if (latestTitle && isReservedTitle(latestTitle) && !isReservedTitle(originalTitle)) diffs.push('reserved')
   if (
@@ -390,7 +420,7 @@ export async function checkSupplierListings(
           // 「〇〇様専用」等の取り置き: 他の人は買えないので在庫切れと同じ扱い
           outcome = 'unavailable'
           quantity = 0
-        } else if (titleChangeDelist && supplierDiff?.includes('title')) {
+        } else if (titleChangeDelist && supplierDiff?.includes('title_replaced')) {
           // ユーザー要望: 仕入先のタイトルが変わった = 別商品に差し替えられた
           // 可能性が高い(実データ: ¥49,500の宇多田ヒカルCDが「Cubic U / Precious」
           // ¥400 に差し替えられ、eBay価格が-81%になった)。売り切れと同じく

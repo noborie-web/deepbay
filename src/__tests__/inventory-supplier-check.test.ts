@@ -134,12 +134,36 @@ describe('detectSupplierDiff のタイトル比較', () => {
     )).toEqual([])
   })
 
-  it('中身が変わっていればタイトル変更として検知する', async () => {
+  it('別商品に差し替えられた場合は title と title_replaced を検知する', async () => {
     const { detectSupplierDiff } = await import('@/lib/inventory-supplier-check')
     expect(detectSupplierDiff(
       { title: 'Cubic U 「 Precious 」宇多田ヒカル　新品シ', priceJpy: 49500 },
       { title: 'Cubic U / Precious', priceJpy: 400 },
-    )).toEqual(['title', 'price'])
+    )).toEqual(['title', 'title_replaced', 'price'])
+  })
+
+  // 本番で確認した誤検知(2026-09-24): 復元で30文字に切れた元タイトルと仕入先の
+  // 完全なタイトルを比べて9件を誤って取り下げた。前方一致・語句追加は同じ商品とみなす。
+  it('元タイトルが途中で切れている場合は title だけ記録し、取り下げ対象(title_replaced)にしない', async () => {
+    const { detectSupplierDiff } = await import('@/lib/inventory-supplier-check')
+    expect(detectSupplierDiff(
+      { title: 'BTS DVD 1st JAPAN SHOWCASE 201', priceJpy: 8800 },
+      { title: 'BTS DVD 1st JAPAN SHOWCASE 2014 日本公演', priceJpy: 8800 },
+    )).toEqual(['title'])
+  })
+
+  it('売り文句が変わっただけ(本体は同じ商品)なら取り下げ対象にしない', async () => {
+    const { detectSupplierDiff } = await import('@/lib/inventory-supplier-check')
+    // 実データ: 「【超希少】…アナザージャ(30文字で切れている)」→「【期間限定値下】…アナザージャケット　特典」
+    expect(detectSupplierDiff(
+      { title: '【超希少】米津玄師 MAD HEAD LOVE アナザージャ', priceJpy: 5000 },
+      { title: '【期間限定値下】米津玄師 MAD HEAD LOVE アナザージャケット　特典', priceJpy: 5000 },
+    )).toEqual(['title'])
+    // 実データ: 「本日限定　Oi Of Japan…」→「SW特価　Oi Of Japan…　Oi PUNK」
+    expect(detectSupplierDiff(
+      { title: '本日限定　Oi Of Japan CD EUプレス ブート盤', priceJpy: 5000 },
+      { title: 'SW特価　Oi Of Japan CD EUプレス ブート盤　Oi PUNK', priceJpy: 5000 },
+    )).toEqual(['title'])
   })
 })
 
@@ -815,7 +839,7 @@ describe('専用(取り置き)タイトルの検知', () => {
     expect(updateCalls(calls)[0].payload).toMatchObject({
       quantity: 0,
       supplier_title: 'Risa様専用',
-      supplier_diff: ['title', 'reserved', 'price'],
+      supplier_diff: ['title', 'title_replaced', 'reserved', 'price'],
     })
     // 取り置きの仮価格(¥2,222)でeBay価格を再計算してはいけない
     expect(updateCalls(calls, 'products')).toHaveLength(0)
@@ -925,7 +949,7 @@ describe('タイトル変更での取り下げ', () => {
         purchase_price_jpy: 5000, ebay_price: 135.14, pricing_jpy_per_usd: 156.84,
       }],
     })
-    mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 5000, title: '新タイトル' }])
+    mocks.scrapeUrl.mockResolvedValue([{ availability: 'available', price: 5000, title: 'まったく別の商品名' }])
     mocks.fetchUsdJpyRate.mockResolvedValue({ rate: 156.84, date: '2026-09-23' })
 
     const result = await checkSupplierListings(db as never, 'user-1', 500, { delistOnTitleChange: false })
