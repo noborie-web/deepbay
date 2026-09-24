@@ -9,6 +9,7 @@ const mockCheckSupplierListings = vi.fn()
 const mockRunInsert = vi.fn()
 const mockListingQueryCalls: Array<[string, ...unknown[]]> = []
 let mockSettings: Array<Record<string, unknown>> = []
+let mockTodaysSyncRuns: Array<Record<string, unknown>> = []
 
 // inventory_active_listings への問い合わせチェーンを記録するモック。
 // 自動取り下げが「Kakehashi商品に紐付く出品だけ」を対象にしているか検証する。
@@ -37,9 +38,15 @@ vi.mock('@supabase/supabase-js', () => ({
         return chain
       }
       if (table === 'inventory_runs') {
-        // 二重起動防止の「直近の同期があるか」の照会は、無し(null)を返す
-        const recent = { select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), gte: vi.fn().mockReturnThis(), limit: vi.fn().mockReturnThis(), maybeSingle: vi.fn(async () => ({ data: null, error: null })) }
-        return { ...recent, insert: mockRunInsert.mockImplementation(async () => ({ error: null })) }
+        // 「今日の同じ時間帯(slot)の実行があるか」の照会は mockTodaysSyncRuns を返す
+        const chain: Record<string, unknown> = {}
+        chain.select = vi.fn(() => chain)
+        chain.eq = vi.fn(() => chain)
+        chain.gte = vi.fn(() => chain)
+        chain.limit = vi.fn(async () => ({ data: mockTodaysSyncRuns, error: null }))
+        chain.maybeSingle = vi.fn(async () => ({ data: null, error: null }))
+        chain.insert = mockRunInsert.mockImplementation(async () => ({ error: null }))
+        return chain
       }
       if (table === 'inventory_active_listings') return listingQueryMock()
       throw new Error(`Unexpected table: ${table}`)
@@ -96,6 +103,7 @@ describe('GET /api/cron/inventory-auto', () => {
       skipped: 0,
       failed: 0,
     })
+    mockTodaysSyncRuns = []
     mockRunInsert.mockClear()
     mockListingQueryCalls.length = 0
   })
@@ -304,5 +312,30 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(res.status).toBe(200)
     expect(json.results[0].skipped).toBeUndefined()
     expect(mockSyncInventoryListings).toHaveBeenCalledOnce()
+  })
+
+  // 本番で確認した問題(2026-09-24): 手動の「今すぐ実行」直後は90分以内の実行を
+  // 一律スキップしていたため、次の定時実行(21:00)まで飛ばされていた。
+  // 同じ時間帯(slot)の実行が今日あったかで判定する。
+  describe('同じ時間帯の二重起動防止', () => {
+    it('同じ slot が今日すでに実行済みならスキップする', async () => {
+      const { GET } = await import('@/app/api/cron/inventory-auto/route')
+      mockSettings = [{ ...mockSettings[0], daily_run_count: 2 }]
+      mockTodaysSyncRuns = [{ result_summary: { slot: 21 } }]
+      const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=21', { headers: { authorization: 'Bearer cron-secret' } })
+      const json = await (await GET(req)).json()
+      expect(json.results[0].skipped).toBe('already_ran_this_slot')
+      expect(mockSyncInventoryListings).not.toHaveBeenCalled()
+    })
+
+    it('手動実行(slot記録なし)があっても、定時実行はスキップしない', async () => {
+      const { GET } = await import('@/app/api/cron/inventory-auto/route')
+      mockSettings = [{ ...mockSettings[0], daily_run_count: 2 }]
+      mockTodaysSyncRuns = [{ result_summary: { slot: null } }, { result_summary: { slot: 9 } }]
+      const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=21', { headers: { authorization: 'Bearer cron-secret' } })
+      const json = await (await GET(req)).json()
+      expect(json.results[0].skipped).toBeUndefined()
+      expect(mockSyncInventoryListings).toHaveBeenCalledOnce()
+    })
   })
 })

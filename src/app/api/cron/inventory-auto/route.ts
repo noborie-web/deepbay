@@ -4,7 +4,7 @@ import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { endItem, reviseInventoryStatusBatch, addFixedPriceItem } from '@/lib/ebay-actions'
 import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
-import { isSlotActive, normalizeDailyRunCount, normalizeRevisePriceSchedule, resolveRunSlot, shouldRevisePriceInSlot } from '@/lib/inventory-schedule'
+import { isSlotActive, normalizeDailyRunCount, normalizeRevisePriceSchedule, resolveRunSlot, shouldRevisePriceInSlot, startOfJstDay } from '@/lib/inventory-schedule'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { applyRevisedPrices, markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
 import { checkSupplierListings, normalizePriceChangeFilter } from '@/lib/inventory-supplier-check'
@@ -59,17 +59,22 @@ export async function GET(req: NextRequest) {
       results.push(userResult)
       continue
     }
-    // 同じ時間帯に二重起動しない(Vercel cron と pg_cron の朝の重なり等)
-    const { data: recentRun } = await db
+    // 同じ時間帯(slot)の実行が今日すでにあればスキップする
+    // (Vercel cron と pg_cron の朝の重なり対策。手動の「今すぐ実行」は slot を
+    //  持たないので、その後の定時実行を潰さない)
+    const { data: todaysRuns } = await db
       .from('inventory_runs')
-      .select('id')
+      .select('result_summary')
       .eq('user_id', userId)
       .eq('run_type', 'sync')
-      .gte('started_at', new Date(Date.now() - 90 * 60 * 1000).toISOString())
-      .limit(1)
-      .maybeSingle()
-    if (recentRun && !force) {
-      userResult.skipped = 'recently_ran'
+      .gte('started_at', startOfJstDay().toISOString())
+      .limit(50)
+    const alreadyRanThisSlot = (todaysRuns ?? []).some(run => {
+      const summary = run.result_summary as Record<string, unknown> | null
+      return typeof summary?.slot === 'number' && summary.slot === slot
+    })
+    if (alreadyRanThisSlot && !force) {
+      userResult.skipped = 'already_ran_this_slot'
       results.push(userResult)
       continue
     }
@@ -167,6 +172,7 @@ export async function GET(req: NextRequest) {
           items_total: syncResult.total,
           items_matched: syncResult.matched,
           result_summary: {
+            slot: force ? null : slot,
             discovered: syncResult.discovered, ended: syncResult.ended, discovery_truncated: syncResult.discoveryTruncated,
             processed: syncResult.processed, remaining: syncResult.nextCursorItemId ? syncResult.total - syncResult.processed : 0,
           },

@@ -56,3 +56,12 @@ export function resolveRunSlot(slotParam: string | null | undefined, now: Date =
 export function formatSlotHours(slots: RunSlotHour[]): string {
   return slots.map(h => `${h}:00`).join(' / ')
 }
+
+// 同じ時間帯(slot)の実行が今日すでにあるかを判定するための、その日(JST)の開始時刻。
+// 本番で確認した問題(2026-09-24): 手動の「今すぐ実行」直後は、90分以内の実行を
+// 一律スキップしていたため、次の定時実行(21:00)まで飛ばされていた。
+// 「同じ時間帯の実行が今日あったか」で判定すれば、手動実行が定時実行を潰さない。
+export function startOfJstDay(now: Date = new Date()): Date {
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000)
+  return new Date(Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate()) - 9 * 60 * 60 * 1000)
+}
