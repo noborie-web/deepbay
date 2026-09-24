@@ -31,6 +31,19 @@ export default function CategoriesPage() {
 
   const [supabase] = useState(createClient)
 
+  // 本番で確認した不具合(2026-09-23): すでに登録済みの親カテゴリ(例: 222 / 966 /
+  // 13999)は一覧から見分けられず、CSV出力して初めてエラーになっていた。
+  // 登録済み一覧でも親カテゴリを警告表示する。
+  const [parentCategoryIds, setParentCategoryIds] = useState<Set<string>>(new Set())
+  const markParentCategories = useCallback((list: ListingCategory[]) => {
+    if (list.length === 0) return Promise.resolve(new Set<string>())
+    return Promise.all(list.map(async (c) => {
+      if (!c.ebay_category_id) return null
+      const { isLeaf } = await checkLeaf(c.ebay_category_id)
+      return isLeaf ? null : c.ebay_category_id
+    })).then(results => new Set(results.filter((id): id is string => id !== null)))
+  }, [])
+
   const loadCategories = useCallback(async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data } = await (supabase as any)
@@ -41,17 +54,25 @@ export default function CategoriesPage() {
   }, [supabase])
 
   const fetchCategories = useCallback(async () => {
-    setCategories(await loadCategories())
-  }, [loadCategories])
+    const data = await loadCategories()
+    setCategories(data)
+    setParentCategoryIds(await markParentCategories(data))
+  }, [loadCategories, markParentCategories])
 
   useEffect(() => {
     let active = true
-    void loadCategories().then((data) => {
-      if (active) setCategories(data)
+    void loadCategories().then(async (data) => {
+      if (!active) return
+      setCategories(data)
+      const parents = await markParentCategories(data)
+      if (active) setParentCategoryIds(parents)
     })
     return () => { active = false }
-  }, [loadCategories])
+  }, [loadCategories, markParentCategories])
 
+  // 本番で確認した不具合(2026-09-23): すでに登録済みの親カテゴリ(例: 222 / 966 /
+  // 13999)は一覧からは見分けられず、CSV出力して初めてエラーになっていた。
+  // 登録済み一覧でも親カテゴリを警告表示する。
   async function handleSearch() {
     const q = searchTitle.trim()
     if (!q) return
@@ -327,7 +348,15 @@ export default function CategoriesPage() {
               <div key={cat.id} className="border-b last:border-0">
                 <div className="grid grid-cols-[100px_1fr_120px_130px_50px] gap-3 px-4 py-3 items-center text-sm">
                   <span className="text-gray-600 font-mono text-xs">{cat.ebay_category_id}</span>
-                  <span className="text-gray-700">{cat.name}</span>
+                  <span className="text-gray-700">
+                    {cat.name}
+                    {cat.ebay_category_id && parentCategoryIds.has(cat.ebay_category_id) && (
+                      <button onClick={() => { setTab('add'); showChildren(cat.ebay_category_id!) }}
+                        className="ml-2 text-xs text-red-600 underline hover:text-red-700">
+                        ⚠ 親カテゴリ・出品不可 → 下位を選ぶ
+                      </button>
+                    )}
+                  </span>
                   <span className={`text-xs ${cat.condition_map ? 'text-green-600' : 'text-gray-400'}`}>
                     {cat.condition_map ? '設定済み' : '標準マッピング'}
                   </span>
