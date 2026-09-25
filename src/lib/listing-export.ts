@@ -1,5 +1,6 @@
 import { renderDescriptionTemplate } from '@/lib/html-template'
 import type { Product } from '@/types/database'
+import { convertListingPrice } from '@/lib/ebay-sites'
 
 export interface ListingPolicies {
   paymentProfileName: string
@@ -16,6 +17,17 @@ export interface ListingExportOptions extends ListingPolicies {
   // 抽出設定「HTML設定」でアクティブにしたテンプレート。あれば説明文HTMLを
   // このテンプレートで組み立てる(無ければ既定の Description/Shipping 構成)。
   htmlTemplate?: string | null
+  // ユーザー要望: US に加えて UK・AU にも出品する。サイトごとに
+  // SiteID / Currency を切り替え、価格はそのサイトの通貨に換算して出力する。
+  // 未指定なら従来どおり US / USD(換算なし)。
+  site?: {
+    siteId: string
+    currency: string
+    // 円/対象通貨のレート(例: GBPなら 1ポンド=210円 → 210)
+    jpyPerCurrency: number
+    // 出品時レートが商品に記録されていない場合に使う 円/USD
+    fallbackJpyPerUsd: number
+  }
 }
 
 const CONDITION_ID_MAP: Record<string, string> = {
@@ -172,9 +184,10 @@ function normalizeFilenamePart(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'seller'
 }
 
-export function listingFilename(sellerId: string, kind: 'listing' | 'specifics'): string {
+export function listingFilename(sellerId: string, kind: 'listing' | 'specifics', siteId?: string): string {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-  return `ebay_${kind}_${normalizeFilenamePart(sellerId)}_${date}.csv`
+  const site = siteId ? `_${normalizeFilenamePart(siteId)}` : ''
+  return `ebay_${kind}${site}_${normalizeFilenamePart(sellerId)}_${date}.csv`
 }
 
 export function specificsInFilename(
@@ -274,6 +287,21 @@ export function conditionIdForProduct(
 // なお、eBayのCSVアップロード・specifics-inの取込はC:列を列名で
 // マッチングするため、列数がカテゴリごとに変動しても問題ない
 // (先頭の基本列群のみ位置依存)。
+// 出品価格を、出品先サイトの通貨に換算する(円換算した価値を保つ)。
+// 価格一括編集で手動調整した価格も、その調整を保ったまま換算できる。
+export function listingPriceForSite(
+  product: Pick<Product, 'ebay_price' | 'pricing_jpy_per_usd'>,
+  site: ListingExportOptions['site'],
+): number {
+  const usdPrice = Number(product.ebay_price)
+  if (!site || !Number.isFinite(usdPrice) || usdPrice <= 0) return usdPrice
+  const jpyPerUsd = Number(product.pricing_jpy_per_usd) > 0
+    ? Number(product.pricing_jpy_per_usd)
+    : site.fallbackJpyPerUsd
+  const converted = convertListingPrice(usdPrice, jpyPerUsd, site.jpyPerCurrency)
+  return converted ?? usdPrice
+}
+
 export function generateListingCsv(
   products: Product[],
   options: ListingExportOptions,
@@ -287,7 +315,7 @@ export function generateListingCsv(
     const brand = product.ebay_brand?.trim() || specifics.Brand?.join('|') || 'NO BRAND'
     const country = specifics.Country?.join('|') || 'Japan'
     const upc = specifics.UPC?.join('|') || 'NA'
-    const price = Number(product.ebay_price)
+    const price = listingPriceForSite(product, options.site)
     const row = [
       'Add',
       productCustomLabel(product),
@@ -312,8 +340,8 @@ export function generateListingCsv(
       'GTC',
       product.price_type === 'auction' ? 'Auction' : 'FixedPriceItem',
       '1',
-      'USD',
-      'US',
+      options.site?.currency ?? 'USD',
+      options.site?.siteId ?? 'US',
       country,
       ...names.map((name) => (specifics[name] ?? []).join('|') || 'NA'),
     ]
