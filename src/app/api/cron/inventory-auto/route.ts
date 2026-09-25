@@ -2,7 +2,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { endItem, reviseInventoryStatusBatch, addFixedPriceItem } from '@/lib/ebay-actions'
-import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { resolveInventoryAccessToken, resolveSellerAccountAccessToken } from '@/lib/inventory-auth'
+import { listInventorySellerAccounts, sellerAccountLabel, type InventorySellerAccount } from '@/lib/inventory-seller-accounts'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { isSlotActive, normalizeDailyRunCount, normalizeRevisePriceSchedule, resolveRunSlot, shouldRevisePriceInSlot } from '@/lib/inventory-schedule'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
@@ -17,6 +18,20 @@ export const maxDuration = 300
 // 価格改定(eBayへのRevise)に使う時間の上限。同期(約60秒)+仕入先チェック
 // (最大120秒)+取り下げの後に残る時間の範囲に収める。
 const REVISE_PRICE_TIME_BUDGET_MS = 60_000
+
+// セラーごとにまとめる(トークンがセラー単位のため、1リクエストに混ぜられない)
+function groupEntriesBySeller<T extends { sellerAccountId?: string | null }>(
+  entries: T[],
+): Array<[string | null, T[]]> {
+  const groups = new Map<string | null, T[]>()
+  for (const entry of entries) {
+    const key = entry.sellerAccountId ?? null
+    const list = groups.get(key) ?? []
+    list.push(entry)
+    groups.set(key, list)
+  }
+  return Array.from(groups.entries())
+}
 
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
@@ -120,9 +135,27 @@ export async function GET(req: NextRequest) {
       continue
     }
 
+    // ユーザー要望(2026-09-25): 出品アカウントを複数運用し、それぞれ独立して
+    // 在庫管理する。「混在しないよう細心の注意が必要」とのことなので、同期も
+    // 取り下げも価格改定も、必ずセラーごとにトークンを分けて実行する。
+    let accounts: InventorySellerAccount[] = []
+    const tokens = new Map<string, string>()
+    const authErrors: Array<{ seller: string; error: string }> = []
     let accessToken: string
     try {
-      accessToken = await resolveInventoryAccessToken(db, userId, settings)
+      accounts = await listInventorySellerAccounts(db, userId)
+      for (const account of accounts) {
+        try {
+          tokens.set(account.id, await resolveSellerAccountAccessToken(db, userId, account.id))
+        } catch (error) {
+          authErrors.push({ seller: sellerAccountLabel(account), error: error instanceof Error ? error.message : String(error) })
+        }
+      }
+      if (authErrors.length > 0) userResult.auth_errors = authErrors
+      // 出品アカウントが1件も接続されていない場合だけ、従来の単一トークンで動かす
+      accessToken = tokens.size > 0
+        ? tokens.values().next().value as string
+        : await resolveInventoryAccessToken(db, userId, settings)
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       userResult.auth = { error: errorMessage }
@@ -141,8 +174,23 @@ export async function GET(req: NextRequest) {
     }
 
     // eBay同期を先に実行し、失敗時は古い在庫情報で後続操作を行わない
+    // 在庫管理の対象セラー(接続済み)。1件もなければ従来どおり単一セラー扱い。
+    const syncTargets: Array<InventorySellerAccount | null> = accounts.filter(a => tokens.has(a.id))
+    if (syncTargets.length === 0) syncTargets.push(null)
+    const tokenFor = (account: InventorySellerAccount | null): string =>
+      account ? (tokens.get(account.id) as string) : accessToken
+    // 出品行のセラーに対応するトークン。セラーが分からない行は、対象セラーが
+    // 1件のときだけそのトークンで扱い、複数運用しているときは触らない。
+    const resolveListingToken = (sellerAccountId: string | null): string | null => {
+      if (sellerAccountId) return tokens.get(sellerAccountId) ?? null
+      return syncTargets.length === 1 ? tokenFor(syncTargets[0]) : null
+    }
+
     if (settings.ebay_auto_sync) {
       const startedAt = new Date().toISOString()
+      // 実行時間(300秒)は全セラーで分け合う。1セラーのときは従来と同じ予算。
+      const share = syncTargets.length
+      const syncResults: Record<string, unknown>[] = []
       try {
         // ユーザー要望: Kakehashiが出品したItemIDだけをGetItemで個別照会する。
         // 件数はKakehashiの出品数に比例するため、他ツールの出品数に左右されない。
@@ -151,28 +199,40 @@ export async function GET(req: NextRequest) {
         // 上げて短縮し、各工程の時間予算を合計で300秒に収める。
         // 出品が1,000件を超えても300秒に収まるよう、1回あたりの照会件数を
         // 上限付きにして、続きは次の実行(3/9/15/21時)から再開する。
-        const syncResult = await syncKnownInventoryListings(db, userId, accessToken, {
-          fetchTotalTimeoutMs: 110_000,
-          discoveryTimeBudgetMs: 30_000,
-          getItemConcurrency: 8,
-          maxItemsPerRun: 800,
-          cursorItemId: settings.sync_cursor_item_id ?? null,
-        })
-        await db.from('inventory_settings').update({ sync_cursor_item_id: syncResult.nextCursorItemId }).eq('user_id', userId)
-        userResult.sync = syncResult
-        await db.from('inventory_runs').insert({
-          user_id: userId,
-          run_type: 'sync',
-          status: 'completed',
-          items_total: syncResult.total,
-          items_matched: syncResult.matched,
-          result_summary: {
+        for (const [index, account] of syncTargets.entries()) {
+          const syncResult = await syncKnownInventoryListings(db, userId, tokenFor(account), {
+            fetchTotalTimeoutMs: Math.floor(110_000 / share),
+            discoveryTimeBudgetMs: Math.floor(30_000 / share),
+            getItemConcurrency: 8,
+            maxItemsPerRun: Math.floor(800 / share),
+            cursorItemId: account ? account.inventory_sync_cursor_item_id : (settings.sync_cursor_item_id ?? null),
+            sellerAccountId: account?.id ?? null,
+            // 出品セラー未設定の古い抽出は、最初に接続したセラーのものとして扱う
+            ownsUnassignedProducts: index === 0,
+          })
+          if (account) {
+            await db.from('seller_accounts').update({ inventory_sync_cursor_item_id: syncResult.nextCursorItemId }).eq('id', account.id)
+          } else {
+            await db.from('inventory_settings').update({ sync_cursor_item_id: syncResult.nextCursorItemId }).eq('user_id', userId)
+          }
+          const summary = {
+            seller_id: account?.seller_id ?? null,
             discovered: syncResult.discovered, ended: syncResult.ended, discovery_truncated: syncResult.discoveryTruncated,
             processed: syncResult.processed, remaining: syncResult.nextCursorItemId ? syncResult.total - syncResult.processed : 0,
-          },
-          started_at: startedAt,
-          finished_at: new Date().toISOString(),
-        })
+          }
+          syncResults.push({ ...summary, total: syncResult.total, matched: syncResult.matched })
+          await db.from('inventory_runs').insert({
+            user_id: userId,
+            run_type: 'sync',
+            status: 'completed',
+            items_total: syncResult.total,
+            items_matched: syncResult.matched,
+            result_summary: summary,
+            started_at: startedAt,
+            finished_at: new Date().toISOString(),
+          })
+        }
+        userResult.sync = syncResults.length === 1 ? syncResults[0] : { sellers: syncResults }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
         userResult.sync = { error: errorMessage }
@@ -204,7 +264,7 @@ export async function GET(req: NextRequest) {
       // 取り下げ済み(delisted_at あり)は毎日繰り返さない。
       let delistQuery = db
         .from('inventory_active_listings')
-        .select('ebay_item_id, product_id')
+        .select('ebay_item_id, product_id, seller_account_id, site_id')
         .eq('user_id', userId)
         .not('product_id', 'is', null)
         .eq('quantity', 0)
@@ -213,13 +273,24 @@ export async function GET(req: NextRequest) {
       const { data: listings } = await delistQuery
 
       const delistResults = []
-      const quantityZeroEntries: Array<{ itemId: string; quantity: number }> = []
+      const quantityZeroEntries: Array<{ itemId: string; quantity: number; siteId: string | null; sellerAccountId: string | null }> = []
+      // 出品したセラーのトークンで、そのサイトのSiteIDで呼ぶ。どのセラーの
+      // 出品か分からない行は触らない(他アカウントの出品を取り下げないため)。
+      let delistSkippedUnknownSeller = 0
       for (const l of listings ?? []) {
-        if (l.product_id) quantityZeroEntries.push({ itemId: l.ebay_item_id as string, quantity: 0 })
-        else delistResults.push(await endItem(accessToken, l.ebay_item_id))
+        const token = resolveListingToken(l.seller_account_id as string | null)
+        if (!token) { delistSkippedUnknownSeller++; continue }
+        const siteId = (l.site_id as string | null) ?? 'US'
+        if (l.product_id) quantityZeroEntries.push({ itemId: l.ebay_item_id as string, quantity: 0, siteId, sellerAccountId: (l.seller_account_id as string | null) ?? null })
+        else delistResults.push(await endItem(token, l.ebay_item_id, siteId))
       }
-      // 4件ずつまとめて在庫0にする(件数が多くても時間内に終わるように)
-      delistResults.push(...(await reviseInventoryStatusBatch(accessToken, quantityZeroEntries)).results)
+      // 4件ずつまとめて在庫0にする(件数が多くても時間内に終わるように)。
+      // セラーが違うとトークンが違うため、セラー単位で送る。
+      for (const [accountId, entries] of groupEntriesBySeller(quantityZeroEntries)) {
+        const token = resolveListingToken(accountId)
+        if (!token) continue
+        delistResults.push(...(await reviseInventoryStatusBatch(token, entries)).results)
+      }
       // 実行履歴のCSV出力用に1件ごとの結果を残す
       const delistItems = delistResults.map(r => ({
         ebay_item_id: r.itemId,
@@ -233,7 +304,7 @@ export async function GET(req: NextRequest) {
       } catch {
         // 記録の失敗で取り下げ結果自体は変わらないため続行する
       }
-      userResult.delist = { total: delistResults.length, succeeded: delistResults.filter(r => r.success).length, immediate: delistEligibility.immediate, items: delistItems }
+      userResult.delist = { total: delistResults.length, succeeded: delistResults.filter(r => r.success).length, immediate: delistEligibility.immediate, skipped_unknown_seller: delistSkippedUnknownSeller, items: delistItems }
       const delistRun = summarizeInventoryActionRun(delistResults)
 
       await db.from('inventory_runs').insert({
@@ -249,7 +320,7 @@ export async function GET(req: NextRequest) {
     if (settings.auto_revise_price && revisePriceThisSlot) {
       const { data: listings } = await db
         .from('inventory_active_listings')
-        .select('ebay_item_id, current_price, product_id')
+        .select('ebay_item_id, current_price, product_id, seller_account_id, site_id, currency')
         .eq('user_id', userId)
         .not('product_id', 'is', null)
 
@@ -265,17 +336,39 @@ export async function GET(req: NextRequest) {
       // 時間予算内で処理し、残りは翌日に回す(ログは必ず残す)。
       // 4件ずつまとめて並行に送り、時間予算内で処理し切れない分だけ翌日に回す。
       const reviseStartedAt = Date.now()
-      const reviseEntries: Array<{ itemId: string; price: number }> = []
+      const reviseEntries: Array<{ itemId: string; price: number; siteId: string | null; sellerAccountId: string | null }> = []
       const beforePrices = new Map<string, number>()
+      // 価格追従が計算する products.ebay_price はUSD建て。UK(GBP)・AU(AUD)の
+      // 出品にそのまま送ると通貨を取り違えて大幅な値下げ=赤字になるため、
+      // 通貨別の利益維持計算に対応するまでUSD以外は反映しない。
+      let reviseSkippedOtherCurrency = 0
+      let reviseSkippedUnknownSeller = 0
       for (const l of listings ?? []) {
         const p = productMap.get(l.product_id!)
         if (!p?.ebay_price || !l.current_price || Math.abs(p.ebay_price - l.current_price) <= 0.5) continue
-        reviseEntries.push({ itemId: l.ebay_item_id as string, price: p.ebay_price })
+        const currency = ((l.currency as string | null) ?? 'USD').toUpperCase()
+        if (currency !== 'USD') { reviseSkippedOtherCurrency++; continue }
+        if (!resolveListingToken(l.seller_account_id as string | null)) { reviseSkippedUnknownSeller++; continue }
+        reviseEntries.push({
+          itemId: l.ebay_item_id as string,
+          price: p.ebay_price,
+          siteId: (l.site_id as string | null) ?? 'US',
+          sellerAccountId: (l.seller_account_id as string | null) ?? null,
+        })
         beforePrices.set(l.ebay_item_id as string, Number(l.current_price))
       }
-      const { results: reviseResults, deferred: reviseDeferred } = await reviseInventoryStatusBatch(
-        accessToken, reviseEntries, { deadlineMs: reviseStartedAt + REVISE_PRICE_TIME_BUDGET_MS },
-      )
+      const reviseResults: Array<{ itemId: string; success: boolean; error?: string }> = []
+      let reviseDeferred = 0
+      // セラーごとにトークンを分けて送る(サイトの違いはバッチ側でまとめる)
+      for (const [accountId, entries] of groupEntriesBySeller(reviseEntries)) {
+        const token = resolveListingToken(accountId)
+        if (!token) { reviseSkippedUnknownSeller += entries.length; continue }
+        const batch = await reviseInventoryStatusBatch(
+          token, entries, { deadlineMs: reviseStartedAt + REVISE_PRICE_TIME_BUDGET_MS },
+        )
+        reviseResults.push(...batch.results)
+        reviseDeferred += batch.deferred
+      }
       // 反映した価格を在庫一覧の現在価格にも書く(次回同期を待たずに差分が消える)
       try {
         await applyRevisedPrices(db, userId, reviseResults.filter(r => r.success).map(r => ({ ebay_item_id: r.itemId, price: reviseEntries.find(e => e.itemId === r.itemId)?.price ?? 0 })).filter(r => r.price > 0))
@@ -295,7 +388,14 @@ export async function GET(req: NextRequest) {
           error: r.error ?? null,
         }
       })
-      userResult.revise_price = { total: reviseResults.length, succeeded: reviseResults.filter(r => r.success).length, deferred: reviseDeferred, items: reviseItems }
+      userResult.revise_price = {
+        total: reviseResults.length,
+        succeeded: reviseResults.filter(r => r.success).length,
+        deferred: reviseDeferred,
+        skipped_other_currency: reviseSkippedOtherCurrency,
+        skipped_unknown_seller: reviseSkippedUnknownSeller,
+        items: reviseItems,
+      }
       const reviseRun = summarizeInventoryActionRun(reviseResults)
 
       await db.from('inventory_runs').insert({

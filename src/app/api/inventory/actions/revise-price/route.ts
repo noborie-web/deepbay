@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { reviseInventoryStatusBatch } from '@/lib/ebay-actions'
 import { applyRevisedPrices } from '@/lib/inventory-sync'
-import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 
 function admin() {
@@ -71,11 +71,11 @@ export async function POST(req: NextRequest) {
     .eq('user_id', user.id)
     .maybeSingle()
 
-  const accessToken = await resolveInventoryAccessToken(db, user.id, settings ?? {})
+  const tokenResolver = await createInventoryTokenResolver(db, user.id, settings ?? {})
 
   let query = db
     .from('inventory_active_listings')
-    .select('ebay_item_id, current_price, product_id')
+    .select('ebay_item_id, current_price, product_id, seller_account_id, site_id, currency')
     .eq('user_id', user.id)
     .not('product_id', 'is', null)
 
@@ -90,17 +90,35 @@ export async function POST(req: NextRequest) {
     for (const p of products ?? []) productMap.set(p.id, p)
   }
 
-  const entries: Array<{ itemId: string; price: number }> = []
+  const entries: Array<{ itemId: string; price: number; siteId: string | null; sellerAccountId: string | null }> = []
   const beforePrices = new Map<string, number>()
+  // products.ebay_price はUSD建て。UK(GBP)/AU(AUD)の出品にそのまま送ると通貨を
+  // 取り違えて赤字になるため、通貨別の利益維持計算に対応するまで対象外にする。
+  let skippedOtherCurrency = 0
+  let skippedUnknownSeller = 0
   for (const l of listings ?? []) {
     const p = productMap.get(l.product_id!)
     if (!p?.ebay_price || !l.current_price) continue
     if (Math.abs(p.ebay_price - l.current_price) <= 0.5) continue
-    entries.push({ itemId: l.ebay_item_id as string, price: p.ebay_price })
+    if (((l.currency as string | null) ?? 'USD').toUpperCase() !== 'USD') { skippedOtherCurrency++; continue }
+    if (!tokenResolver.tokenFor(l.seller_account_id as string | null)) { skippedUnknownSeller++; continue }
+    entries.push({
+      itemId: l.ebay_item_id as string,
+      price: p.ebay_price,
+      siteId: (l.site_id as string | null) ?? 'US',
+      sellerAccountId: (l.seller_account_id as string | null) ?? null,
+    })
     beforePrices.set(l.ebay_item_id as string, Number(l.current_price))
   }
-  // 4件ずつまとめて並行に送る(件数が多くても時間内に終わるように)
-  const { results } = await reviseInventoryStatusBatch(accessToken, entries)
+  // 4件ずつまとめて並行に送る(件数が多くても時間内に終わるように)。
+  // トークンはセラーごとに違うため、セラー単位で送る。
+  const results: Array<{ itemId: string; success: boolean; error?: string }> = []
+  for (const sellerAccountId of new Set(entries.map(e => e.sellerAccountId))) {
+    const token = tokenResolver.tokenFor(sellerAccountId)
+    if (!token) continue
+    const batch = await reviseInventoryStatusBatch(token, entries.filter(e => e.sellerAccountId === sellerAccountId))
+    results.push(...batch.results)
+  }
   const items = results.map(r => {
     const after = entries.find(e => e.itemId === r.itemId)?.price ?? null
     const before = beforePrices.get(r.itemId) ?? null
@@ -121,11 +139,17 @@ export async function POST(req: NextRequest) {
     run_type: 'revise_price',
     status: runSummary.status,
     error_message: runSummary.errorMessage,
-    result_summary: { total: results.length, succeeded, failed: failed.map(f => ({ id: f.itemId, error: f.error })), items },
+    result_summary: {
+      total: results.length, succeeded, failed: failed.map(f => ({ id: f.itemId, error: f.error })),
+      skipped_other_currency: skippedOtherCurrency, skipped_unknown_seller: skippedUnknownSeller, items,
+    },
     started_at: new Date().toISOString(),
     finished_at: new Date().toISOString(),
   })
     // ignore log errors
 
-  return NextResponse.json({ ok: true, total: results.length, succeeded, failed })
+  return NextResponse.json({
+    ok: true, total: results.length, succeeded, failed,
+    skipped_other_currency: skippedOtherCurrency, skipped_unknown_seller: skippedUnknownSeller,
+  })
 }

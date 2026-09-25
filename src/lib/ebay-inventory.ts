@@ -1,6 +1,7 @@
 // Read-only eBay inventory sync via Trading API GetMyeBaySelling.
 // 現在は監視モードです。eBay商品の自動取り下げ・価格変更は実行しません。
 import type { InventoryListingInput } from './inventory'
+import { resolveListingSite } from './ebay-sites'
 
 const EBAY_TRADING_API_URL = 'https://api.ebay.com/ws/api.dll'
 const PAGE_SIZE = 200
@@ -26,6 +27,7 @@ const OUTPUT_SELECTORS = [
   'PictureDetails',
   'StartTime',
   'EndTime',
+  'Site',
 ] as const
 
 export interface EbayTokenSet {
@@ -105,6 +107,13 @@ export function parseGetMyeBaySellingResponse(xml: string): {
     throw new Error(`eBay API error: ${errMsg}`)
   }
 
+  // 価格の currencyID(USD/GBP/AUD)。UK/AU出品をUSDとして扱うと価格改定が
+  // 破綻するため、価格と必ずセットで取り出す。
+  const getCurrency = (src: string, tag: string): string => {
+    const m = src.match(new RegExp(`<${tag}[^>]*currencyID="([^"]+)"`, 'i'))
+    return m ? m[1].trim() : ''
+  }
+
   const itemBlocks = xml.match(/<Item>[\s\S]*?<\/Item>/gi) ?? []
   const items: InventoryListingInput[] = itemBlocks.map((block) => {
     const itemId = getTag(block, 'ItemID')
@@ -112,6 +121,8 @@ export function parseGetMyeBaySellingResponse(xml: string): {
     const sku = getTag(block, 'SKU')
     const imageUrl = getTag(block, 'GalleryURL') || getTag(block, 'PictureURL')
     const priceStr = getTag(block, 'CurrentPrice') || getTag(block, 'BuyItNowPrice')
+    const currency = getCurrency(block, 'CurrentPrice') || getCurrency(block, 'BuyItNowPrice')
+    const site = resolveListingSite(getTag(block, 'Site'), currency)
     const qty = getTag(block, 'Quantity')
     const qtySold = getTag(block, 'QuantitySold')
     const status = getTag(block, 'ListingStatus')
@@ -134,6 +145,8 @@ export function parseGetMyeBaySellingResponse(xml: string): {
       listingStatus: status || null,
       startTime: startTime || null,
       endTime: endTime || null,
+      siteId: site?.siteId ?? null,
+      currency: site?.currency ?? (currency || null),
     }
   })
 
@@ -398,6 +411,13 @@ export function parseGetItemResponse(xml: string, itemId: string): InventoryList
   const listingStatus = getTag(sellingStatus, 'ListingStatus')
   if (listingStatus && listingStatus !== 'Active') return 'ended'
 
+  const currencyOf = (src: string, tag: string): string => {
+    const m = src.match(new RegExp(`<${tag}[^>]*currencyID="([^"]+)"`, 'i'))
+    return m ? m[1].trim() : ''
+  }
+  const currency = currencyOf(sellingStatus, 'CurrentPrice') || getTag(itemBlock, 'Currency')
+  const site = resolveListingSite(getTag(itemBlock, 'Site'), currency)
+
   const parseNum = (s: string): number | null => {
     const n = parseFloat(s)
     return isFinite(n) ? n : null
@@ -419,6 +439,8 @@ export function parseGetItemResponse(xml: string, itemId: string): InventoryList
     listingStatus: listingStatus || 'Active',
     startTime: getTag(listingDetails, 'StartTime') || null,
     endTime: getTag(listingDetails, 'EndTime') || null,
+    siteId: site?.siteId ?? null,
+    currency: site?.currency ?? (currency || null),
   }
 }
 
@@ -439,6 +461,8 @@ async function fetchItemById(
   <OutputSelector>Item.SellingStatus</OutputSelector>
   <OutputSelector>Item.ListingDetails</OutputSelector>
   <OutputSelector>Item.PictureDetails</OutputSelector>
+  <OutputSelector>Item.Site</OutputSelector>
+  <OutputSelector>Item.Currency</OutputSelector>
 </GetItemRequest>`
 
   const controller = new AbortController()

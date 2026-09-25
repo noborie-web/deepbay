@@ -5,7 +5,7 @@ import type { Product } from '@/types/database'
 import { translateDescription } from '@/lib/translate'
 import { listingDescription } from '@/lib/listing-export'
 import { reviseDescription } from '@/lib/ebay-actions'
-import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { loadActiveHtmlTemplate } from '@/lib/html-template'
 import { checkTranslatedDescription, hasJapaneseDescription } from '@/lib/description-translation'
@@ -137,18 +137,34 @@ export async function POST(req: NextRequest) {
       .select('ebay_token, ebay_refresh_token, ebay_token_expires_at')
       .eq('user_id', user.id)
       .maybeSingle()
-    let accessToken: string
+    let tokenResolver
     try {
-      accessToken = await resolveInventoryAccessToken(db, user.id, inventorySettings ?? {})
+      tokenResolver = await createInventoryTokenResolver(db, user.id, inventorySettings ?? {})
     } catch (error) {
       return NextResponse.json({ error: `eBayトークンの取得に失敗しました: ${error instanceof Error ? error.message : String(error)}` }, { status: 500 })
     }
+    // 出品ごとに、その出品を出したセラーのトークン・サイトで説明文を差し替える
+    const { data: listingOwners } = await db
+      .from('inventory_active_listings')
+      .select('ebay_item_id, seller_account_id, site_id')
+      .eq('user_id', user.id)
+      .in('ebay_item_id', targets.map(p => p.ebay_item_id).filter((id): id is string => Boolean(id)))
+    const ownerByItemId = new Map((listingOwners ?? []).map(l => [
+      l.ebay_item_id as string,
+      { sellerAccountId: (l.seller_account_id as string | null) ?? null, siteId: (l.site_id as string | null) ?? 'US' },
+    ]))
 
     const htmlTemplate = await loadActiveHtmlTemplate(db, user.id)
     const results = []
     for (const product of targets) {
       const html = listingDescription(product as Product, htmlTemplate)
-      const result = await reviseDescription(accessToken, product.ebay_item_id!, html)
+      const owner = ownerByItemId.get(product.ebay_item_id!)
+      const accessToken = tokenResolver.tokenFor(owner?.sellerAccountId ?? null)
+      if (!accessToken) {
+        results.push({ itemId: product.ebay_item_id!, success: false, error: 'この出品のeBayアカウントが特定できないため更新しませんでした' })
+        continue
+      }
+      const result = await reviseDescription(accessToken, product.ebay_item_id!, html, owner?.siteId ?? 'US')
       results.push(result)
       if (result.success) {
         await db

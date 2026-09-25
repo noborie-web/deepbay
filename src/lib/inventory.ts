@@ -18,6 +18,10 @@ export interface InventoryListingInput {
   listingStatus: string | null
   startTime: string | null
   endTime: string | null
+  // ユーザー要望(2026-09-25): UK/AUにも出品するため、出品ごとにサイトと通貨を
+  // 記録する。未取得(null)の場合は価格改定の対象外として扱う。
+  siteId?: string | null
+  currency?: string | null
 }
 
 /**

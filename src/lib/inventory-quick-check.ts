@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { checkSupplierListings, normalizePriceChangeFilter, type SupplierCheckResult } from '@/lib/inventory-supplier-check'
-import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { reviseInventoryStatusBatch } from '@/lib/ebay-actions'
 import { markListingsDelisted } from '@/lib/inventory-sync'
@@ -76,17 +76,30 @@ export async function runQuickSupplierCheck(
       // 売り切れ即取り下げ
       const eligibility = resolveDelistEligibility(settings)
       if (check.unavailable > 0 && settings.auto_delist && eligibility.enabled && eligibility.immediate) {
-        const accessToken = await resolveInventoryAccessToken(db, userId, settings)
+        const tokenResolver = await createInventoryTokenResolver(db, userId, settings)
         const { data: listings } = await db
           .from('inventory_active_listings')
-          .select('ebay_item_id')
+          .select('ebay_item_id, seller_account_id, site_id')
           .eq('user_id', userId)
           .not('product_id', 'is', null)
           .eq('quantity', 0)
           .is('delisted_at', null)
-        const entries = (listings ?? []).map(l => ({ itemId: l.ebay_item_id as string, quantity: 0 }))
+        // 出品したセラーのトークン・サイトで取り下げる(他アカウントの出品は触らない)
+        const entriesBySeller = new Map<string | null, Array<{ itemId: string; quantity: number; siteId: string | null }>>()
+        for (const l of listings ?? []) {
+          const key = (l.seller_account_id as string | null) ?? null
+          const list = entriesBySeller.get(key) ?? []
+          list.push({ itemId: l.ebay_item_id as string, quantity: 0, siteId: (l.site_id as string | null) ?? 'US' })
+          entriesBySeller.set(key, list)
+        }
+        const entries = Array.from(entriesBySeller.values()).flat()
         if (entries.length > 0) {
-          const { results: delistResults } = await reviseInventoryStatusBatch(accessToken, entries)
+          const delistResults: Array<{ itemId: string; success: boolean; error?: string }> = []
+          for (const [sellerAccountId, sellerEntries] of entriesBySeller) {
+            const token = tokenResolver.tokenFor(sellerAccountId)
+            if (!token) continue
+            delistResults.push(...(await reviseInventoryStatusBatch(token, sellerEntries)).results)
+          }
           await markListingsDelisted(db, userId, delistResults.filter(r => r.success).map(r => r.itemId))
           const run = summarizeInventoryActionRun(delistResults)
           const items = delistResults.map(r => ({ ebay_item_id: r.itemId, action: 'Revise', reason: 'sold_out', success: r.success, error: r.error ?? null }))

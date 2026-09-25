@@ -1,5 +1,6 @@
 // eBay Trading API mutation helpers — EndItem, ReviseInventoryStatus, ReviseItem, AddFixedPriceItem (stack)
 import { refreshEbayToken } from './ebay-inventory'
+import { currencyForSite, tradingSiteIdFor } from './ebay-sites'
 
 const TRADING_API_URL = 'https://api.ebay.com/ws/api.dll'
 const TRADING_API_VERSION = '1455'
@@ -13,14 +14,21 @@ function getTag(xml: string, tag: string): string {
   return m ? m[1].trim() : ''
 }
 
-async function tradingCall(accessToken: string, callName: string, body: string): Promise<string> {
+// ユーザー要望(2026-09-25): UK/AUにも出品する。Trading APIの操作は出品した
+// サイトのSiteIDで呼ばないと、価格の通貨やポリシーが食い違って失敗する。
+async function tradingCall(
+  accessToken: string,
+  callName: string,
+  body: string,
+  siteId?: string | null,
+): Promise<string> {
   const res = await fetch(TRADING_API_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'text/xml',
       'X-EBAY-API-COMPATIBILITY-LEVEL': TRADING_API_VERSION,
       'X-EBAY-API-CALL-NAME': callName,
-      'X-EBAY-API-SITEID': '0',
+      'X-EBAY-API-SITEID': tradingSiteIdFor(siteId),
       'X-EBAY-API-IAF-TOKEN': accessToken,
     },
     body,
@@ -54,9 +62,9 @@ function actionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-async function runItemAction(accessToken: string, callName: string, xml: string, itemId: string): Promise<EbayActionResult> {
+async function runItemAction(accessToken: string, callName: string, xml: string, itemId: string, siteId?: string | null): Promise<EbayActionResult> {
   try {
-    const response = await tradingCall(accessToken, callName, xml)
+    const response = await tradingCall(accessToken, callName, xml, siteId)
     return { itemId, ...parseActionResponse(response) }
   } catch (error) {
     return { itemId, success: false, error: actionError(error) }
@@ -64,17 +72,17 @@ async function runItemAction(accessToken: string, callName: string, xml: string,
 }
 
 // EndItem — 完全取り下げ
-export async function endItem(accessToken: string, itemId: string): Promise<EbayActionResult> {
+export async function endItem(accessToken: string, itemId: string, siteId?: string | null): Promise<EbayActionResult> {
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <EndItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <ItemID>${escapeXml(itemId)}</ItemID>
   <EndingReason>NotAvailable</EndingReason>
 </EndItemRequest>`
-  return runItemAction(accessToken, 'EndItem', xml, itemId)
+  return runItemAction(accessToken, 'EndItem', xml, itemId, siteId)
 }
 
 // ReviseInventoryStatus — quantity=0 に設定（出品継続のまま在庫0）
-export async function reviseQuantityToZero(accessToken: string, itemId: string): Promise<EbayActionResult> {
+export async function reviseQuantityToZero(accessToken: string, itemId: string, siteId?: string | null): Promise<EbayActionResult> {
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <InventoryStatus>
@@ -82,19 +90,24 @@ export async function reviseQuantityToZero(accessToken: string, itemId: string):
     <Quantity>0</Quantity>
   </InventoryStatus>
 </ReviseInventoryStatusRequest>`
-  return runItemAction(accessToken, 'ReviseInventoryStatus', xml, itemId)
+  return runItemAction(accessToken, 'ReviseInventoryStatus', xml, itemId, siteId)
 }
 
 // ReviseInventoryStatus — 価格変更
-export async function revisePrice(accessToken: string, itemId: string, newPrice: number): Promise<EbayActionResult> {
+export async function revisePrice(
+  accessToken: string,
+  itemId: string,
+  newPrice: number,
+  siteId?: string | null,
+): Promise<EbayActionResult> {
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <InventoryStatus>
     <ItemID>${escapeXml(itemId)}</ItemID>
-    <StartPrice currencyID="USD">${newPrice.toFixed(2)}</StartPrice>
+    <StartPrice currencyID="${currencyForSite(siteId)}">${newPrice.toFixed(2)}</StartPrice>
   </InventoryStatus>
 </ReviseInventoryStatusRequest>`
-  return runItemAction(accessToken, 'ReviseInventoryStatus', xml, itemId)
+  return runItemAction(accessToken, 'ReviseInventoryStatus', xml, itemId, siteId)
 }
 
 // ReviseInventoryStatus — 複数件を1回の呼び出しでまとめて更新する。
@@ -107,6 +120,8 @@ export interface InventoryStatusEntry {
   itemId: string
   price?: number
   quantity?: number
+  // 出品したサイト(US/UK/AU)。1リクエストに混ぜられないためサイト単位で送る。
+  siteId?: string | null
 }
 
 const REVISE_INVENTORY_STATUS_MAX_PER_REQUEST = 4
@@ -115,7 +130,7 @@ const DEFAULT_REVISE_CONCURRENCY = 3
 function inventoryStatusXml(entries: InventoryStatusEntry[]): string {
   const blocks = entries.map(e => `  <InventoryStatus>
     <ItemID>${escapeXml(e.itemId)}</ItemID>${e.price !== undefined ? `
-    <StartPrice currencyID="USD">${e.price.toFixed(2)}</StartPrice>` : ''}${e.quantity !== undefined ? `
+    <StartPrice currencyID="${currencyForSite(e.siteId)}">${e.price.toFixed(2)}</StartPrice>` : ''}${e.quantity !== undefined ? `
     <Quantity>${Math.max(0, Math.floor(e.quantity))}</Quantity>` : ''}
   </InventoryStatus>`).join('\n')
   return `<?xml version="1.0" encoding="utf-8"?>
@@ -125,11 +140,12 @@ ${blocks}
 }
 
 async function reviseInventoryStatusChunk(accessToken: string, entries: InventoryStatusEntry[]): Promise<EbayActionResult[]> {
+  const siteId = entries[0]?.siteId ?? null
   if (entries.length === 1) {
-    return [await runItemAction(accessToken, 'ReviseInventoryStatus', inventoryStatusXml(entries), entries[0].itemId)]
+    return [await runItemAction(accessToken, 'ReviseInventoryStatus', inventoryStatusXml(entries), entries[0].itemId, siteId)]
   }
   try {
-    const response = await tradingCall(accessToken, 'ReviseInventoryStatus', inventoryStatusXml(entries))
+    const response = await tradingCall(accessToken, 'ReviseInventoryStatus', inventoryStatusXml(entries), siteId)
     const parsed = parseActionResponse(response)
     if (parsed.success) return entries.map(e => ({ itemId: e.itemId, success: true }))
   } catch {
@@ -137,7 +153,7 @@ async function reviseInventoryStatusChunk(accessToken: string, entries: Inventor
   }
   const results: EbayActionResult[] = []
   for (const entry of entries) {
-    results.push(await runItemAction(accessToken, 'ReviseInventoryStatus', inventoryStatusXml([entry]), entry.itemId))
+    results.push(await runItemAction(accessToken, 'ReviseInventoryStatus', inventoryStatusXml([entry]), entry.itemId, entry.siteId ?? null))
   }
   return results
 }
@@ -158,9 +174,20 @@ export async function reviseInventoryStatusBatch(
   entries: InventoryStatusEntry[],
   options: ReviseInventoryStatusOptions = {},
 ): Promise<ReviseInventoryStatusBatchResult> {
+  // サイトが違う出品を1リクエストに混ぜると通貨が食い違うため、サイトごとに
+  // まとめてから4件ずつに分割する。
+  const bySite = new Map<string, InventoryStatusEntry[]>()
+  for (const entry of entries) {
+    const key = (entry.siteId ?? 'US').toUpperCase()
+    const list = bySite.get(key) ?? []
+    list.push(entry)
+    bySite.set(key, list)
+  }
   const chunks: InventoryStatusEntry[][] = []
-  for (let i = 0; i < entries.length; i += REVISE_INVENTORY_STATUS_MAX_PER_REQUEST) {
-    chunks.push(entries.slice(i, i + REVISE_INVENTORY_STATUS_MAX_PER_REQUEST))
+  for (const siteEntries of bySite.values()) {
+    for (let i = 0; i < siteEntries.length; i += REVISE_INVENTORY_STATUS_MAX_PER_REQUEST) {
+      chunks.push(siteEntries.slice(i, i + REVISE_INVENTORY_STATUS_MAX_PER_REQUEST))
+    }
   }
   const results: EbayActionResult[] = []
   let deferred = 0
@@ -178,7 +205,7 @@ export async function reviseInventoryStatusBatch(
 
 // ReviseItem — 説明文(HTML)の差し替え。ユーザー要望: 出品済み商品の日本語
 // 説明文を英訳してeBayに反映する。
-export async function reviseDescription(accessToken: string, itemId: string, descriptionHtml: string): Promise<EbayActionResult> {
+export async function reviseDescription(accessToken: string, itemId: string, descriptionHtml: string, siteId?: string | null): Promise<EbayActionResult> {
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <ReviseItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <Item>
@@ -186,7 +213,7 @@ export async function reviseDescription(accessToken: string, itemId: string, des
     <Description><![CDATA[${descriptionHtml.replace(/]]>/g, ']]&gt;')}]]></Description>
   </Item>
 </ReviseItemRequest>`
-  return runItemAction(accessToken, 'ReviseItem', xml, itemId)
+  return runItemAction(accessToken, 'ReviseItem', xml, itemId, siteId)
 }
 
 export interface StackItemInput {

@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
 import { expireStaleInventorySyncRuns } from '@/lib/inventory-run'
 import { syncKnownInventoryListingBatch } from '@/lib/inventory-sync'
 import { createInventorySyncCursor, parseInventorySyncCursor } from '@/lib/inventory-sync-cursor'
@@ -46,6 +46,8 @@ export async function POST(request: Request) {
   let runId: string
   let startBatch = 1
   let previousMatched = 0
+  // 出品アカウントを複数運用している場合、セラーを順番に同期する
+  let sellerIndex = 0
 
   if (cursorValue) {
     let cursor
@@ -70,6 +72,7 @@ export async function POST(request: Request) {
 
     runId = existingRun.id
     startBatch = cursor.nextPage
+    sellerIndex = cursor.sellerIndex ?? 0
     previousMatched = existingRun.items_matched ?? 0
   } else {
     try {
@@ -96,8 +99,14 @@ export async function POST(request: Request) {
   }
 
   let accessToken: string
+  let syncTargets: Array<{ id: string; seller_id: string } | null>
   try {
-    accessToken = await resolveInventoryAccessToken(db, user.id, settings ?? {})
+    const tokenResolver = await createInventoryTokenResolver(db, user.id, settings ?? {})
+    syncTargets = tokenResolver.accounts.length > 0 ? tokenResolver.accounts : [null]
+    const target = syncTargets[Math.min(sellerIndex, syncTargets.length - 1)]
+    const token = target ? tokenResolver.tokenFor(target.id) : tokenResolver.defaultToken
+    if (!token) throw new Error('eBayアカウントが接続されていません')
+    accessToken = token
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     await db.from('inventory_runs').update({
@@ -122,7 +131,12 @@ export async function POST(request: Request) {
         accessToken,
         startBatch,
         ITEMS_PER_REQUEST,
-        { signal: syncController.signal, discoveryTimeBudgetMs: 15_000 },
+        {
+          signal: syncController.signal,
+          discoveryTimeBudgetMs: 15_000,
+          sellerAccountId: syncTargets[Math.min(sellerIndex, syncTargets.length - 1)]?.id ?? null,
+          ownsUnassignedProducts: sellerIndex === 0,
+        },
       ),
       new Promise<never>((_, reject) => {
         syncController.signal.addEventListener('abort', () => {
@@ -141,7 +155,10 @@ export async function POST(request: Request) {
   }
 
   const matched = previousMatched + syncResult.updated + syncResult.discovered
-  const done = syncResult.nextBatch === null
+  // このセラーを処理し終えたら次のセラーの1バッチ目へ進む
+  const hasNextBatch = syncResult.nextBatch !== null
+  const nextSellerIndex = hasNextBatch ? sellerIndex : sellerIndex + 1
+  const done = !hasNextBatch && nextSellerIndex >= syncTargets.length
   let total = syncResult.totalItems
 
   if (done) {
@@ -170,7 +187,9 @@ export async function POST(request: Request) {
     discovered: syncResult.discovered,
     discovery_truncated: syncResult.discoveryTruncated,
     done,
-    cursor: done ? null : createInventorySyncCursor(runId, syncResult.nextBatch!, cursorSecret),
+    cursor: done
+      ? null
+      : createInventorySyncCursor(runId, hasNextBatch ? syncResult.nextBatch! : 1, cursorSecret, nextSellerIndex),
     progress: {
       processed: syncResult.processedItems,
       total: syncResult.totalItems,

@@ -201,6 +201,11 @@ export interface InventoryActiveListing {
   supplier_checked_at: string | null
   delisted_at?: string | null
   // 仕入先チェックで取得した最新タイトル・価格(円)と、抽出時からの差分
+  // ユーザー要望(2026-09-25): 出品アカウント・サイト(US/UK/AU)を混在させない
+  seller_account_id?: string | null
+  site_id?: string | null
+  currency?: string | null
+  pricing_jpy_per_currency?: number | null
   supplier_title?: string | null
   supplier_price_jpy?: number | null
   supplier_diff?: Array<'title' | 'price' | 'reserved'> | null

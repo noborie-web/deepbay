@@ -30,6 +30,7 @@ vi.mock('@/lib/supabase/server', () => ({
 
 vi.mock('@/lib/inventory-auth', () => ({
   resolveInventoryAccessToken: mockResolveAccessToken,
+  resolveSellerAccountAccessToken: vi.fn(async () => 'access-token'),
 }))
 
 vi.mock('@/lib/inventory-run', () => ({
@@ -52,6 +53,13 @@ vi.mock('@supabase/supabase-js', () => ({
             error: null,
           })),
         }
+      }
+      // 出品アカウント経由の接続なし(従来どおり単一トークンで動く)
+      if (table === 'seller_accounts') {
+        const chain: Record<string, unknown> = {}
+        for (const m of ['select', 'eq', 'not', 'order', 'update']) chain[m] = vi.fn(() => chain)
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+        return chain
       }
       if (table === 'inventory_runs') {
         return {

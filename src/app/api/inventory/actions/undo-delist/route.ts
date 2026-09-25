@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { reviseInventoryStatusBatch } from '@/lib/ebay-actions'
-import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { markListingsRestored } from '@/lib/inventory-sync'
 
@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
   // Kakehashiの商品に紐付く出品だけを対象にする
   const { data: listings } = await db
     .from('inventory_active_listings')
-    .select('ebay_item_id')
+    .select('ebay_item_id, seller_account_id, site_id')
     .eq('user_id', user.id)
     .not('product_id', 'is', null)
     .in('ebay_item_id', itemIds)
@@ -61,14 +61,30 @@ export async function POST(req: NextRequest) {
     .select('ebay_token, ebay_refresh_token, ebay_token_expires_at')
     .eq('user_id', user.id)
     .maybeSingle()
-  let accessToken: string
+  let tokenResolver
   try {
-    accessToken = await resolveInventoryAccessToken(db, user.id, settings ?? {})
+    tokenResolver = await createInventoryTokenResolver(db, user.id, settings ?? {})
   } catch (error) {
     return NextResponse.json({ error: `eBayトークンの取得に失敗しました: ${error instanceof Error ? error.message : String(error)}` }, { status: 500 })
   }
 
-  const { results } = await reviseInventoryStatusBatch(accessToken, targetIds.map(itemId => ({ itemId, quantity: 1 })))
+  // 出品を出したセラーのトークンで、そのサイトに対して在庫を戻す
+  const results: Array<{ itemId: string; success: boolean; error?: string }> = []
+  const bySeller = new Map<string | null, Array<{ itemId: string; quantity: number; siteId: string | null }>>()
+  for (const l of listings ?? []) {
+    const key = (l.seller_account_id as string | null) ?? null
+    const list = bySeller.get(key) ?? []
+    list.push({ itemId: l.ebay_item_id as string, quantity: 1, siteId: (l.site_id as string | null) ?? 'US' })
+    bySeller.set(key, list)
+  }
+  for (const [sellerAccountId, entries] of bySeller) {
+    const token = tokenResolver.tokenFor(sellerAccountId)
+    if (!token) {
+      results.push(...entries.map(e => ({ itemId: e.itemId, success: false, error: 'この出品のeBayアカウントが特定できないため復元しませんでした' })))
+      continue
+    }
+    results.push(...(await reviseInventoryStatusBatch(token, entries)).results)
+  }
   const succeededIds = results.filter(r => r.success).map(r => r.itemId)
   const failed = results.filter(r => !r.success).map(r => ({ id: r.itemId, error: r.error }))
   await markListingsRestored(db, user.id, succeededIds)

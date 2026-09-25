@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { endItem, reviseQuantityToZero } from '@/lib/ebay-actions'
-import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { markListingsDelisted } from '@/lib/inventory-sync'
@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
   }
   let query = db
     .from('inventory_active_listings')
-    .select('ebay_item_id, product_id, quantity, start_time')
+    .select('ebay_item_id, product_id, quantity, start_time, seller_account_id, site_id')
     .eq('user_id', user.id)
     .eq('quantity', 0)
     .is('delisted_at', null)
@@ -99,23 +99,31 @@ export async function POST(req: NextRequest) {
     }, { status: 409 })
   }
 
-  // 対象がプレビュー時と一致した場合だけeBayトークンを解決する
-  const accessToken = await resolveInventoryAccessToken(db, user.id, settings ?? {})
+  // 対象がプレビュー時と一致した場合だけeBayトークンを解決する。
+  // 出品ごとに、その出品を出したセラーのトークン・サイトIDで操作する。
+  const tokenResolver = await createInventoryTokenResolver(db, user.id, settings ?? {})
 
   const results = []
   const actions = new Map<string, 'Revise' | 'End'>()
+  const skippedUnknownSeller: string[] = []
   for (const l of listings ?? []) {
+    const accessToken = tokenResolver.tokenFor(l.seller_account_id as string | null)
+    if (!accessToken) { skippedUnknownSeller.push(l.ebay_item_id as string); continue }
+    const siteId = (l.site_id as string | null) ?? 'US'
     let result
     if (l.product_id) {
       // 管理商品 → quantity=0にRevise（出品継続）
-      result = await reviseQuantityToZero(accessToken, l.ebay_item_id)
+      result = await reviseQuantityToZero(accessToken, l.ebay_item_id, siteId)
       actions.set(l.ebay_item_id, 'Revise')
     } else {
       // 非管理商品 → End（完全取り下げ）
-      result = await endItem(accessToken, l.ebay_item_id)
+      result = await endItem(accessToken, l.ebay_item_id, siteId)
       actions.set(l.ebay_item_id, 'End')
     }
     results.push(result)
+  }
+  if (skippedUnknownSeller.length > 0) {
+    console.warn('[delist] skipped listings without a known seller account:', skippedUnknownSeller.join(','))
   }
   const items = results.map(r => ({ ebay_item_id: r.itemId, action: actions.get(r.itemId) ?? 'Revise', reason: 'sold_out', success: r.success, error: r.error ?? null }))
 
