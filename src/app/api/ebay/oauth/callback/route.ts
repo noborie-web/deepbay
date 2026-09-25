@@ -81,6 +81,24 @@ export async function GET(request: NextRequest) {
         .eq('user_id', user.id)
         .eq('seller_id', sellerId)
         .maybeSingle()
+    if (targetSeller) {
+      // 追加した出品アカウントに別アカウントのeBayを接続しようとした場合(user_id, ebay_user_id はユニーク)
+      const { data: conflicting } = await admin
+        .from('seller_accounts')
+        .select('id, seller_id')
+        .eq('user_id', user.id)
+        .eq('ebay_user_id', identity.userId)
+        .neq('id', targetSeller.id)
+        .maybeSingle()
+      if (conflicting) {
+        return redirectWithMessage(
+          request,
+          returnTo,
+          'ebayError',
+          `このeBayアカウントは既に「${conflicting.seller_id}」に接続されています。別のeBayアカウントでログインし直してください。`,
+        )
+      }
+    }
     const existingId = targetSeller?.id ?? byUserId?.id ?? bySellerId?.id
     const values = {
       user_id: user.id,

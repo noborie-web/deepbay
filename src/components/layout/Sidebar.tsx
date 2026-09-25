@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Settings,
   Cloud,
+  Store,
   User,
   CreditCard,
   BookOpen,
@@ -31,6 +32,12 @@ const NAV = [
     section: '在庫',
     items: [
       { label: '在庫管理', href: '/inventory', icon: Cloud },
+    ],
+  },
+  {
+    section: '出品',
+    items: [
+      { label: '出品アカウント', href: '/sellers', icon: Store },
     ],
   },
 ]

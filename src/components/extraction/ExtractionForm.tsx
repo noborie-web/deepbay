@@ -93,10 +93,14 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
           onChange={(e) => setSellerAccountId(e.target.value)}
           className="border rounded px-3 py-2 text-sm pr-8 focus:outline-none focus:ring-2 focus:ring-yellow-400"
         >
+          {sellers.length === 0 && <option value="">未登録</option>}
           {sellers.map((s) => (
-            <option key={s.id} value={s.id}>{s.seller_id}</option>
+            <option key={s.id} value={s.id}>{s.display_name || s.seller_id}</option>
           ))}
         </select>
+        <a href="/sellers" className="absolute -bottom-4 left-1 text-[10px] text-blue-600 hover:underline">
+          出品アカウントを追加・編集
+        </a>
       </div>
 
       {/* 一括編集設定 */}
