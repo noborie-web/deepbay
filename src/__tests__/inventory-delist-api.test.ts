@@ -42,6 +42,13 @@ vi.mock('@supabase/supabase-js', () => ({
         query.then = (resolve: (v: unknown) => void) => resolve({ data: mockListings, error: null })
         return query
       }
+      // 出品アカウント経由の接続なし(従来どおり単一トークンで動く)
+      if (table === 'seller_accounts') {
+        const chain: Record<string, unknown> = {}
+        for (const m of ['select', 'eq', 'not', 'order', 'update']) chain[m] = vi.fn(() => chain)
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+        return chain
+      }
       if (table === 'inventory_settings') {
         return {
           select: vi.fn().mockReturnThis(),
@@ -69,6 +76,7 @@ vi.mock('@/lib/ebay-actions', () => ({
 
 vi.mock('@/lib/inventory-auth', () => ({
   resolveInventoryAccessToken: mockResolveAccessToken,
+  resolveSellerAccountAccessToken: vi.fn(async () => 'access-token'),
 }))
 
 describe('/api/inventory/actions/delist', () => {
@@ -159,7 +167,7 @@ describe('/api/inventory/actions/delist', () => {
     expect(res.status).toBe(200)
     expect(json).toMatchObject({ ok: true, total: 1, succeeded: 1 })
     expect(mockLte).not.toHaveBeenCalled()
-    expect(mockReviseQuantityToZero).toHaveBeenCalledWith('access-token', 'item-1')
+    expect(mockReviseQuantityToZero).toHaveBeenCalledWith('access-token', 'item-1', 'US')
     expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({ delisted_at: expect.any(String) }))
   })
 
@@ -201,8 +209,8 @@ describe('/api/inventory/actions/delist', () => {
     expect(json).toMatchObject({ ok: true, total: 2, succeeded: 2 })
     expect(mockIn).toHaveBeenCalledWith('ebay_item_id', ['item-1', 'item-2'])
     expect(mockLte).toHaveBeenCalledWith('start_time', '2026-07-12T00:00:00.000Z')
-    expect(mockEndItem).toHaveBeenCalledWith('access-token', 'item-1')
-    expect(mockReviseQuantityToZero).toHaveBeenCalledWith('access-token', 'item-2')
+    expect(mockEndItem).toHaveBeenCalledWith('access-token', 'item-1', 'US')
+    expect(mockReviseQuantityToZero).toHaveBeenCalledWith('access-token', 'item-2', 'US')
   })
 
   it('records partial action failures using the DB-supported failed status', async () => {

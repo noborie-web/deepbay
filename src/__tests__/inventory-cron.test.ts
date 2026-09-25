@@ -4,11 +4,16 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const mockResolveAccessToken = vi.fn()
+const mockResolveSellerAccountToken = vi.fn()
 const mockSyncInventoryListings = vi.fn()
 const mockCheckSupplierListings = vi.fn()
 const mockRunInsert = vi.fn()
 const mockListingQueryCalls: Array<[string, ...unknown[]]> = []
 let mockSettings: Array<Record<string, unknown>> = []
+// 在庫管理の対象セラー(出品アカウント)。既定は「出品アカウント経由の接続なし」
+// = 従来どおり単一トークンで動かすケース。
+let mockSellerAccounts: Array<Record<string, unknown>> = []
+const mockSellerAccountUpdates: Array<Record<string, unknown>> = []
 
 // inventory_active_listings への問い合わせチェーンを記録するモック。
 // 自動取り下げが「Kakehashi商品に紐付く出品だけ」を対象にしているか検証する。
@@ -41,6 +46,16 @@ vi.mock('@supabase/supabase-js', () => ({
         const recent = { select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), gte: vi.fn().mockReturnThis(), limit: vi.fn().mockReturnThis(), maybeSingle: vi.fn(async () => ({ data: null, error: null })) }
         return { ...recent, insert: mockRunInsert.mockImplementation(async () => ({ error: null })) }
       }
+      if (table === 'seller_accounts') {
+        const chain: Record<string, unknown> = {}
+        chain.select = vi.fn(() => chain)
+        chain.update = vi.fn((values: Record<string, unknown>) => { mockSellerAccountUpdates.push(values); return chain })
+        chain.eq = vi.fn(() => chain)
+        chain.not = vi.fn(() => chain)
+        chain.order = vi.fn(() => chain)
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: mockSellerAccounts, error: null })
+        return chain
+      }
       if (table === 'inventory_active_listings') return listingQueryMock()
       throw new Error(`Unexpected table: ${table}`)
     }),
@@ -66,6 +81,7 @@ vi.mock('@/lib/ebay-actions', () => ({
 
 vi.mock('@/lib/inventory-auth', () => ({
   resolveInventoryAccessToken: mockResolveAccessToken,
+  resolveSellerAccountAccessToken: mockResolveSellerAccountToken,
 }))
 
 describe('GET /api/cron/inventory-auto', () => {
@@ -88,6 +104,9 @@ describe('GET /api/cron/inventory-auto', () => {
       shipping_profile_name: null,
     }]
     mockResolveAccessToken.mockReset().mockResolvedValue('access-token')
+    mockResolveSellerAccountToken.mockReset().mockImplementation(async (_db: unknown, _userId: string, id: string) => `token-${id}`)
+    mockSellerAccounts = []
+    mockSellerAccountUpdates.length = 0
     mockSyncInventoryListings.mockReset().mockResolvedValue({ total: 12, matched: 8, ended: 0, discovered: 0, processed: 12, nextCursorItemId: null })
     mockCheckSupplierListings.mockReset().mockResolvedValue({
       total: 2,
@@ -116,7 +135,7 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 1 })
     expect(mockResolveAccessToken).toHaveBeenCalledOnce()
     // active出品が数十ページあるため、cronでは取得タイムアウトを引き上げて渡す
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null, sellerAccountId: null, ownsUnassignedProducts: true })
     expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 80_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 }, delistOnTitleChange: true })
     expect(mockSyncInventoryListings.mock.invocationCallOrder[0]).toBeLessThan(
       mockCheckSupplierListings.mock.invocationCallOrder[0],
@@ -169,7 +188,7 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 2 })
     expect(json.results[0].auth).toEqual({ error: 'refresh failed' })
     expect(mockSyncInventoryListings).toHaveBeenCalledTimes(1)
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 110_000, discoveryTimeBudgetMs: 30_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null, sellerAccountId: null, ownsUnassignedProducts: true })
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       user_id: 'user-1',
       status: 'failed',
@@ -304,5 +323,39 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(res.status).toBe(200)
     expect(json.results[0].skipped).toBeUndefined()
     expect(mockSyncInventoryListings).toHaveBeenCalledOnce()
+  })
+
+  // ユーザー要望(2026-09-25): 出品アカウントを複数運用し、アカウントごとに
+  // 独立して在庫管理する(混在させない)。
+  it('出品アカウントが複数あるときは、セラーごとに別トークン・別カーソルで同期する', async () => {
+    mockSellerAccounts = [
+      { id: 'seller-a', seller_id: 'miyabi-24', display_name: null, ebay_marketplace_id: 'EBAY_US', inventory_enabled: true, ebay_connected_at: '2026-07-26T00:00:00Z', inventory_discovery_scanned_until: null, inventory_sync_cursor_item_id: 'item-100' },
+      { id: 'seller-b', seller_id: 'akebono-32', display_name: null, ebay_marketplace_id: 'EBAY_AU', inventory_enabled: true, ebay_connected_at: '2026-09-25T00:00:00Z', inventory_discovery_scanned_until: null, inventory_sync_cursor_item_id: null },
+    ]
+    const { GET } = await import('@/app/api/cron/inventory-auto/route')
+    const res = await GET(new NextRequest('http://localhost/api/cron/inventory-auto?slot=9', {
+      headers: { authorization: 'Bearer cron-secret' },
+    }))
+
+    expect(res.status).toBe(200)
+    expect(mockSyncInventoryListings).toHaveBeenCalledTimes(2)
+    // セラーAは自分のトークン・自分のカーソル・自分のseller_account_idで同期する
+    expect(mockSyncInventoryListings).toHaveBeenNthCalledWith(1, expect.anything(), 'user-1', 'token-seller-a', expect.objectContaining({
+      sellerAccountId: 'seller-a', cursorItemId: 'item-100', ownsUnassignedProducts: true,
+    }))
+    expect(mockSyncInventoryListings).toHaveBeenNthCalledWith(2, expect.anything(), 'user-1', 'token-seller-b', expect.objectContaining({
+      sellerAccountId: 'seller-b', cursorItemId: null, ownsUnassignedProducts: false,
+    }))
+    // 実行時間は2セラーで分け合う
+    const firstOptions = mockSyncInventoryListings.mock.calls[0][3] as { fetchTotalTimeoutMs: number; maxItemsPerRun: number }
+    expect(firstOptions.fetchTotalTimeoutMs).toBe(55_000)
+    expect(firstOptions.maxItemsPerRun).toBe(400)
+    // 従来の単一トークンには一度もフォールバックしない
+    expect(mockResolveAccessToken).not.toHaveBeenCalled()
+    // カーソルはセラーごとに記録する
+    expect(mockSellerAccountUpdates).toEqual([
+      { inventory_sync_cursor_item_id: null },
+      { inventory_sync_cursor_item_id: null },
+    ])
   })
 })

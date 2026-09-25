@@ -20,13 +20,35 @@ async function connectedCredentials(db: SupabaseClient, userId: string) {
   return data ?? []
 }
 
+// ユーザー要望(2026-09-25): 出品アカウントを複数接続して、それぞれ独立に在庫
+// 管理する。どのセラーの出品を操作しているかが曖昧なままだと、他アカウントの
+// 出品を取り下げる・値下げする事故につながるため、在庫管理の各処理は必ず
+// セラーを指定してトークンを取得する。
+export async function resolveSellerAccountAccessToken(
+  db: SupabaseClient,
+  userId: string,
+  sellerAccountId: string,
+): Promise<string> {
+  const { data, error } = await db
+    .from('ebay_account_credentials')
+    .select('refresh_token_encrypted')
+    .eq('user_id', userId)
+    .eq('seller_account_id', sellerAccountId)
+    .maybeSingle()
+  if (error) throw new Error(`eBay接続情報の取得に失敗しました: ${error.message}`)
+  if (!data?.refresh_token_encrypted) {
+    throw new Error('この出品アカウントはeBayに接続されていません')
+  }
+  return refreshEbayAccessToken(decryptEbayRefreshToken(data.refresh_token_encrypted))
+}
+
 export async function hasInventoryAuthentication(
   db: SupabaseClient,
   userId: string,
   legacyAccessToken?: string | null,
 ): Promise<boolean> {
   if (legacyAccessToken) return true
-  return (await connectedCredentials(db, userId)).length === 1
+  return (await connectedCredentials(db, userId)).length >= 1
 }
 
 export async function resolveInventoryAccessToken(

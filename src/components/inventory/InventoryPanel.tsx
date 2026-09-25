@@ -165,6 +165,19 @@ function downloadCsvBlob(csv: string, filename: string) {
   URL.revokeObjectURL(url)
 }
 
+// ユーザー要望(2026-09-25): UK/AUにも出品する。US($)の表記のまま並べると
+// GBP/AUDの出品を見誤るため、出品のサイトに合わせて通貨記号とeBayのドメインを
+// 切り替える。
+const SITE_LABELS: Record<string, { symbol: string; domain: string; badge: string }> = {
+  US: { symbol: '$', domain: 'www.ebay.com', badge: 'US' },
+  UK: { symbol: '£', domain: 'www.ebay.co.uk', badge: 'UK' },
+  AU: { symbol: 'A$', domain: 'www.ebay.com.au', badge: 'AU' },
+}
+
+function siteInfo(siteId: string | null | undefined) {
+  return SITE_LABELS[(siteId ?? 'US').toUpperCase()] ?? SITE_LABELS.US
+}
+
 export default function InventoryPanel({ listings: initialListings, listingCount: initialListingCount, hasToken: initialHasToken, statusFilter = 'total' }: Props) {
   const [tab, setTab] = useState<Tab>('暗号化復元')
   const [listings, setListings] = useState<InventoryActiveListing[]>(initialListings)
@@ -1181,13 +1194,18 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
                       <a
-                        href={`https://www.ebay.com/itm/${encodeURIComponent(listing.ebay_item_id)}`}
+                        href={`https://${siteInfo(listing.site_id).domain}/itm/${encodeURIComponent(listing.ebay_item_id)}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-blue-600 hover:underline"
                       >
                         {listing.ebay_item_id}
                       </a>
+                      {(listing.site_id ?? 'US').toUpperCase() !== 'US' && (
+                        <span className="ml-2 rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] text-indigo-700">
+                          {siteInfo(listing.site_id).badge}
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-2 max-w-[320px]">
                       <p className="truncate text-gray-800" title={listing.title}>{listing.title || '—'}</p>
@@ -1209,7 +1227,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                       {listing.custom_label ?? '—'}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap text-gray-700">
-                      {listing.current_price != null ? `$${listing.current_price.toLocaleString()}` : '—'}
+                      {listing.current_price != null
+                        ? `${siteInfo(listing.site_id).symbol}${Number(listing.current_price).toLocaleString()}`
+                        : '—'}
                     </td>
                     {/* ユーザー要望: 仕入値と利益額(現在の為替・段階利益設定で計算)を表示 */}
                     <td className="px-3 py-2 whitespace-nowrap text-right text-gray-700">

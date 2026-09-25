@@ -27,6 +27,12 @@ export interface InventorySyncOptions {
   // 実行時間(Vercel 300秒)に収まらない規模でも、複数回に分けて全件を巡回できる。
   maxItemsPerRun?: number
   cursorItemId?: string | null
+  // ユーザー要望(2026-09-25): 出品アカウントを複数運用する。同期は必ず
+  // 「どのセラーの出品か」を指定して行い、他セラーの出品には触れない。
+  sellerAccountId?: string | null
+  // 出品アカウント未設定の古い抽出(extractions.seller_account_id が null)の
+  // 商品を、このセラーのものとして扱う(最初に接続したセラーのみ true)。
+  ownsUnassignedProducts?: boolean
 }
 
 export interface InventorySyncBatchResult extends InventorySyncResult {
@@ -135,7 +141,15 @@ export async function storeInventoryListings(
     )
     if (!productId) return []
 
+    // サイト・通貨はeBayから取得できたときだけ更新する(取得できない回に
+    // 既定値のUS/USDで上書きしてUK/AU出品を取り違えないため)。
+    const site = listing.siteId && listing.currency
+      ? { site_id: listing.siteId, currency: listing.currency }
+      : {}
+
     return [{
+      ...site,
+      ...(options.sellerAccountId ? { seller_account_id: options.sellerAccountId } : {}),
       user_id: userId,
       ebay_item_id: listing.ebayItemId,
       custom_label: listing.customLabel,
@@ -348,12 +362,19 @@ export async function markListingsRestored(db: SupabaseClient, userId: string, i
 
 // 以前の仕様では紐付かない出品も保存していたため、他ツールの出品が
 // 在庫一覧に残っている。Kakehashi管理外の行を同期のたびに取り除く。
-export async function purgeUnmanagedListings(db: SupabaseClient, userId: string): Promise<void> {
-  const { error } = await db
+export async function purgeUnmanagedListings(
+  db: SupabaseClient,
+  userId: string,
+  sellerAccountId?: string | null,
+): Promise<void> {
+  let query = db
     .from('inventory_active_listings')
     .delete()
     .eq('user_id', userId)
     .is('product_id', null)
+  // 他セラーの出品を巻き込んで消さない
+  if (sellerAccountId) query = query.eq('seller_account_id', sellerAccountId)
+  const { error } = await query
   if (error) throw new Error(`Unmanaged listing cleanup failed: ${error.message}`)
 }
 
@@ -372,7 +393,7 @@ export async function syncInventoryListingBatch(
     { signal: options.signal },
   )
   const stored = await storeInventoryListings(db, userId, batch.items, options)
-  await purgeUnmanagedListings(db, userId)
+  await purgeUnmanagedListings(db, userId, options.sellerAccountId)
 
   return {
     ...stored,
@@ -395,7 +416,7 @@ export async function syncInventoryListings(
     { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
   )
   const stored = await storeInventoryListings(db, userId, listings, options)
-  await purgeUnmanagedListings(db, userId)
+  await purgeUnmanagedListings(db, userId, options.sellerAccountId)
   return stored
 }
 
@@ -458,26 +479,65 @@ export interface KnownInventorySyncResult {
 }
 
 // Kakehashiが把握しているeBay ItemIDを集める(在庫一覧 + 商品テーブル)。
-async function collectKnownItemIds(db: SupabaseClient, userId: string): Promise<string[]> {
+async function collectKnownItemIds(
+  db: SupabaseClient,
+  userId: string,
+  options: InventorySyncOptions = {},
+): Promise<string[]> {
   const ids = new Set<string>()
+  const sellerAccountId = options.sellerAccountId ?? null
 
-  const { data: listings, error: listingError } = await db
+  let listingQuery = db
     .from('inventory_active_listings')
     .select('ebay_item_id')
     .eq('user_id', userId)
     .not('product_id', 'is', null)
+  // 他セラーのItemIDを自分のトークンで照会すると、取得できない/別の内容が
+  // 返るため、必ずこのセラーの出品だけを対象にする。
+  if (sellerAccountId) listingQuery = listingQuery.eq('seller_account_id', sellerAccountId)
+  const { data: listings, error: listingError } = await listingQuery
   if (listingError) throw new Error(`Known listing lookup failed: ${listingError.message}`)
   for (const row of listings ?? []) if (row.ebay_item_id) ids.add(String(row.ebay_item_id))
 
-  const { data: products, error: productError } = await db
-    .from('products')
-    .select('ebay_item_id')
-    .eq('user_id', userId)
-    .not('ebay_item_id', 'is', null)
-  if (productError) throw new Error(`Product listing lookup failed: ${productError.message}`)
-  for (const row of products ?? []) if (row.ebay_item_id) ids.add(String(row.ebay_item_id))
+  // まだ在庫一覧に入っていない出品(ダイレクト出品直後など)は、商品が属する
+  // 抽出の出品セラーでこのセラーのものかを判定する。
+  const extractionIds = sellerAccountId ? await extractionIdsForSeller(db, userId, sellerAccountId, options) : null
+  if (extractionIds !== null && extractionIds.length === 0) return Array.from(ids).sort()
+
+  const productIds = new Set<string>()
+  for (const chunk of extractionIds ? chunked(extractionIds) : [null]) {
+    let productQuery = db
+      .from('products')
+      .select('ebay_item_id')
+      .eq('user_id', userId)
+      .not('ebay_item_id', 'is', null)
+    if (chunk) productQuery = productQuery.in('extraction_id', chunk)
+    const { data: products, error: productError } = await productQuery
+    if (productError) throw new Error(`Product listing lookup failed: ${productError.message}`)
+    for (const row of products ?? []) if (row.ebay_item_id) productIds.add(String(row.ebay_item_id))
+  }
+  for (const id of productIds) ids.add(id)
 
   return Array.from(ids).sort()
+}
+
+// このセラーで出品した抽出のID。出品セラー未設定(古い抽出)は、最初に接続した
+// セラーのものとして扱う(ownsUnassignedProducts)。
+async function extractionIdsForSeller(
+  db: SupabaseClient,
+  userId: string,
+  sellerAccountId: string,
+  options: InventorySyncOptions,
+): Promise<string[]> {
+  const { data, error } = await db
+    .from('extractions')
+    .select('id, seller_account_id')
+    .eq('user_id', userId)
+  if (error) throw new Error(`Extraction lookup failed: ${error.message}`)
+  return (data ?? [])
+    .filter(row => row.seller_account_id === sellerAccountId
+      || (row.seller_account_id === null && options.ownsUnassignedProducts === true))
+    .map(row => row.id as string)
 }
 
 // 前回走査した時刻以降に出品開始された出品を全件確認し、Kakehashiの商品に
@@ -490,14 +550,27 @@ async function discoverNewListings(
 ): Promise<DiscoveryResult> {
   const scanStartedAt = new Date()
   try {
-    const { data: settings, error: settingsError } = await db
-      .from('inventory_settings')
-      .select('discovery_scanned_until')
-      .eq('user_id', userId)
-      .maybeSingle()
+    // 走査位置はセラーごとに持つ(アカウントを追加したときに、既存セラーの
+    // 走査位置を新しいセラーで進めてしまわないため)。
+    const sellerAccountId = options.sellerAccountId ?? null
+    const { data: settings, error: settingsError } = sellerAccountId
+      ? await db
+        .from('seller_accounts')
+        .select('inventory_discovery_scanned_until')
+        .eq('id', sellerAccountId)
+        .eq('user_id', userId)
+        .maybeSingle()
+      : await db
+        .from('inventory_settings')
+        .select('discovery_scanned_until')
+        .eq('user_id', userId)
+        .maybeSingle()
     if (settingsError) throw new Error(settingsError.message)
 
-    const scannedUntil = settings?.discovery_scanned_until ? new Date(settings.discovery_scanned_until) : null
+    const scannedUntilValue = sellerAccountId
+      ? (settings as { inventory_discovery_scanned_until?: string | null } | null)?.inventory_discovery_scanned_until
+      : (settings as { discovery_scanned_until?: string | null } | null)?.discovery_scanned_until
+    const scannedUntil = scannedUntilValue ? new Date(scannedUntilValue) : null
     let from = scannedUntil
       ? new Date(scannedUntil.getTime() - DISCOVERY_OVERLAP_MS)
       : new Date(scanStartedAt.getTime() - DISCOVERY_DEFAULT_LOOKBACK_MS)
@@ -532,10 +605,16 @@ async function discoverNewListings(
         break
       }
       cursor = chunkEnd
-      const { error } = await db
-        .from('inventory_settings')
-        .update({ discovery_scanned_until: chunkEnd.toISOString() })
-        .eq('user_id', userId)
+      const { error } = sellerAccountId
+        ? await db
+          .from('seller_accounts')
+          .update({ inventory_discovery_scanned_until: chunkEnd.toISOString() })
+          .eq('id', sellerAccountId)
+          .eq('user_id', userId)
+        : await db
+          .from('inventory_settings')
+          .update({ discovery_scanned_until: chunkEnd.toISOString() })
+          .eq('user_id', userId)
       if (error) console.warn('[inventory-sync] failed to record discovery time:', error.message)
     }
     return { discovered, truncated }
@@ -546,16 +625,23 @@ async function discoverNewListings(
   }
 }
 
-async function removeEndedListings(db: SupabaseClient, userId: string, itemIds: string[]): Promise<void> {
+async function removeEndedListings(
+  db: SupabaseClient,
+  userId: string,
+  itemIds: string[],
+  sellerAccountId?: string | null,
+): Promise<void> {
   if (itemIds.length === 0) return
   for (let index = 0; index < itemIds.length; index += DB_CHUNK_SIZE) {
     const chunk = itemIds.slice(index, index + DB_CHUNK_SIZE)
     await markProductsForEndedListings(db, userId, chunk)
-    const { error } = await db
+    let query = db
       .from('inventory_active_listings')
       .delete()
       .eq('user_id', userId)
       .in('ebay_item_id', chunk)
+    if (sellerAccountId) query = query.eq('seller_account_id', sellerAccountId)
+    const { error } = await query
     if (error) throw new Error(`Ended listing cleanup failed: ${error.message}`)
   }
 }
@@ -580,7 +666,7 @@ export async function syncKnownInventoryListingBatch(
   // 各バッチで走査を続け、1回の同期で走査に使える時間を増やす。
   const discovery = await discoverNewListings(db, userId, accessToken, options)
 
-  const knownIds = await collectKnownItemIds(db, userId)
+  const knownIds = await collectKnownItemIds(db, userId, options)
   const totalBatches = Math.max(1, Math.ceil(knownIds.length / batchSize))
   const start = (batchIndex - 1) * batchSize
   const targetIds = knownIds.slice(start, start + batchSize)
@@ -591,8 +677,8 @@ export async function syncKnownInventoryListingBatch(
     { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
   )
   const stored = await storeInventoryListings(db, userId, fetched.items, options)
-  await removeEndedListings(db, userId, fetched.endedItemIds)
-  await purgeUnmanagedListings(db, userId)
+  await removeEndedListings(db, userId, fetched.endedItemIds, options.sellerAccountId)
+  await purgeUnmanagedListings(db, userId, options.sellerAccountId)
 
   const processedItems = Math.min(knownIds.length, start + targetIds.length)
   return {
@@ -617,7 +703,7 @@ export async function syncKnownInventoryListings(
   options: InventorySyncOptions = {},
 ): Promise<KnownInventorySyncResult> {
   const discovery = await discoverNewListings(db, userId, accessToken, options)
-  const knownIds = await collectKnownItemIds(db, userId)
+  const knownIds = await collectKnownItemIds(db, userId, options)
 
   // 前回の続きから照会する(ItemIDはソート済み。見つからなければ先頭から)
   const startIndex = options.cursorItemId
@@ -634,10 +720,10 @@ export async function syncKnownInventoryListings(
     { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs, concurrency: options.getItemConcurrency },
   )
   const stored = await storeInventoryListings(db, userId, fetched.items, options)
-  await removeEndedListings(db, userId, fetched.endedItemIds)
+  await removeEndedListings(db, userId, fetched.endedItemIds, options.sellerAccountId)
   // 途中までしか照会していない回では、紐付かない出品の掃除は行わない
   // (未照会の出品を誤って消さないため)
-  if (finishedAll) await purgeUnmanagedListings(db, userId)
+  if (finishedAll) await purgeUnmanagedListings(db, userId, options.sellerAccountId)
 
   return {
     total: knownIds.length,

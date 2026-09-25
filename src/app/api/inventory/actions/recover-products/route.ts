@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
 import { fetchActiveListingsBatch } from '@/lib/ebay-inventory'
 import { conditionFromEbayId, extractDescriptionBody, fetchEbayItemDetails } from '@/lib/ebay-item-details'
 import { extractProductIdFromCustomLabel } from '@/lib/inventory'
@@ -44,7 +44,8 @@ export async function POST(req: NextRequest) {
     .maybeSingle()
   let accessToken: string
   try {
-    accessToken = await resolveInventoryAccessToken(db, user.id, settings ?? {})
+    // 複数セラー運用では、代表(最初に接続した)セラーのトークンで照会する
+    accessToken = (await createInventoryTokenResolver(db, user.id, settings ?? {})).defaultToken!
   } catch (error) {
     return NextResponse.json({ error: `eBayトークンの取得に失敗しました: ${error instanceof Error ? error.message : String(error)}` }, { status: 500 })
   }

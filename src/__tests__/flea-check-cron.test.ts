@@ -24,6 +24,13 @@ vi.mock('@supabase/supabase-js', () => ({
         }
       }
       if (table === 'inventory_runs') return { insert: vi.fn(async (row: Record<string, unknown>) => { mocks.inserts.push(row); return { error: null } }) }
+      // 出品アカウント経由の接続なし(従来どおり単一トークンで動く)
+      if (table === 'seller_accounts') {
+        const chain: Record<string, unknown> = {}
+        for (const m of ['select', 'eq', 'not', 'order', 'update']) chain[m] = vi.fn(() => chain)
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+        return chain
+      }
       if (table === 'inventory_active_listings') {
         const chain: Record<string, unknown> = {}
         for (const m of ['select', 'eq', 'not', 'is']) chain[m] = vi.fn(() => chain)
@@ -40,7 +47,10 @@ vi.mock('@/lib/inventory-supplier-check', async (importOriginal) => ({
 }))
 vi.mock('@/lib/ebay-actions', () => ({ reviseInventoryStatusBatch: mocks.revise }))
 vi.mock('@/lib/inventory-sync', () => ({ markListingsDelisted: mocks.markDelisted }))
-vi.mock('@/lib/inventory-auth', () => ({ resolveInventoryAccessToken: mocks.resolveToken }))
+vi.mock('@/lib/inventory-auth', () => ({
+  resolveInventoryAccessToken: mocks.resolveToken,
+  resolveSellerAccountAccessToken: vi.fn(async () => 'token'),
+}))
 
 describe('GET /api/cron/flea-check', () => {
   const originalSecret = process.env.CRON_SECRET
@@ -63,7 +73,7 @@ describe('GET /api/cron/flea-check', () => {
     const res = await GET(req())
     expect(res.status).toBe(200)
     expect(mocks.check).toHaveBeenCalledWith(expect.anything(), 'u1', 12, expect.objectContaining({ sourceSite: 'yahoo_flea' }))
-    expect(mocks.revise).toHaveBeenCalledWith('token', [{ itemId: '111', quantity: 0 }])
+    expect(mocks.revise).toHaveBeenCalledWith('token', [{ itemId: '111', quantity: 0, siteId: 'US' }])
     expect(mocks.inserts.map(r => r.run_type)).toEqual(['flea_check', 'auto_delist'])
   })
 

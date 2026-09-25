@@ -88,7 +88,9 @@ describe('inventory authentication', () => {
       .rejects.toThrow('複数のeBayセラーが接続されています')
   })
 
-  it('reports automatic authentication only for exactly one connected seller', async () => {
+  // ユーザー要望(2026-09-25): 出品アカウントを複数接続して使い分ける。
+  // 接続が2件でも在庫管理は動く(セラーごとにトークンを分けて実行する)。
+  it('reports automatic authentication when at least one seller is connected', async () => {
     const single = mockDb([{ refresh_token_encrypted: 'encrypted-token' }])
     const multiple = mockDb([
       { refresh_token_encrypted: 'encrypted-1' },
@@ -96,6 +98,6 @@ describe('inventory authentication', () => {
     ])
 
     await expect(hasInventoryAuthentication(single.db, 'user-1')).resolves.toBe(true)
-    await expect(hasInventoryAuthentication(multiple.db, 'user-1')).resolves.toBe(false)
+    await expect(hasInventoryAuthentication(multiple.db, 'user-1')).resolves.toBe(true)
   })
 })

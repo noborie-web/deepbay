@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { addFixedPriceItem } from '@/lib/ebay-actions'
-import { resolveInventoryAccessToken } from '@/lib/inventory-auth'
+import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 
 function admin() {
@@ -68,7 +68,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: '出品ポリシー（支払い・配送・返品）が設定されていません。設定タブで入力してください。' }, { status: 400 })
   }
 
-  const accessToken = await resolveInventoryAccessToken(db, user.id, settings)
+  // 複数セラー運用では、代表(最初に接続した)セラーのトークンで出品する
+  const accessToken = (await createInventoryTokenResolver(db, user.id, settings)).defaultToken!
 
   // 積み上げ対象を取得
   let stackQuery = db

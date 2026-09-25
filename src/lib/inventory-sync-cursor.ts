@@ -6,6 +6,9 @@ interface InventorySyncCursorPayload {
   version: 1
   runId: string
   nextPage: number
+  // ユーザー要望(2026-09-25): 出品アカウントを複数運用する。手動同期は
+  // セラーを順番に処理するため、次に処理するセラーの位置も引き継ぐ。
+  sellerIndex?: number
 }
 
 function sign(payload: string, secret: string): Buffer {
@@ -16,10 +19,18 @@ export function createInventorySyncCursor(
   runId: string,
   nextPage: number,
   secret: string,
+  sellerIndex = 0,
 ): string {
   // nextPageは「次に処理するバッチ番号」。個別照会方式ではバッチ数が
   // Kakehashiの出品数に比例するため、旧方式のページ上限(25)は撤廃する。
-  if (!runId || !Number.isInteger(nextPage) || nextPage < 2 || nextPage > MAX_NEXT_PAGE) {
+  // 次のセラーに移るときは、そのセラーの1バッチ目から始める。
+  if (!runId || !Number.isInteger(nextPage) || nextPage < 1 || nextPage > MAX_NEXT_PAGE) {
+    throw new Error('Invalid inventory sync cursor values')
+  }
+  if (!Number.isInteger(sellerIndex) || sellerIndex < 0 || sellerIndex > 100) {
+    throw new Error('Invalid inventory sync cursor values')
+  }
+  if (nextPage === 1 && sellerIndex === 0) {
     throw new Error('Invalid inventory sync cursor values')
   }
   if (!secret) throw new Error('Inventory sync cursor secret is not configured')
@@ -28,6 +39,7 @@ export function createInventorySyncCursor(
     version: 1,
     runId,
     nextPage,
+    sellerIndex,
   } satisfies InventorySyncCursorPayload)).toString('base64url')
   const signature = sign(payload, secret).toString('base64url')
   return `${payload}.${signature}`
@@ -58,8 +70,11 @@ export function parseInventorySyncCursor(
       || typeof parsed.runId !== 'string'
       || !parsed.runId
       || !Number.isInteger(parsed.nextPage)
-      || parsed.nextPage! < 2
+      || parsed.nextPage! < 1
       || parsed.nextPage! > MAX_NEXT_PAGE
+      || (parsed.sellerIndex !== undefined
+        && (!Number.isInteger(parsed.sellerIndex) || parsed.sellerIndex < 0 || parsed.sellerIndex > 100))
+      || (parsed.nextPage === 1 && (parsed.sellerIndex ?? 0) === 0)
     ) {
       throw new Error('Invalid inventory sync cursor')
     }
