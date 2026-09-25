@@ -167,3 +167,44 @@ describe('seller accounts API', () => {
     expect(calls.some((c) => c.op === 'delete')).toBe(true)
   })
 })
+
+// ユーザー要望(2026-09-25): miyabi-24 はUS、akebono-32 はUK/AUに出品する。
+// アカウントごとの出品サイトを登録して、CSV出力のサイト選択の既定にする。
+describe('出品アカウントの出品サイト', () => {
+  beforeEach(() => {
+    mocks.getUser.mockReset().mockResolvedValue({ data: { user: { id: 'user-1' } } })
+    mocks.createServiceClient.mockReset()
+  })
+
+  it('POST は指定した出品サイトを保存する(順序はUS/UK/AUに揃える)', async () => {
+    const { db, calls } = makeDatabase({ existingSeller: null, sellerCount: 1 })
+    mocks.createServiceClient.mockReturnValue(db)
+    await POST(jsonRequest({ seller_id: 'akebono-32', listing_site_ids: ['AU', 'uk'] }))
+    const insert = calls.find(c => c.op === 'single')
+    expect(insert?.payload).toMatchObject({ listing_site_ids: ['UK', 'AU'] })
+  })
+
+  it('POST で未指定ならUSだけにする', async () => {
+    const { db, calls } = makeDatabase({ existingSeller: null, sellerCount: 1 })
+    mocks.createServiceClient.mockReturnValue(db)
+    await POST(jsonRequest({ seller_id: 'miyabi-24' }))
+    const insert = calls.find(c => c.op === 'single')
+    expect(insert?.payload).toMatchObject({ listing_site_ids: ['US'] })
+  })
+
+  it('PATCH は不正なサイト指定を拒否する', async () => {
+    const { db } = makeDatabase({ existingSeller: { id: 's1' } })
+    mocks.createServiceClient.mockReturnValue(db)
+    const res = await PATCH(jsonRequest({ id: 's1', listing_site_ids: 'US' }))
+    expect(res.status).toBe(400)
+  })
+
+  it('PATCH は未対応のサイトを除いて保存する', async () => {
+    const { db, calls } = makeDatabase({ existingSeller: { id: 's1' } })
+    mocks.createServiceClient.mockReturnValue(db)
+    const res = await PATCH(jsonRequest({ id: 's1', listing_site_ids: ['UK', 'DE'] }))
+    expect(res.status).toBe(200)
+    const update = calls.filter(c => c.op === 'update').at(-1)
+    expect(update?.payload).toEqual({ listing_site_ids: ['UK'] })
+  })
+})

@@ -24,6 +24,9 @@ export interface SellerAccount {
   ebay_user_id?: string | null
   ebay_marketplace_id?: string
   ebay_connected_at?: string | null
+  // ユーザー要望(2026-09-25): アカウントごとの出品サイト(US/UK/AU)。
+  // CSV出力のサイト選択の既定値になり、サイトの取り違えを防ぐ。
+  listing_site_ids?: string[] | null
   created_at: string
 }
 
