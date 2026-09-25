@@ -218,6 +218,27 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
     && policiesReady
     && !downloading
 
+  // ユーザー要望: US に加えて UK・AU 向けのCSVも出力する(SiteID・Currency・
+  // StartPrice をサイトごとに切り替え、価格はその通貨の為替で換算する)。
+  const [csvSites, setCsvSites] = useState<Array<'US' | 'UK' | 'AU'>>(['US'])
+  const toggleCsvSite = (site: 'US' | 'UK' | 'AU') => {
+    setCsvSites(prev => {
+      const next = prev.includes(site) ? prev.filter(s => s !== site) : [...prev, site]
+      return next.length > 0 ? next : prev
+    })
+  }
+
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  }
+
   async function downloadCsv(kind: 'listing' | 'specifics') {
     setError('')
     setNotice('')
@@ -233,6 +254,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
       params.set('returnProfile', returnProfile.trim())
       if (kind === 'listing') {
         params.set('formatVersion', 'ebay-upload-42-v1')
+        params.set('sites', csvSites.join(','))
         params.set('requestId', crypto.randomUUID())
       } else {
         params.set('formatVersion', 'specificsin-45-v1')
@@ -247,6 +269,21 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
         const json = await response.json().catch(() => ({}))
         throw new Error(json.error ?? 'CSV出力に失敗しました')
       }
+      // 複数サイトを選んだ場合はJSONでまとめて返るので、順にダウンロードする
+      if (kind === 'listing' && csvSites.length > 1) {
+        const json = await response.json() as {
+          files?: Array<{ site: string; filename: string; csv: string; currency: string; jpy_per_currency: number }>
+        }
+        const files = json.files ?? []
+        if (files.length === 0) throw new Error('CSVを生成できませんでした')
+        for (const file of files) {
+          downloadBlob(new Blob([file.csv], { type: 'text/csv;charset=utf-8' }), file.filename)
+          await new Promise(resolve => setTimeout(resolve, 400))
+        }
+        setNotice(`出品CSVを${files.length}ファイル出力しました（${files.map(f => `${f.site}: ${f.currency} 1=${Math.round(f.jpy_per_currency)}円`).join(' / ')}）。各サイトのeBayへアップロードしてください。`)
+        return
+      }
+
       // ユーザー要望: Item Specifics(C:列)を、eBay Taxonomy APIから取得
       // したカテゴリ別の実際の項目数に応じて出力するようにしたため、
       // 列数はカテゴリごとに変動する(例: 音楽CDカテゴリでは45列より
@@ -639,12 +676,21 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
           >
             ダイレクト出品
           </button>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500">出品先</span>
+            {(['US', 'UK', 'AU'] as const).map(site => (
+              <label key={site} className="flex items-center gap-1 text-xs text-gray-700">
+                <input type="checkbox" checked={csvSites.includes(site)} onChange={() => toggleCsvSite(site)} />
+                {site}
+              </label>
+            ))}
+          </div>
           <button
             onClick={() => downloadCsv('listing')}
             disabled={!canDownloadListing}
             className="border border-green-500 text-green-600 rounded-lg px-6 py-2.5 hover:bg-green-50 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {downloading === 'listing' ? 'CSV作成中...' : 'CSV出品'}
+            {downloading === 'listing' ? 'CSV作成中...' : csvSites.length > 1 ? `CSV出品（${csvSites.length}ファイル）` : 'CSV出品'}
           </button>
           <button
             onClick={() => downloadCsv('specifics')}
