@@ -161,10 +161,65 @@ export default function CategoriesPage() {
     setLoading(false)
   }
 
+  // 本番で確認した不具合(2026-09-26): 親カテゴリ222を削除しようとしても何も
+  // 起きなかった。その抽出が参照しているため外部キー制約で拒否されるのに、
+  // エラーを捨てていたので画面に何も出ていなかった。理由を必ず表示する。
   async function handleDelete(id: string) {
     if (!confirm('このカテゴリを削除しますか？')) return
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (supabase as any).from('listing_categories').delete().eq('id', id)
+    const { error: err } = await (supabase as any).from('listing_categories').delete().eq('id', id)
+    if (err) {
+      const inUse = err.code === '23503' || /foreign key/i.test(err.message ?? '')
+      setSuccessMsg('')
+      setError(inUse
+        ? 'このカテゴリーを使っている抽出があるため削除できません。カテゴリーIDを末端カテゴリーに変更すれば、その抽出もそのまま出品できます（右の「IDを変更」）。'
+        : `削除できませんでした: ${err.message ?? '不明なエラー'}`)
+      return
+    }
+    setError('')
+    setSuccessMsg('カテゴリーを削除しました')
+    setTimeout(() => setSuccessMsg(''), 3000)
+    fetchCategories()
+  }
+
+  // 親カテゴリを登録してしまった場合に、削除せず末端カテゴリへ付け替える。
+  // 抽出が参照していても、その抽出のCSVをそのまま出せるようになる。
+  async function repointCategory(cat: ListingCategory) {
+    const nextId = window.prompt(
+      `「${cat.name}」の eBayカテゴリーID を変更します。\n末端カテゴリーのIDを入力してください（親カテゴリーは登録できません）。`,
+      cat.ebay_category_id ?? '',
+    )
+    if (nextId === null) return
+    const trimmed = nextId.trim()
+    if (!trimmed || trimmed === cat.ebay_category_id) return
+
+    const { isLeaf, children } = await checkLeaf(trimmed)
+    if (!isLeaf) {
+      setSuccessMsg('')
+      setError(`${trimmed} は親カテゴリのため出品できません。下の候補から末端カテゴリを選んでください。`)
+      setSearchResults(children)
+      setTab('add')
+      return
+    }
+    if (categories.some(c => c.id !== cat.id && c.ebay_category_id === trimmed)) {
+      setSuccessMsg('')
+      setError(`${trimmed} はすでに別の行で登録済みです`)
+      return
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { error: err } = await (supabase as any)
+      .from('listing_categories')
+      .update({ ebay_category_id: trimmed })
+      .eq('id', cat.id)
+    if (err) {
+      setSuccessMsg('')
+      setError(`カテゴリーIDを変更できませんでした: ${err.message ?? '不明なエラー'}`)
+      return
+    }
+    setError('')
+    setSuccessMsg(`「${cat.name}」のカテゴリーIDを ${trimmed} に変更しました`)
+    setTimeout(() => setSuccessMsg(''), 4000)
     fetchCategories()
   }
 
@@ -239,9 +294,16 @@ export default function CategoriesPage() {
         </div>
       )}
 
+      {/* 削除・ID変更は「登録済みカテゴリー管理」タブで行うため、エラーは
+          タブに関係なく表示する(本番で削除の失敗理由が見えなかったため) */}
+      {error && (
+        <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
+          {error}
+        </div>
+      )}
+
       {tab === 'add' && (
         <div className="space-y-4">
-          {error && <p className="text-sm text-red-600">{error}</p>}
 
           {/* 直接入力フォーム */}
           <div className="flex gap-3">
@@ -334,10 +396,11 @@ export default function CategoriesPage() {
 
       {tab === 'manage' && (
         <div className="border rounded">
-          <div className="grid grid-cols-[100px_1fr_120px_130px_50px] gap-3 px-4 py-2 bg-gray-50 border-b text-xs font-medium text-gray-500">
+          <div className="grid grid-cols-[100px_1fr_120px_130px_90px_50px] gap-3 px-4 py-2 bg-gray-50 border-b text-xs font-medium text-gray-500">
             <span>カテゴリID</span>
             <span>識別名</span>
             <span>商品状態の設定</span>
+            <span></span>
             <span></span>
             <span></span>
           </div>
@@ -346,7 +409,7 @@ export default function CategoriesPage() {
           ) : (
             categories.map((cat) => (
               <div key={cat.id} className="border-b last:border-0">
-                <div className="grid grid-cols-[100px_1fr_120px_130px_50px] gap-3 px-4 py-3 items-center text-sm">
+                <div className="grid grid-cols-[100px_1fr_120px_130px_90px_50px] gap-3 px-4 py-3 items-center text-sm">
                   <span className="text-gray-600 font-mono text-xs">{cat.ebay_category_id}</span>
                   <span className="text-gray-700">
                     {cat.name}
@@ -365,6 +428,13 @@ export default function CategoriesPage() {
                     className="text-xs border rounded px-2 py-1 text-gray-600 hover:bg-gray-50"
                   >
                     {editingId === cat.id ? '閉じる' : 'ConditionID設定'}
+                  </button>
+                  <button
+                    onClick={() => repointCategory(cat)}
+                    className="text-xs border rounded px-2 py-1 text-gray-600 hover:bg-gray-50"
+                    title="親カテゴリを登録してしまった場合に、末端カテゴリへ付け替えます"
+                  >
+                    IDを変更
                   </button>
                   <button
                     onClick={() => handleDelete(cat.id)}
