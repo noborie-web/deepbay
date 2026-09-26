@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Search } from 'lucide-react'
+import clsx from 'clsx'
+import SellerBadge from '@/components/extraction/SellerBadge'
 import ExtractionStats from '@/components/extraction/ExtractionStats'
 import ExtractionForm from '@/components/extraction/ExtractionForm'
 import ExtractionRow from '@/components/extraction/ExtractionRow'
@@ -28,6 +30,9 @@ export default function ExtractionPageClient({
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<'bulk' | 'single'>('bulk')
   const [search, setSearch] = useState('')
+  // ユーザー要望(2026-09-26): 出品アカウントを2つ使い分けるので、一覧を
+  // セラーで絞り込めるようにする
+  const [sellerFilter, setSellerFilter] = useState('')
   const [extractions, setExtractions] = useState(initialExtractions)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -61,12 +66,14 @@ export default function ExtractionPageClient({
   }, [initialExtractions])
 
   const filtered = extractions.filter((e) => {
+    if (sellerFilter && e.seller_account_id !== sellerFilter) return false
     if (!search) return true
     const q = search.toLowerCase()
     return (
       e.id.toLowerCase().includes(q) ||
       e.source_url.toLowerCase().includes(q) ||
-      (e.memo ?? '').toLowerCase().includes(q)
+      (e.memo ?? '').toLowerCase().includes(q) ||
+      (e.seller_account?.seller_id ?? '').toLowerCase().includes(q)
     )
   })
 
@@ -156,16 +163,44 @@ export default function ExtractionPageClient({
         onSubmit={handleExtract}
       />
 
-      {/* 検索 */}
-      <div className="relative mb-4">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-        <input
-          type="text"
-          placeholder="検索(抽出id, メモ, url, カテゴリ, 編集者)"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full border rounded pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
-        />
+      {/* 検索・出品セラーの絞り込み */}
+      <div className="mb-4 space-y-2">
+        <div className="relative">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            placeholder="検索(抽出id, メモ, url, セラーID)"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full border rounded pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+          />
+        </div>
+        {sellers.length > 1 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-gray-500">出品セラー</span>
+            <button
+              onClick={() => setSellerFilter('')}
+              className={clsx('rounded border px-2 py-1 text-xs',
+                sellerFilter === '' ? 'border-gray-800 bg-gray-800 text-white' : 'border-gray-300 text-gray-600 hover:bg-gray-50')}
+            >
+              すべて（{extractions.length}）
+            </button>
+            {sellers.map((seller) => {
+              const count = extractions.filter((e) => e.seller_account_id === seller.id).length
+              return (
+                <button
+                  key={seller.id}
+                  onClick={() => setSellerFilter(sellerFilter === seller.id ? '' : seller.id)}
+                  className={clsx('rounded border px-1.5 py-1 text-xs',
+                    sellerFilter === seller.id ? 'border-gray-800 ring-1 ring-gray-800' : 'border-transparent hover:bg-gray-50')}
+                >
+                  <SellerBadge seller={seller} />
+                  <span className="ml-1 text-gray-500">{count}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {/* 抽出リスト */}
@@ -182,7 +217,7 @@ export default function ExtractionPageClient({
 
         {filtered.length === 0 ? (
           <div className="py-12 text-center text-sm text-gray-400">
-            {search ? '検索結果がありません' : 'まだ抽出がありません。URLを入力して抽出を開始してください。'}
+            {search || sellerFilter ? '該当する抽出がありません' : 'まだ抽出がありません。URLを入力して抽出を開始してください。'}
           </div>
         ) : (
           filtered.map((extraction) => (

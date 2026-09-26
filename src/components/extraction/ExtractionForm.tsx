@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import type { SellerAccount, ListingCategory, BulkEditSetting } from '@/types/database'
 import BulkEditSettingModal from './BulkEditSettingModal'
+import SellerBadge, { sellerSites } from './SellerBadge'
 
 interface Props {
   sellers: SellerAccount[]
@@ -28,6 +29,7 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
     bulkSettings.find((b) => b.is_default)?.id ?? ''
   )
   const [editingBulkSetting, setEditingBulkSetting] = useState<BulkEditSetting | null | undefined>(undefined)
+  const selectedSeller = sellers.find((s) => s.id === sellerAccountId)
   const [loading, setLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
@@ -95,13 +97,23 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
         >
           {sellers.length === 0 && <option value="">未登録</option>}
           {sellers.map((s) => (
-            <option key={s.id} value={s.id}>{s.display_name || s.seller_id}</option>
+            <option key={s.id} value={s.id}>
+              {s.display_name || s.seller_id}（{sellerSites(s).join('/')}）
+            </option>
           ))}
         </select>
         <a href="/sellers" className="absolute -bottom-4 left-1 text-[10px] text-blue-600 hover:underline">
           出品アカウントを追加・編集
         </a>
       </div>
+
+      {/* ユーザー要望(2026-09-26): どのセラー・どのサイト向けの抽出になるかを
+          抽出前に一目で分かるようにする(セラーは抽出時に確定するため) */}
+      {selectedSeller && (
+        <div className="flex items-center" title="この抽出はこのセラーのものになります（あとから変更できません）">
+          <SellerBadge seller={selectedSeller} />
+        </div>
+      )}
 
       {/* 一括編集設定 */}
       <div className="relative">

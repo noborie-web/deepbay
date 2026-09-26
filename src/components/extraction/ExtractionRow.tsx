@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Copy, Pencil, MoreHorizontal } from 'lucide-react'
 import Badge from '@/components/ui/Badge'
+import SellerBadge from '@/components/extraction/SellerBadge'
 import ExclusionSummaryModal from './ExclusionSummaryModal'
 import type { Extraction } from '@/types/database'
 
@@ -121,7 +122,13 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
             <Copy size={11} />
           </button>
         </div>
-        <div><span className="text-gray-400">セラーID:</span> {extraction.seller_account?.seller_id ?? '—'}</div>
+        {/* ユーザー要望(2026-09-26): 出品アカウントを2つ使い分けるので、どの
+            セラー・どのサイト向けの抽出かを一覧で見分けられるようにする */}
+        <div className="flex items-center gap-1 py-0.5">
+          {extraction.seller_account
+            ? <SellerBadge seller={extraction.seller_account} />
+            : <span className="text-gray-400">セラー未設定</span>}
+        </div>
         <div><span className="text-gray-400">出品カテゴリNo.</span> {extraction.category?.ebay_category_id ?? '—'}</div>
       </div>
 
