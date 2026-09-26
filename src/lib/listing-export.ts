@@ -197,9 +197,11 @@ export function specificsInFilename(
   sellerId: string,
   categoryId: string | null,
   extractionId: string,
+  siteId?: string,
 ): string {
   return [
     normalizeFilenamePart(sellerId),
+    ...(siteId ? [normalizeFilenamePart(siteId)] : []),
     normalizeFilenamePart(categoryId ?? 'category'),
     normalizeFilenamePart(extractionId.replace(/-/g, '_')),
   ].join('_') + '.csv'
@@ -450,7 +452,11 @@ export function generateSpecificsCsv(
     const brand = product.ebay_brand?.trim() || specifics.Brand?.join('|') || 'NA'
     const country = specifics.Country?.join('|') || 'Japan'
     const upc = specifics.UPC?.join('|') || 'NA'
-    const price = Number(product.ebay_price)
+    // 本番で確認した不具合(2026-09-26): 出品先にUK/AUを選んでも
+    // Specifics-IN CSVだけ SiteID=US / Currency=USD / USD価格で出力され、
+    // そのままアップロードするとUS向け出品になっていた。出品CSVと同じく
+    // サイトごとの通貨・価格で出力する。
+    const price = listingPriceForSite(product, options.site)
     const row = [
       'Add',
       productCustomLabel(product),
@@ -475,8 +481,8 @@ export function generateSpecificsCsv(
       'GTC',
       product.price_type === 'auction' ? 'Auction' : 'FixedPriceItem',
       '1',
-      'USD',
-      'US',
+      options.site?.currency ?? 'USD',
+      options.site?.siteId ?? 'US',
       country,
       product.original_description ?? '',
       product.original_title,

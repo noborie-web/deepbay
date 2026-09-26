@@ -267,6 +267,8 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
         params.set('requestId', crypto.randomUUID())
       } else {
         params.set('formatVersion', 'specificsin-45-v1')
+        // Specifics-IN も出品先サイトごとに通貨・価格を切り替えて出す
+        params.set('sites', csvSites.join(','))
         // 過去の3列レスポンスがブラウザや中継キャッシュに残っていても再利用させない。
         params.set('requestId', crypto.randomUUID())
       }
@@ -279,7 +281,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
         throw new Error(json.error ?? 'CSV出力に失敗しました')
       }
       // 複数サイトを選んだ場合はJSONでまとめて返るので、順にダウンロードする
-      if (kind === 'listing' && csvSites.length > 1) {
+      if (csvSites.length > 1) {
         const json = await response.json() as {
           files?: Array<{ site: string; filename: string; csv: string; currency: string; jpy_per_currency: number }>
         }
@@ -289,7 +291,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
           downloadBlob(new Blob([file.csv], { type: 'text/csv;charset=utf-8' }), file.filename)
           await new Promise(resolve => setTimeout(resolve, 400))
         }
-        setNotice(`出品CSVを${files.length}ファイル出力しました（${files.map(f => `${f.site}: ${f.currency} 1=${Math.round(f.jpy_per_currency)}円`).join(' / ')}）。各サイトのeBayへアップロードしてください。`)
+        setNotice(`${kind === 'listing' ? '出品CSV' : 'Specifics-IN CSV'}を${files.length}ファイル出力しました（${files.map(f => `${f.site}: ${f.currency} 1=${Math.round(f.jpy_per_currency)}円`).join(' / ')}）。各サイトのeBayへアップロードしてください。`)
         return
       }
 
@@ -706,7 +708,9 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
             disabled={!canDownloadSpecifics}
             className="border border-blue-500 text-blue-600 rounded-lg px-6 py-2.5 hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {downloading === 'specifics' ? '45列CSV作成中...' : 'SPECIFICS-IN 45列CSV出力'}
+            {downloading === 'specifics'
+              ? '45列CSV作成中...'
+              : csvSites.length > 1 ? `SPECIFICS-IN 45列CSV出力（${csvSites.length}ファイル）` : 'SPECIFICS-IN 45列CSV出力'}
           </button>
         </div>
       </div>

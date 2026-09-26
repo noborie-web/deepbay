@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { convertListingPrice, EBAY_SITES, normalizeSiteKeys, tradingSiteIdFor } from '@/lib/ebay-sites'
-import { generateListingCsv, listingFilename, listingPriceForSite } from '@/lib/listing-export'
+import { generateListingCsv, generateSpecificsCsv, listingFilename, listingPriceForSite, specificsInFilename } from '@/lib/listing-export'
 import { sitePriceAdjustment } from '@/lib/inventory-pricing'
 import type { Product } from '@/types/database'
 
@@ -115,5 +115,48 @@ describe('US以外で関税率を適用しない設定', () => {
       { siteId: 'UK', currency: 'GBP', jpyPerCurrency: 210, fallbackJpyPerUsd: 157, priceAdjustment: 0.63 / 0.76 },
     )
     expect(price).toBe(68.18)
+  })
+})
+
+// 本番で確認した不具合(2026-09-26): 出品先にUK/AUを選んでも、Specifics-IN CSV
+// だけ SiteID=US / Currency=USD / USD価格で出力され、そのままアップロードすると
+// US向け出品になっていた。
+describe('Specifics-IN CSVのサイト別出力', () => {
+  const product = {
+    id: '11111111-1111-4111-8111-111111111111',
+    ebay_price: 110,
+    pricing_jpy_per_usd: 157,
+    original_title: 'テスト万年筆',
+    ebay_title: 'Test Fountain Pen',
+    ebay_category_id: '7281',
+    original_description: '説明',
+  } as unknown as Product
+
+  // 説明文にカンマ・改行が入るため、Currency/SiteID は並び
+  // (…GTC,Format,Quantity,Currency,SiteID…)を直接確認する
+  it('サイトを指定しなければ従来どおり US / USD', () => {
+    const csv = generateSpecificsCsv([product], {
+      categoryId: '7281', sellerId: 'akebono-32',
+      paymentProfileName: 'p', returnProfileName: 'r', shippingProfileName: 's',
+    })
+    expect(csv).toContain(',GTC,FixedPriceItem,1,USD,US,')
+    expect(csv).toContain('Add,kakehashi_11111111_1111_4111_8111_111111111111,110.00,')
+  })
+
+  it('UKを指定するとSiteID・Currency・価格がUK向けになる', () => {
+    const csv = generateSpecificsCsv([product], {
+      categoryId: '7281', sellerId: 'akebono-32',
+      paymentProfileName: 'p', returnProfileName: 'r', shippingProfileName: 's',
+      site: { siteId: 'UK', currency: 'GBP', jpyPerCurrency: 210, fallbackJpyPerUsd: 157 },
+    })
+    expect(csv).toContain(',GTC,FixedPriceItem,1,GBP,UK,')
+    expect(csv).toContain('Add,kakehashi_11111111_1111_4111_8111_111111111111,82.24,')
+  })
+
+  it('複数サイトのときはファイル名にサイトが入る', () => {
+    expect(specificsInFilename('akebono-32', '7281', 'ext-1', 'UK'))
+      .toBe('akebono-32_UK_7281_ext_1.csv')
+    expect(specificsInFilename('akebono-32', '7281', 'ext-1'))
+      .toBe('akebono-32_7281_ext_1.csv')
   })
 })
