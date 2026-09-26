@@ -6,7 +6,7 @@ import { applyRevisedPrices } from '@/lib/inventory-sync'
 import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
 import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricing'
 import { currencyForSite } from '@/lib/ebay-sites'
-import { loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
+import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 
 function admin() {
@@ -39,8 +39,11 @@ export async function GET() {
 
   // UK/AU出品は、実行時と同じ換算(維持した利益額→出品通貨)でプレビューする。
   // ここでUSD価格のまま並べると、実行結果と食い違って確認の意味がなくなる。
-  const rates = await loadJpyRates((listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')))
   const pricingModel = await loadPricingModel(db, user.id)
+  const rates = await loadJpyRates(
+    (listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')),
+    (currency, rate, jpyPerUsd) => adjustedJpyRate(pricingModel, currency, rate, jpyPerUsd),
+  )
 
   const items = (listings ?? []).flatMap(l => {
     const p = productMap.get(l.product_id!)
@@ -105,8 +108,11 @@ export async function POST(req: NextRequest) {
     for (const p of products ?? []) productMap.set(p.id, p)
   }
   // UK/AU出品はUSD価格を出品通貨へ換算する(維持している利益額はそのまま)
-  const rates = await loadJpyRates((listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')))
   const pricingModel = await loadPricingModel(db, user.id)
+  const rates = await loadJpyRates(
+    (listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')),
+    (currency, rate, jpyPerUsd) => adjustedJpyRate(pricingModel, currency, rate, jpyPerUsd),
+  )
 
   const entries: Array<{ itemId: string; price: number; siteId: string | null; sellerAccountId: string | null }> = []
   const beforePrices = new Map<string, number>()

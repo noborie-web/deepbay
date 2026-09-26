@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { convertListingPrice, EBAY_SITES, normalizeSiteKeys, tradingSiteIdFor } from '@/lib/ebay-sites'
 import { generateListingCsv, generateSpecificsCsv, listingFilename, listingPriceForSite, specificsInFilename } from '@/lib/listing-export'
-import { sitePriceAdjustment } from '@/lib/inventory-pricing'
+import { adjustedJpyRate, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import type { Product } from '@/types/database'
 
 // ユーザー要望(2026-09-25): US に加えて UK・AU にも直接アップロードしたい。
@@ -89,7 +89,7 @@ describe('US以外で関税率を適用しない設定', () => {
     tiers: [{ maxPurchaseJpy: null, profitJpy: 3000 }],
     ebayFeeRate: 0.15, shippingJpy: 6000, fixedCostUsd: 0,
     adRate: 0.04, customsRate: 0.13, discountRate: 0.05,
-    skipCustomsOutsideUs: true,
+    skipCustomsOutsideUs: true, rateAdjustmentJpy: 0,
   }
 
   it('USは補正しない', () => {
@@ -158,5 +158,42 @@ describe('Specifics-IN CSVのサイト別出力', () => {
       .toBe('akebono-32_UK_7281_ext_1.csv')
     expect(specificsInFilename('akebono-32', '7281', 'ext-1'))
       .toBe('akebono-32_7281_ext_1.csv')
+  })
+})
+
+// ユーザー要望(2026-09-26): 円高に備えて、毎回「現在の為替より5円低いレート」で
+// 出品している。設定として保存し、UK/AUには同じ割合で適用する。
+describe('為替レートの調整', () => {
+  const model = {
+    kind: 'tiered' as const,
+    tiers: [{ maxPurchaseJpy: null, profitJpy: 3000 }],
+    ebayFeeRate: 0.15, shippingJpy: 6000, fixedCostUsd: 0,
+    adRate: 0.04, customsRate: 0.13, discountRate: 0.05,
+    skipCustomsOutsideUs: true, rateAdjustmentJpy: 5,
+  }
+
+  it('USDは指定した円額をそのまま引く', () => {
+    expect(adjustedJpyRate(model, 'USD', 158.37, 158.37)).toBeCloseTo(153.37, 2)
+  })
+
+  it('GBP・AUDは同じ割合で引く', () => {
+    const ratio = 1 - 5 / 158.37
+    expect(adjustedJpyRate(model, 'GBP', 209.89, 158.37)).toBeCloseTo(209.89 * ratio, 4)
+    expect(adjustedJpyRate(model, 'AUD', 111.27, 158.37)).toBeCloseTo(111.27 * ratio, 4)
+  })
+
+  it('調整なし・設定なしならレートをそのまま使う', () => {
+    expect(adjustedJpyRate({ ...model, rateAdjustmentJpy: 0 }, 'GBP', 209.89, 158.37)).toBe(209.89)
+    expect(adjustedJpyRate(null, 'GBP', 209.89, 158.37)).toBe(209.89)
+  })
+
+  it('レートを下げるので価格は上がる（値下げ方向には働かない）', () => {
+    const adjusted = adjustedJpyRate(model, 'GBP', 209.89, 158.37)
+    expect(adjusted).toBeLessThan(209.89)
+    const normal = listingPriceForSite({ ebay_price: 110, pricing_jpy_per_usd: 153.37 },
+      { siteId: 'UK', currency: 'GBP', jpyPerCurrency: 209.89, fallbackJpyPerUsd: 158.37 })
+    const conservative = listingPriceForSite({ ebay_price: 110, pricing_jpy_per_usd: 153.37 },
+      { siteId: 'UK', currency: 'GBP', jpyPerCurrency: adjusted, fallbackJpyPerUsd: 153.37 })
+    expect(conservative).toBeGreaterThan(normal)
   })
 })

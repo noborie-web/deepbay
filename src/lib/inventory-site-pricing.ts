@@ -80,13 +80,27 @@ function toPositiveNumber(value: unknown): number | null {
  * 出品に出てくる通貨の円レートをまとめて取得する。
  * 取得できなかった通貨は含めない(その通貨の出品は価格改定を行わない)。
  */
-export async function loadJpyRates(currencies: Iterable<string>): Promise<Map<string, number>> {
+export async function loadJpyRates(
+  currencies: Iterable<string>,
+  // 円高に備えた為替調整(出品時と同じ基準で追従するため)
+  adjust?: (currency: string, rate: number, jpyPerUsd: number) => number,
+): Promise<Map<string, number>> {
   const rates = new Map<string, number>()
+  let jpyPerUsd = 0
+  if (adjust) {
+    try {
+      jpyPerUsd = (await fetchJpyRate('USD')).rate
+    } catch {
+      jpyPerUsd = 0
+    }
+  }
   const unique = Array.from(new Set(Array.from(currencies).map(c => (c || 'USD').toUpperCase())))
   await Promise.all(unique.map(async currency => {
     try {
       const rate = await fetchJpyRate(currency)
-      if (rate.rate > 0) rates.set(currency, rate.rate)
+      if (rate.rate > 0) {
+        rates.set(currency, adjust && jpyPerUsd > 0 ? adjust(currency, rate.rate, jpyPerUsd) : rate.rate)
+      }
     } catch (error) {
       console.warn(`[inventory-site-pricing] failed to load ${currency}/JPY rate:`, error instanceof Error ? error.message : error)
     }
