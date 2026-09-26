@@ -75,6 +75,8 @@ export default function SellersPage() {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? '処理に失敗しました')
+      // 直前の失敗メッセージ(例: 出品サイトを0件にしようとした)を残さない
+      setError('')
       await load()
       return json
     } catch (e) {
@@ -98,7 +100,11 @@ export default function SellersPage() {
   async function toggleSite(seller: SellerAccount, site: string) {
     const current = seller.listing_site_ids ?? ['US']
     const next = current.includes(site) ? current.filter(s => s !== site) : [...current, site]
-    if (next.length === 0) { setError('出品サイトは1つ以上選択してください'); return }
+    if (next.length === 0) {
+      // 先に追加したいサイトへチェックを入れてから外す、という順序を案内する
+      setError(`${seller.seller_id} の出品サイトは1つ以上必要です。先に他のサイトにチェックを入れてから外してください`)
+      return
+    }
     await call('PATCH', { id: seller.id, listing_site_ids: next })
   }
 
