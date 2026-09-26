@@ -30,6 +30,9 @@ export interface InventorySyncOptions {
   // ユーザー要望(2026-09-25): 出品アカウントを複数運用する。同期は必ず
   // 「どのセラーの出品か」を指定して行い、他セラーの出品には触れない。
   sellerAccountId?: string | null
+  // このセラーが出品しているサイト(US/UK/AU)。新規出品の発見はサイトごとに
+  // 走らせないと、UK/AUに出した出品が見つからない。
+  sellerSiteIds?: string[] | null
   // 出品アカウント未設定の古い抽出(extractions.seller_account_id が null)の
   // 商品を、このセラーのものとして扱う(最初に接続したセラーのみ true)。
   ownsUnassignedProducts?: boolean
@@ -599,18 +602,31 @@ async function discoverNewListings(
       const chunkEnd = new Date(Math.min(cursor.getTime() + DISCOVERY_CHUNK_MS, scanStartedAt.getTime()))
       const remaining = budgetMs - (Date.now() - startedMs)
       if (remaining <= 1_000) { truncated = true; break }
-      const scan = await scanSellerListByStartTime(
-        { accessToken },
-        { from: cursor, to: chunkEnd },
-        { timeBudgetMs: remaining, signal: options.signal },
-      )
-      // 終了済み(ユーザーが取り下げた等)の出品は在庫管理に入れない
-      const active = scan.items.filter(item => !item.listingStatus || item.listingStatus === 'Active')
-      const stored = await storeInventoryListings(db, userId, active, options)
-      discovered += stored.matched
-      if (scan.truncated) {
+      // 出品したサイトのSiteIDで呼ばないと、そのサイトの出品が返らない
+      const siteIds = options.sellerSiteIds && options.sellerSiteIds.length > 0
+        ? options.sellerSiteIds
+        : ['US']
+      let scanTruncated = false
+      for (const siteId of siteIds) {
+        const siteRemaining = budgetMs - (Date.now() - startedMs)
+        if (siteRemaining <= 1_000) { scanTruncated = true; break }
+        const scan = await scanSellerListByStartTime(
+          { accessToken },
+          { from: cursor, to: chunkEnd },
+          { timeBudgetMs: siteRemaining, signal: options.signal, siteId },
+        )
+        // 終了済み(ユーザーが取り下げた等)の出品は在庫管理に入れない
+        const active = scan.items.filter(item => !item.listingStatus || item.listingStatus === 'Active')
+        const stored = await storeInventoryListings(db, userId, active, options)
+        discovered += stored.matched
+        if (scan.truncated) {
+          scanTruncated = true
+          console.warn(`[inventory-sync] discovery truncated (${siteId}): ${scan.pagesFetched}/${scan.totalPages} pages in ${cursor.toISOString()}..${chunkEnd.toISOString()}`)
+          break
+        }
+      }
+      if (scanTruncated) {
         truncated = true
-        console.warn(`[inventory-sync] discovery truncated: ${scan.pagesFetched}/${scan.totalPages} pages in ${cursor.toISOString()}..${chunkEnd.toISOString()}`)
         break
       }
       cursor = chunkEnd

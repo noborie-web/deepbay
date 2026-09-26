@@ -1,7 +1,7 @@
 // Read-only eBay inventory sync via Trading API GetMyeBaySelling.
 // 現在は監視モードです。eBay商品の自動取り下げ・価格変更は実行しません。
 import type { InventoryListingInput } from './inventory'
-import { resolveListingSite } from './ebay-sites'
+import { resolveListingSite, tradingSiteIdFor } from './ebay-sites'
 
 const EBAY_TRADING_API_URL = 'https://api.ebay.com/ws/api.dll'
 const PAGE_SIZE = 200
@@ -588,7 +588,9 @@ export async function fetchSellerListPage(
   tokens: EbayTokenSet,
   range: { from: Date; to: Date },
   page: number,
-  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  // ユーザー要望(2026-09-26): UK/AUにも出品する。GetSellerListはサイト単位の
+  // 文脈で返るため、出品したサイトのSiteIDで呼ばないと発見できない。
+  options: { timeoutMs?: number; signal?: AbortSignal; siteId?: string | null } = {},
 ): Promise<SellerListPageResult> {
   if (!Number.isInteger(page) || page < 1) throw new Error(`Invalid eBay seller list page: ${page}`)
   if (range.to.getTime() - range.from.getTime() > SELLER_LIST_MAX_RANGE_MS) {
@@ -624,7 +626,7 @@ ${outputSelectors}
         'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
         'X-EBAY-API-CALL-NAME': 'GetSellerList',
         'X-EBAY-API-IAF-TOKEN': tokens.accessToken,
-        'X-EBAY-API-SITEID': '0',
+        'X-EBAY-API-SITEID': tradingSiteIdFor(options.siteId),
       },
       body: xml,
       signal: controller.signal,
@@ -658,7 +660,7 @@ export interface SellerListScanResult {
 export async function scanSellerListByStartTime(
   tokens: EbayTokenSet,
   range: { from: Date; to: Date },
-  options: { timeBudgetMs: number; pageTimeoutMs?: number; signal?: AbortSignal; maxPages?: number },
+  options: { timeBudgetMs: number; pageTimeoutMs?: number; signal?: AbortSignal; maxPages?: number; siteId?: string | null },
 ): Promise<SellerListScanResult> {
   const startedAt = Date.now()
   const items: InventoryListingInput[] = []
@@ -671,6 +673,7 @@ export async function scanSellerListByStartTime(
     const result = await fetchSellerListPage(tokens, range, page, {
       timeoutMs: Math.min(options.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS, remaining),
       signal: options.signal,
+      siteId: options.siteId,
     })
     items.push(...result.items)
     totalPages = Math.max(1, result.totalPages)
