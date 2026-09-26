@@ -238,6 +238,7 @@ export async function GET(req: NextRequest) {
           const summary = {
             seller_id: account?.seller_id ?? null,
             discovered: syncResult.discovered, ended: syncResult.ended, discovery_truncated: syncResult.discoveryTruncated,
+            discovery_error: syncResult.discoveryError ?? null,
             processed: syncResult.processed, remaining: syncResult.nextCursorItemId ? syncResult.total - syncResult.processed : 0,
           }
           syncResults.push({ ...summary, total: syncResult.total, matched: syncResult.matched })

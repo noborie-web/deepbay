@@ -461,6 +461,10 @@ export interface DiscoveryResult {
   discovered: number
   // 期間内の出品を読み切れなかった(次回同期で同じ期間から再走査する)
   truncated: boolean
+  // 本番で確認した不具合(2026-09-26): akebono-32(UK/AU)の新規出品が取り込まれず、
+  // 原因はconsole.warnにしか出ていなかったため画面からもDBからも見えなかった。
+  // 失敗した理由を呼び出し側に返し、実行履歴に残せるようにする。
+  error?: string
 }
 
 export interface KnownInventorySyncBatchResult {
@@ -475,6 +479,7 @@ export interface KnownInventorySyncBatchResult {
   // 新規に発見して取り込んだ件数(最初のバッチのみ)
   discovered: number
   discoveryTruncated: boolean
+  discoveryError?: string
   nextBatch: number | null
   totalBatches: number
 }
@@ -485,6 +490,7 @@ export interface KnownInventorySyncResult {
   ended: number
   discovered: number
   discoveryTruncated: boolean
+  discoveryError?: string
   // 今回照会した件数と、続きから再開するための位置(全件終わったら null)
   processed: number
   nextCursorItemId: string | null
@@ -593,13 +599,16 @@ async function discoverNewListings(
     // 期間を1日ずつに区切って走査し、読み切れた区間まで走査時刻を進める。
     // 一度に長い期間を読もうとして時間切れになると永久に進まなくなるため、
     // 1日分が時間内に読める限り必ず前進するようにする。
+    // ただし初回(走査位置なし)は30日分を1日ずつ読むと時間切れで一度も前に
+    // 進まないため、まとめて1区間で読む(出品数の少ない新しいセラー向け)。
+    const chunkMs = scannedUntil ? DISCOVERY_CHUNK_MS : Math.max(DISCOVERY_CHUNK_MS, scanStartedAt.getTime() - from.getTime())
     const budgetMs = options.discoveryTimeBudgetMs ?? DEFAULT_DISCOVERY_TIME_BUDGET_MS
     const startedMs = Date.now()
     let discovered = 0
     let truncated = false
     let cursor = from
     while (cursor.getTime() < scanStartedAt.getTime()) {
-      const chunkEnd = new Date(Math.min(cursor.getTime() + DISCOVERY_CHUNK_MS, scanStartedAt.getTime()))
+      const chunkEnd = new Date(Math.min(cursor.getTime() + chunkMs, scanStartedAt.getTime()))
       const remaining = budgetMs - (Date.now() - startedMs)
       if (remaining <= 1_000) { truncated = true; break }
       // 出品したサイトのSiteIDで呼ばないと、そのサイトの出品が返らない
@@ -645,8 +654,9 @@ async function discoverNewListings(
     return { discovered, truncated }
   } catch (error) {
     if (options.signal?.aborted) throw error
-    console.warn('[inventory-sync] discovery of new listings failed:', error instanceof Error ? error.message : error)
-    return { discovered: 0, truncated: true }
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn('[inventory-sync] discovery of new listings failed:', message)
+    return { discovered: 0, truncated: true, error: message }
   }
 }
 
@@ -713,6 +723,7 @@ export async function syncKnownInventoryListingBatch(
     ended: fetched.endedItemIds.length,
     discovered: discovery.discovered,
     discoveryTruncated: discovery.truncated,
+    discoveryError: discovery.error,
     nextBatch: batchIndex < totalBatches ? batchIndex + 1 : null,
     totalBatches,
   }
@@ -756,6 +767,7 @@ export async function syncKnownInventoryListings(
     ended: fetched.endedItemIds.length,
     discovered: discovery.discovered,
     discoveryTruncated: discovery.truncated,
+    discoveryError: discovery.error,
     processed: targetIds.length,
     nextCursorItemId,
   }

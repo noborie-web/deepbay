@@ -175,6 +175,10 @@ export async function POST(request: Request) {
     status: done ? 'completed' : 'running',
     items_total: total,
     items_matched: matched,
+    // 新規出品の発見に失敗した理由を履歴にも残す(画面からもDBからも追える)
+    ...(syncResult.discoveryError
+      ? { result_summary: { discovery_error: syncResult.discoveryError, seller_index: sellerIndex } }
+      : {}),
     finished_at: done ? new Date().toISOString() : null,
   }).eq('id', runId)
 
@@ -187,6 +191,8 @@ export async function POST(request: Request) {
     ended: syncResult.ended,
     discovered: syncResult.discovered,
     discovery_truncated: syncResult.discoveryTruncated,
+    // 新規出品の発見に失敗した理由(UK/AUが取り込まれない等の原因を画面に出す)
+    discovery_error: syncResult.discoveryError ?? null,
     done,
     cursor: done
       ? null

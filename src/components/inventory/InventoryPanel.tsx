@@ -691,6 +691,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       let endedTotal = 0
       let discoveredTotal = 0
       let discoveryTruncated = false
+      let discoveryError: string | null = null
       let rounds = 0
       for (let requestNumber = 1; requestNumber <= 50; requestNumber++) {
         const controller = new AbortController()
@@ -710,6 +711,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             discovered?: number
             discovery_truncated?: boolean
             done: boolean
+            discovery_error?: string | null
             cursor: string | null
             progress?: { processed: number; total: number }
           } = await res.json()
@@ -717,6 +719,10 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           endedTotal += json.ended ?? 0
           discoveredTotal += json.discovered ?? 0
           if (json.discovery_truncated) discoveryTruncated = true
+          // 新規出品の発見に失敗していたら黙って終わらせない
+          if (typeof json.discovery_error === 'string' && json.discovery_error) {
+            discoveryError = json.discovery_error
+          }
 
           if (json.progress) {
             setSyncProgress(`${json.progress.processed}/${json.progress.total}件`)
@@ -758,9 +764,10 @@ export default function InventoryPanel({ listings: initialListings, listingCount
         completed.discovered > 0 ? `新規${completed.discovered}件を発見` : null,
         completed.ended > 0 ? `終了済み${completed.ended}件を除外` : null,
       ].filter(Boolean).join('、')
-      showMsg(completed.discoveryTruncated ? 'error' : 'success',
+      showMsg(completed.discoveryTruncated || discoveryError ? 'error' : 'success',
         `同期完了: Kakehashi出品${completed.total}件を更新${extras ? `（${extras}）` : ''}`
-        + (completed.discoveryTruncated ? '。新規出品の走査が時間内に終わりませんでした。もう一度「同期」を実行してください。' : ''))
+        + (discoveryError ? `。新規出品の発見に失敗しました: ${discoveryError}` : '')
+        + (completed.discoveryTruncated && !discoveryError ? '。新規出品の走査が時間内に終わりませんでした。もう一度「同期」を実行してください。' : ''))
       setRunsLoaded(false)
     } catch (e) {
       showMsg('error', e instanceof Error ? e.message : '同期失敗')
