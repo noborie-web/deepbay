@@ -4,6 +4,8 @@ import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { reviseInventoryStatusBatch } from '@/lib/ebay-actions'
 import { applyRevisedPrices } from '@/lib/inventory-sync'
 import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
+import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricing'
+import { currencyForSite } from '@/lib/ebay-sites'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 
 function admin() {
@@ -19,37 +21,47 @@ export async function GET() {
   const db = admin()
   const { data: listings } = await db
     .from('inventory_active_listings')
-    .select('ebay_item_id, title, current_price, product_id')
+    .select('ebay_item_id, title, current_price, product_id, site_id, currency')
     .eq('user_id', user.id)
     .not('product_id', 'is', null)
 
   const productIds = (listings ?? []).map(l => l.product_id as string)
-  const productMap = new Map<string, { ebay_price: number | null }>()
+  const productMap = new Map<string, { ebay_price: number | null; pricing_jpy_per_usd: number | null }>()
 
   if (productIds.length > 0) {
     const { data: products } = await db
       .from('products')
-      .select('id, ebay_price')
+      .select('id, ebay_price, pricing_jpy_per_usd')
       .in('id', productIds)
     for (const p of products ?? []) productMap.set(p.id, p)
   }
 
-  const items = (listings ?? [])
-    .filter(l => {
-      const p = productMap.get(l.product_id!)
-      if (!p?.ebay_price || !l.current_price) return false
-      return Math.abs(p.ebay_price - l.current_price) > 0.5
+  // UK/AU出品は、実行時と同じ換算(維持した利益額→出品通貨)でプレビューする。
+  // ここでUSD価格のまま並べると、実行結果と食い違って確認の意味がなくなる。
+  const rates = await loadJpyRates((listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')))
+
+  const items = (listings ?? []).flatMap(l => {
+    const p = productMap.get(l.product_id!)
+    const currency = ((l.currency as string | null) ?? 'USD').toUpperCase()
+    const decision = decideSiteRevisePrice({
+      currentPrice: l.current_price as number | null,
+      usdPrice: p?.ebay_price ?? null,
+      jpyPerUsd: p?.pricing_jpy_per_usd ?? null,
+      siteId: (l.site_id as string | null) ?? 'US',
+      jpyPerCurrency: rates.get(currency) ?? null,
     })
-    .map(l => {
-      const p = productMap.get(l.product_id!)!
-      return {
-        ebay_item_id: l.ebay_item_id,
-        title: l.title,
-        old_price: l.current_price,
-        new_price: p.ebay_price,
-        diff: Math.round((p.ebay_price! - l.current_price!) * 100) / 100,
-      }
-    })
+    if (decision.action !== 'revise') return []
+    const before = Number(l.current_price)
+    return [{
+      ebay_item_id: l.ebay_item_id,
+      title: l.title,
+      old_price: before,
+      new_price: decision.price,
+      currency: decision.currency,
+      site_id: (l.site_id as string | null) ?? 'US',
+      diff: Math.round((decision.price - before) * 100) / 100,
+    }]
+  })
 
   return NextResponse.json({ items, count: items.length })
 }
@@ -84,27 +96,39 @@ export async function POST(req: NextRequest) {
   const { data: listings } = await query
 
   const productIds = (listings ?? []).map(l => l.product_id as string)
-  const productMap = new Map<string, { ebay_price: number | null }>()
+  const productMap = new Map<string, { ebay_price: number | null; pricing_jpy_per_usd: number | null }>()
   if (productIds.length > 0) {
-    const { data: products } = await db.from('products').select('id, ebay_price').in('id', productIds)
+    const { data: products } = await db.from('products').select('id, ebay_price, pricing_jpy_per_usd').in('id', productIds)
     for (const p of products ?? []) productMap.set(p.id, p)
   }
+  // UK/AU出品はUSD価格を出品通貨へ換算する(維持している利益額はそのまま)
+  const rates = await loadJpyRates((listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')))
 
   const entries: Array<{ itemId: string; price: number; siteId: string | null; sellerAccountId: string | null }> = []
   const beforePrices = new Map<string, number>()
-  // products.ebay_price はUSD建て。UK(GBP)/AU(AUD)の出品にそのまま送ると通貨を
-  // 取り違えて赤字になるため、通貨別の利益維持計算に対応するまで対象外にする。
-  let skippedOtherCurrency = 0
+  // 換算できない(レート未取得)・不自然に大きく下がる場合は送らず件数を残す。
+  let skippedNoRate = 0
+  let guarded = 0
   let skippedUnknownSeller = 0
   for (const l of listings ?? []) {
     const p = productMap.get(l.product_id!)
-    if (!p?.ebay_price || !l.current_price) continue
-    if (Math.abs(p.ebay_price - l.current_price) <= 0.5) continue
-    if (((l.currency as string | null) ?? 'USD').toUpperCase() !== 'USD') { skippedOtherCurrency++; continue }
+    const currency = ((l.currency as string | null) ?? 'USD').toUpperCase()
+    const decision = decideSiteRevisePrice({
+      currentPrice: l.current_price as number | null,
+      usdPrice: p?.ebay_price ?? null,
+      jpyPerUsd: p?.pricing_jpy_per_usd ?? null,
+      siteId: (l.site_id as string | null) ?? 'US',
+      jpyPerCurrency: rates.get(currency) ?? null,
+    })
+    if (decision.action === 'skip') {
+      if (decision.reason === 'no_rate') skippedNoRate++
+      if (decision.reason === 'guarded') guarded++
+      continue
+    }
     if (!tokenResolver.tokenFor(l.seller_account_id as string | null)) { skippedUnknownSeller++; continue }
     entries.push({
       itemId: l.ebay_item_id as string,
-      price: p.ebay_price,
+      price: decision.price,
       siteId: (l.site_id as string | null) ?? 'US',
       sellerAccountId: (l.seller_account_id as string | null) ?? null,
     })
@@ -126,7 +150,14 @@ export async function POST(req: NextRequest) {
   })
 
   try {
-    await applyRevisedPrices(db, user.id, results.filter(r => r.success).map(r => ({ ebay_item_id: r.itemId, price: entries.find(e => e.itemId === r.itemId)?.price ?? 0 })).filter(r => r.price > 0))
+    await applyRevisedPrices(db, user.id, results.filter(r => r.success).map(r => {
+      const entry = entries.find(e => e.itemId === r.itemId)
+      return {
+        ebay_item_id: r.itemId,
+        price: entry?.price ?? 0,
+        jpy_per_currency: entry ? rates.get(currencyForSite(entry.siteId)) ?? null : null,
+      }
+    }).filter(r => r.price > 0))
   } catch (error) {
     console.warn('[revise-price] revised price bookkeeping failed:', error instanceof Error ? error.message : error)
   }
@@ -141,7 +172,7 @@ export async function POST(req: NextRequest) {
     error_message: runSummary.errorMessage,
     result_summary: {
       total: results.length, succeeded, failed: failed.map(f => ({ id: f.itemId, error: f.error })),
-      skipped_other_currency: skippedOtherCurrency, skipped_unknown_seller: skippedUnknownSeller, items,
+      skipped_no_rate: skippedNoRate, guarded, skipped_unknown_seller: skippedUnknownSeller, items,
     },
     started_at: new Date().toISOString(),
     finished_at: new Date().toISOString(),
@@ -150,6 +181,6 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ok: true, total: results.length, succeeded, failed,
-    skipped_other_currency: skippedOtherCurrency, skipped_unknown_seller: skippedUnknownSeller,
+    skipped_no_rate: skippedNoRate, guarded, skipped_unknown_seller: skippedUnknownSeller,
   })
 }

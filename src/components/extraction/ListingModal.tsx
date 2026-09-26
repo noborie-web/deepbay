@@ -189,6 +189,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
   function changeSellerAccount(nextSellerAccountId: string) {
     const nextSeller = sellers.find((seller) => seller.id === nextSellerAccountId)
     setSellerAccountId(nextSellerAccountId)
+    setCsvSites(sellerSites(nextSeller))
     setEbayPolicies(null)
     setPolicyError('')
     if (nextSeller?.ebay_connected_at) {
@@ -220,7 +221,15 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
 
   // ユーザー要望: US に加えて UK・AU 向けのCSVも出力する(SiteID・Currency・
   // StartPrice をサイトごとに切り替え、価格はその通貨の為替で換算する)。
-  const [csvSites, setCsvSites] = useState<Array<'US' | 'UK' | 'AU'>>(['US'])
+  // 出品先の初期値は、出品アカウントに登録した出品サイト(例: akebono-32 は
+  // UK/AU)。セラーを切り替えたらそれに追従して、サイトの取り違えを防ぐ。
+  const sellerSites = (seller?: SellerAccount): Array<'US' | 'UK' | 'AU'> => {
+    const sites = (seller?.listing_site_ids ?? ['US'])
+      .map(site => site.toUpperCase())
+      .filter((site): site is 'US' | 'UK' | 'AU' => site === 'US' || site === 'UK' || site === 'AU')
+    return sites.length > 0 ? sites : ['US']
+  }
+  const [csvSites, setCsvSites] = useState<Array<'US' | 'UK' | 'AU'>>(() => sellerSites(initialSeller))
   const toggleCsvSite = (site: 'US' | 'UK' | 'AU') => {
     setCsvSites(prev => {
       const next = prev.includes(site) ? prev.filter(s => s !== site) : [...prev, site]
@@ -677,7 +686,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
             ダイレクト出品
           </button>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500">出品先</span>
+            <span className="text-xs text-gray-500" title="出品アカウントに登録した出品サイトが初期選択されます">出品先</span>
             {(['US', 'UK', 'AU'] as const).map(site => (
               <label key={site} className="flex items-center gap-1 text-xs text-gray-700">
                 <input type="checkbox" checked={csvSites.includes(site)} onChange={() => toggleCsvSite(site)} />

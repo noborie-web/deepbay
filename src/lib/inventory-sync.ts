@@ -323,12 +323,21 @@ export async function markListingsDelisted(db: SupabaseClient, userId: string, i
 // 価格改定をeBayに反映したら、在庫一覧の現在価格も更新する。
 // 本番で確認した不具合(2026-09-22): 反映後も current_price が古いままで、次回同期
 // まで「価格改定対象 116件」が消えず、確認画面にも反映済みの商品が並び続けた。
-export async function applyRevisedPrices(db: SupabaseClient, userId: string, revised: Array<{ ebay_item_id: string; price: number }>): Promise<void> {
+export async function applyRevisedPrices(
+  db: SupabaseClient,
+  userId: string,
+  // jpy_per_currency: UK/AU出品の換算に使った円レート(次回の比較・確認用)
+  revised: Array<{ ebay_item_id: string; price: number; jpy_per_currency?: number | null }>,
+): Promise<void> {
   const now = new Date().toISOString()
-  for (const { ebay_item_id, price } of revised) {
+  for (const { ebay_item_id, price, jpy_per_currency } of revised) {
     const { error } = await db
       .from('inventory_active_listings')
-      .update({ current_price: price, updated_at: now })
+      .update({
+        current_price: price,
+        ...(jpy_per_currency ? { pricing_jpy_per_currency: jpy_per_currency } : {}),
+        updated_at: now,
+      })
       .eq('user_id', userId)
       .eq('ebay_item_id', ebay_item_id)
     if (error) throw new Error(`Revised price update failed: ${error.message}`)

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
+import { EBAY_SITE_KEYS, isEbaySiteKey } from '@/lib/ebay-sites'
 
 // ユーザー要望(2026-09-25): 出品アカウント(出品セラー)を追加・編集できるようにする。
 // 複数のeBayアカウントを登録して、抽出・CSV出品・ダイレクト出品で使い分ける。
@@ -9,6 +10,16 @@ function admin() {
 }
 
 const SELLER_ID_PATTERN = /^[A-Za-z0-9._-]{3,64}$/
+
+// このアカウントで出品するサイト。未指定・不正な値はUSだけにする。
+function normalizeListingSites(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null
+  const sites = value
+    .map(v => String(v).trim().toUpperCase())
+    .filter(isEbaySiteKey)
+  const unique = EBAY_SITE_KEYS.filter(key => sites.includes(key))
+  return unique.length > 0 ? unique : ['US']
+}
 
 async function requireUser() {
   const supabase = await createClient()
@@ -21,7 +32,7 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { data, error } = await admin()
     .from('seller_accounts')
-    .select('id, seller_id, display_name, is_default, ebay_user_id, ebay_marketplace_id, ebay_connected_at, created_at')
+    .select('id, seller_id, display_name, is_default, ebay_user_id, ebay_marketplace_id, ebay_connected_at, listing_site_ids, created_at')
     .eq('user_id', user.id)
     .order('is_default', { ascending: false })
     .order('created_at', { ascending: true })
@@ -32,7 +43,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  const body = await req.json().catch(() => ({})) as { seller_id?: string; display_name?: string | null }
+  const body = await req.json().catch(() => ({})) as { seller_id?: string; display_name?: string | null; listing_site_ids?: unknown }
   const sellerId = (body.seller_id ?? '').trim()
   if (!SELLER_ID_PATTERN.test(sellerId)) {
     return NextResponse.json({ error: 'eBayセラーIDは英数字・ハイフン・アンダースコア・ドットの3〜64文字で入力してください' }, { status: 400 })
@@ -57,6 +68,7 @@ export async function POST(req: NextRequest) {
       user_id: user.id,
       seller_id: sellerId,
       display_name: body.display_name?.trim() || null,
+      listing_site_ids: normalizeListingSites(body.listing_site_ids) ?? ['US'],
       // 最初の1件は既定にする
       is_default: (count ?? 0) === 0,
     })
@@ -69,7 +81,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  const body = await req.json().catch(() => ({})) as { id?: string; display_name?: string | null; is_default?: boolean }
+  const body = await req.json().catch(() => ({})) as { id?: string; display_name?: string | null; is_default?: boolean; listing_site_ids?: unknown }
   if (!body.id) return NextResponse.json({ error: 'id が必要です' }, { status: 400 })
   const db = admin()
 
@@ -83,6 +95,11 @@ export async function PATCH(req: NextRequest) {
 
   const update: Record<string, unknown> = {}
   if (body.display_name !== undefined) update.display_name = body.display_name?.trim() || null
+  if (body.listing_site_ids !== undefined) {
+    const sites = normalizeListingSites(body.listing_site_ids)
+    if (!sites) return NextResponse.json({ error: '出品サイトの指定が不正です' }, { status: 400 })
+    update.listing_site_ids = sites
+  }
   if (body.is_default === true) {
     // 既定は1件だけ
     const { error: clearError } = await db.from('seller_accounts').update({ is_default: false }).eq('user_id', user.id)

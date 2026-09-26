@@ -7,6 +7,8 @@ import { listInventorySellerAccounts, sellerAccountLabel, type InventorySellerAc
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { isSlotActive, normalizeDailyRunCount, normalizeRevisePriceSchedule, resolveRunSlot, shouldRevisePriceInSlot } from '@/lib/inventory-schedule'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
+import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricing'
+import { currencyForSite } from '@/lib/ebay-sites'
 import { applyRevisedPrices, markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
 import { checkSupplierListings, normalizePriceChangeFilter } from '@/lib/inventory-supplier-check'
 
@@ -325,11 +327,13 @@ export async function GET(req: NextRequest) {
         .not('product_id', 'is', null)
 
       const productIds = (listings ?? []).map(l => l.product_id as string)
-      const productMap = new Map<string, { ebay_price: number | null }>()
+      const productMap = new Map<string, { ebay_price: number | null; pricing_jpy_per_usd: number | null }>()
       if (productIds.length > 0) {
-        const { data: products } = await db.from('products').select('id, ebay_price').in('id', productIds)
+        const { data: products } = await db.from('products').select('id, ebay_price, pricing_jpy_per_usd').in('id', productIds)
         for (const p of products ?? []) productMap.set(p.id, p)
       }
+      // UK/AU出品はUSD価格を出品通貨へ換算して反映する(維持した利益額はそのまま)
+      const rates = await loadJpyRates((listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')))
 
       // 本番で確認した不具合: 価格改定が135件になった日に、Vercelの実行時間
       // 上限(300秒)に達して途中で打ち切られ、実行ログも残らなかった。
@@ -338,20 +342,33 @@ export async function GET(req: NextRequest) {
       const reviseStartedAt = Date.now()
       const reviseEntries: Array<{ itemId: string; price: number; siteId: string | null; sellerAccountId: string | null }> = []
       const beforePrices = new Map<string, number>()
-      // 価格追従が計算する products.ebay_price はUSD建て。UK(GBP)・AU(AUD)の
-      // 出品にそのまま送ると通貨を取り違えて大幅な値下げ=赤字になるため、
-      // 通貨別の利益維持計算に対応するまでUSD以外は反映しない。
-      let reviseSkippedOtherCurrency = 0
+      // UK/AU出品は、維持している利益額(円)を出品通貨に換算した価格を送る。
+      // 換算できない(レート未取得)・不自然に大きく下がる場合は送らず件数を残す。
+      let reviseSkippedNoRate = 0
+      let reviseGuarded = 0
       let reviseSkippedUnknownSeller = 0
       for (const l of listings ?? []) {
         const p = productMap.get(l.product_id!)
-        if (!p?.ebay_price || !l.current_price || Math.abs(p.ebay_price - l.current_price) <= 0.5) continue
         const currency = ((l.currency as string | null) ?? 'USD').toUpperCase()
-        if (currency !== 'USD') { reviseSkippedOtherCurrency++; continue }
+        const decision = decideSiteRevisePrice({
+          currentPrice: l.current_price as number | null,
+          usdPrice: p?.ebay_price ?? null,
+          jpyPerUsd: p?.pricing_jpy_per_usd ?? null,
+          siteId: (l.site_id as string | null) ?? 'US',
+          jpyPerCurrency: rates.get(currency) ?? null,
+        })
+        if (decision.action === 'skip') {
+          if (decision.reason === 'no_rate') reviseSkippedNoRate++
+          if (decision.reason === 'guarded') {
+            reviseGuarded++
+            console.warn(`[inventory-auto] guarded: ${l.ebay_item_id} ${l.current_price} -> (${currency}) 計算結果が15%超の値下げ`)
+          }
+          continue
+        }
         if (!resolveListingToken(l.seller_account_id as string | null)) { reviseSkippedUnknownSeller++; continue }
         reviseEntries.push({
           itemId: l.ebay_item_id as string,
-          price: p.ebay_price,
+          price: decision.price,
           siteId: (l.site_id as string | null) ?? 'US',
           sellerAccountId: (l.seller_account_id as string | null) ?? null,
         })
@@ -371,7 +388,14 @@ export async function GET(req: NextRequest) {
       }
       // 反映した価格を在庫一覧の現在価格にも書く(次回同期を待たずに差分が消える)
       try {
-        await applyRevisedPrices(db, userId, reviseResults.filter(r => r.success).map(r => ({ ebay_item_id: r.itemId, price: reviseEntries.find(e => e.itemId === r.itemId)?.price ?? 0 })).filter(r => r.price > 0))
+        await applyRevisedPrices(db, userId, reviseResults.filter(r => r.success).map(r => {
+          const entry = reviseEntries.find(e => e.itemId === r.itemId)
+          return {
+            ebay_item_id: r.itemId,
+            price: entry?.price ?? 0,
+            jpy_per_currency: entry ? rates.get(currencyForSite(entry.siteId)) ?? null : null,
+          }
+        }).filter(r => r.price > 0))
       } catch (error) {
         console.warn('[inventory-auto] revised price bookkeeping failed:', error instanceof Error ? error.message : error)
       }
@@ -392,7 +416,8 @@ export async function GET(req: NextRequest) {
         total: reviseResults.length,
         succeeded: reviseResults.filter(r => r.success).length,
         deferred: reviseDeferred,
-        skipped_other_currency: reviseSkippedOtherCurrency,
+        skipped_no_rate: reviseSkippedNoRate,
+        guarded: reviseGuarded,
         skipped_unknown_seller: reviseSkippedUnknownSeller,
         items: reviseItems,
       }

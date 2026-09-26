@@ -6,6 +6,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Store } from 'lucide-react'
 
+const SITES = ['US', 'UK', 'AU'] as const
+
 interface SellerAccount {
   id: string
   seller_id: string
@@ -14,6 +16,7 @@ interface SellerAccount {
   ebay_user_id: string | null
   ebay_marketplace_id: string | null
   ebay_connected_at: string | null
+  listing_site_ids: string[] | null
   created_at: string
 }
 
@@ -92,6 +95,13 @@ export default function SellersPage() {
     }
   }
 
+  async function toggleSite(seller: SellerAccount, site: string) {
+    const current = seller.listing_site_ids ?? ['US']
+    const next = current.includes(site) ? current.filter(s => s !== site) : [...current, site]
+    if (next.length === 0) { setError('出品サイトは1つ以上選択してください'); return }
+    await call('PATCH', { id: seller.id, listing_site_ids: next })
+  }
+
   function connectEbay(sellerAccountId: string) {
     const params = new URLSearchParams({ returnTo: '/sellers', sellerAccountId })
     window.location.assign(`/api/ebay/oauth/start?${params.toString()}`)
@@ -128,14 +138,16 @@ export default function SellersPage() {
         </div>
         <p className="mt-2 text-xs text-gray-500">
           セラーIDはeBayのユーザーID（出品画面に表示される名前）です。追加後に「eBayに接続」すると、ビジネスポリシーの自動取得とダイレクト出品・在庫管理が使えます。
+          「出品サイト」はそのアカウントで出すサイトです（例: miyabi-24 は US、akebono-32 は UK/AU）。CSV出品のサイト選択がこの設定に合わせて初期表示されます。
         </p>
       </div>
 
       {/* 一覧 */}
       <div className="mt-6 max-w-5xl rounded-lg border border-gray-200 bg-white">
-        <div className="grid grid-cols-[1fr_1fr_120px_160px_200px] gap-3 border-b bg-gray-50 px-4 py-2 text-xs font-medium text-gray-500">
+        <div className="grid grid-cols-[1fr_1fr_160px_100px_150px_190px] gap-3 border-b bg-gray-50 px-4 py-2 text-xs font-medium text-gray-500">
           <span>セラーID</span>
           <span>表示名</span>
+          <span>出品サイト</span>
           <span>既定</span>
           <span>eBay接続</span>
           <span></span>
@@ -148,7 +160,7 @@ export default function SellersPage() {
             出品アカウントがありません。上のフォームから追加してください。
           </div>
         ) : sellers.map(seller => (
-          <div key={seller.id} className="grid grid-cols-[1fr_1fr_120px_160px_200px] items-center gap-3 border-b px-4 py-3 text-sm last:border-0">
+          <div key={seller.id} className="grid grid-cols-[1fr_1fr_160px_100px_150px_190px] items-center gap-3 border-b px-4 py-3 text-sm last:border-0">
             <span className="font-mono text-gray-800">{seller.seller_id}</span>
             {editingId === seller.id ? (
               <input value={editDisplayName} onChange={e => setEditDisplayName(e.target.value)}
@@ -156,6 +168,20 @@ export default function SellersPage() {
             ) : (
               <span className="text-gray-600">{seller.display_name || '—'}</span>
             )}
+            {/* このアカウントで出品するサイト。CSV出力のサイト選択の既定値になる */}
+            <span className="flex gap-2 text-xs">
+              {SITES.map(site => (
+                <label key={site} className="flex items-center gap-1 text-gray-600">
+                  <input
+                    type="checkbox"
+                    checked={(seller.listing_site_ids ?? ['US']).includes(site)}
+                    onChange={() => toggleSite(seller, site)}
+                    disabled={saving}
+                  />
+                  {site}
+                </label>
+              ))}
+            </span>
             <span>
               {seller.is_default ? (
                 <span className="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-700">既定</span>
