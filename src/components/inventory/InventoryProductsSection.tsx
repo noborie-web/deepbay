@@ -22,7 +22,21 @@ const FILTERS: { key: FilterKey; label: string; color: string; match?: (p: Produ
 // ブロックする仕様のため、選択削除の対象外とする)。
 export type StatusCounts = Record<FilterKey, number>
 
-export default function InventoryProductsSection({ items, listings, listingCount, statusCounts, hasToken }: {
+// ユーザー要望(2026-09-26): 出品アカウント(miyabi-24=US / akebono-32=UK・AU)と
+// サイトの内訳を在庫管理でも見たい。
+export interface SiteBreakdownEntry {
+  seller: string
+  site: string
+  count: number
+}
+
+const SITE_TONE: Record<string, string> = {
+  US: 'bg-blue-50 text-blue-700 border-blue-200',
+  UK: 'bg-purple-50 text-purple-700 border-purple-200',
+  AU: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+}
+
+export default function InventoryProductsSection({ items, listings, listingCount, statusCounts, siteBreakdown = [], hasToken }: {
   items: Product[]
   // 集計カード用の件数(DBの全件カウント。itemsは表示用に直近100件のみ)
   statusCounts: StatusCounts
@@ -33,6 +47,7 @@ export default function InventoryProductsSection({ items, listings, listingCount
   // クライアントコンポーネント側でInventoryPanelを直接描画する。
   listings: InventoryActiveListing[]
   listingCount: number
+  siteBreakdown?: SiteBreakdownEntry[]
   hasToken: boolean
 }) {
   const [productList, setProductList] = useState(items)
@@ -160,6 +175,25 @@ export default function InventoryProductsSection({ items, listings, listingCount
           </button>
         ))}
       </div>
+
+      {/* 出品中の内訳(出品アカウント × サイト)。UK/AUが混ざっていないかを
+          ひと目で確認できるようにする */}
+      {siteBreakdown.length > 0 && (
+        <div className="-mt-2 mb-6 flex flex-wrap items-center gap-2">
+          <span className="text-xs text-gray-500">在庫管理中の内訳</span>
+          {siteBreakdown.map(({ seller, site, count }) => (
+            <span
+              key={`${seller}-${site}`}
+              className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs ${SITE_TONE[site] ?? 'bg-gray-50 text-gray-600 border-gray-200'}`}
+              title={`${seller} の ${site} サイトの出品`}
+            >
+              {seller}
+              <span className="rounded bg-white/70 px-1 text-[10px] tracking-wide">{site}</span>
+              <strong>{count}</strong>
+            </span>
+          ))}
+        </div>
+      )}
 
       <InventoryPanel listings={listings} listingCount={listingCount} hasToken={hasToken} statusFilter={filter} />
 

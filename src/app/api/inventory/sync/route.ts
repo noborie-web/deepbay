@@ -99,7 +99,7 @@ export async function POST(request: Request) {
   }
 
   let accessToken: string
-  let syncTargets: Array<{ id: string; seller_id: string } | null>
+  let syncTargets: Array<{ id: string; seller_id: string; listing_site_ids?: string[] } | null>
   try {
     const tokenResolver = await createInventoryTokenResolver(db, user.id, settings ?? {})
     syncTargets = tokenResolver.accounts.length > 0 ? tokenResolver.accounts : [null]
@@ -135,6 +135,7 @@ export async function POST(request: Request) {
           signal: syncController.signal,
           discoveryTimeBudgetMs: 15_000,
           sellerAccountId: syncTargets[Math.min(sellerIndex, syncTargets.length - 1)]?.id ?? null,
+          sellerSiteIds: syncTargets[Math.min(sellerIndex, syncTargets.length - 1)]?.listing_site_ids ?? null,
           ownsUnassignedProducts: sellerIndex === 0,
         },
       ),

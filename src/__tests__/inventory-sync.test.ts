@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { syncInventoryListingBatch, syncInventoryListings } from '@/lib/inventory-sync'
+import { syncInventoryListingBatch, syncInventoryListings, syncKnownInventoryListings } from '@/lib/inventory-sync'
 
 const { mockFetchActiveListingsBatch, mockFetchAllActiveListings, mockFetchListingsByItemIds, mockScanSellerList, mockUpsert, mockDeleteIs } = vi.hoisted(() => ({
   mockFetchActiveListingsBatch: vi.fn(),
@@ -464,5 +464,55 @@ describe('syncKnownInventoryListings: 分割実行', () => {
     expect(mockFetchListingsByItemIds).toHaveBeenLastCalledWith(expect.anything(), ['item-5'], expect.anything())
     // 全件終わったら位置をリセットして次回は先頭から
     expect(third).toMatchObject({ processed: 1, nextCursorItemId: null })
+  })
+})
+
+// ユーザー要望(2026-09-26): UKサイトにアップロードした出品も在庫管理に入れたい。
+// GetSellerList はサイト単位の文脈で返るため、そのセラーの出品サイトごとに
+// 走査しないとUK/AUの出品が発見できない。
+describe('新規出品の発見（サイト別）', () => {
+  beforeEach(() => {
+    mockFetchListingsByItemIds.mockReset().mockResolvedValue({ items: [], endedItemIds: [] })
+    mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: false, pagesFetched: 1, totalPages: 1 })
+    mockUpsert.mockReset().mockResolvedValue({ error: null })
+    mockDeleteIs.mockReset().mockResolvedValue({ error: null })
+  })
+
+  it('セラーの出品サイトごとに GetSellerList を呼ぶ', async () => {
+    const db = {
+      from: (table: string) => {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'update']) chain[m] = () => chain
+          chain.maybeSingle = async () => ({ data: { inventory_discovery_scanned_until: null }, error: null })
+          chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+          return chain
+        }
+        if (table === 'extractions') {
+          return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        }
+        if (table === 'products') return productsTableFor([])
+        // inventory_active_listings: 既知ItemIDの照会・upsert・掃除に応える
+        const chain: Record<string, unknown> = {}
+        chain.upsert = mockUpsert
+        chain.select = () => chain
+        chain.eq = () => chain
+        chain.not = () => chain
+        chain.is = () => chain
+        chain.in = () => chain
+        chain.delete = () => chain
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+        return chain
+      },
+    } as unknown as SupabaseClient
+
+    await syncKnownInventoryListings(db, 'user-1', 'token', {
+      sellerAccountId: 'seller-b',
+      sellerSiteIds: ['UK', 'AU'],
+      discoveryTimeBudgetMs: 5_000,
+    })
+
+    const sites = mockScanSellerList.mock.calls.map(call => (call[2] as { siteId?: string }).siteId)
+    expect(new Set(sites)).toEqual(new Set(['UK', 'AU']))
   })
 })

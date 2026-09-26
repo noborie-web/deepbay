@@ -36,6 +36,35 @@ export default async function InventoryPage() {
     countByStatus('delisted'),
   ])
 
+  // ユーザー要望(2026-09-26): UK/AUにも出品するので、出品中の内訳を
+  // セラー×サイトで見たい。在庫一覧(取り下げ済みを除く)を集計する。
+  const { data: siteRows } = await db
+    .from('inventory_active_listings')
+    .select('seller_account_id, site_id')
+    .eq('user_id', user.id)
+    .is('delisted_at', null)
+  const { data: sellerRows } = await db
+    .from('seller_accounts')
+    .select('id, seller_id, display_name')
+    .eq('user_id', user.id)
+  const sellerNames = new Map((sellerRows ?? []).map(row => [
+    row.id as string,
+    ((row.display_name as string | null)?.trim() || (row.seller_id as string)),
+  ]))
+  const siteBreakdownMap = new Map<string, number>()
+  for (const row of siteRows ?? []) {
+    const seller = sellerNames.get(row.seller_account_id as string) ?? '（セラー不明）'
+    const site = ((row.site_id as string | null) ?? 'US').toUpperCase()
+    const key = `${seller}\u0000${site}`
+    siteBreakdownMap.set(key, (siteBreakdownMap.get(key) ?? 0) + 1)
+  }
+  const siteBreakdown = Array.from(siteBreakdownMap.entries())
+    .map(([key, count]) => {
+      const [seller, site] = key.split('\u0000')
+      return { seller, site, count }
+    })
+    .sort((a, b) => b.count - a.count || a.seller.localeCompare(b.seller))
+
   const items = (productsResult.data ?? []) as Product[]
   const activeListings = (listingsResult.data ?? []) as InventoryActiveListing[]
   const hasToken = await hasInventoryAuthentication(db, user.id, settingsResult.data?.ebay_token)
@@ -61,6 +90,7 @@ export default async function InventoryPage() {
           sold: soldCount.count ?? 0,
           delisted: delistedCount.count ?? 0,
         }}
+        siteBreakdown={siteBreakdown}
         hasToken={hasToken}
       />
     </div>
