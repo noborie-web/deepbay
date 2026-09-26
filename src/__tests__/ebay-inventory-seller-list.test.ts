@@ -91,3 +91,30 @@ describe('scanSellerListByStartTime', () => {
     expect(result.pagesFetched).toBeLessThan(50)
   })
 })
+
+// 本番で確認した不具合(2026-09-26): akebono-32(UK/AU)の走査が
+// 「seller list page 1 exceeded 10000ms」で毎回タイムアウトし、UKに出品した
+// 127件が在庫管理に入らなかった。1ページを小さくして応答を軽くする。
+describe('GetSellerListの重さ対策', () => {
+  it('1ページ50件で要求し、商品紐付けに必要なSKUが返るDetailLevelを維持する', async () => {
+    const bodies: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body: string }) => {
+      bodies.push(init.body)
+      return {
+        ok: true,
+        text: async () => `<GetSellerListResponse><Ack>Success</Ack>
+          <PaginationResult><TotalNumberOfPages>1</TotalNumberOfPages></PaginationResult>
+          <PageNumber>1</PageNumber></GetSellerListResponse>`,
+      } as unknown as Response
+    }))
+
+    const { fetchSellerListPage } = await import('@/lib/ebay-inventory')
+    await fetchSellerListPage({ accessToken: 'token' },
+      { from: new Date('2026-09-25T00:00:00Z'), to: new Date('2026-09-26T00:00:00Z') }, 1, { siteId: 'UK' })
+
+    expect(bodies[0]).toContain('<EntriesPerPage>50</EntriesPerPage>')
+    expect(bodies[0]).toContain('<DetailLevel>ReturnAll</DetailLevel>')
+    expect(bodies[0]).toContain('<OutputSelector>SKU</OutputSelector>')
+    vi.unstubAllGlobals()
+  })
+})

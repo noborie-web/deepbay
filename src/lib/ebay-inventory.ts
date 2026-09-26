@@ -11,6 +11,9 @@ const PAGE_SIZE = 200
 // 上限を50ページ(10,000件)に引き上げるとともに、超過時はtruncatedで
 // 呼び出し側へ知らせて警告を表示できるようにする(黙って欠落させない)。
 const MAX_PAGES = 50
+// GetSellerList は重いので1ページを小さくし、タイムアウトも長めに取る
+const SELLER_LIST_PAGE_SIZE = 50
+const SELLER_LIST_PAGE_TIMEOUT_MS = 30_000
 const DEFAULT_PAGE_TIMEOUT_MS = 10_000
 const DEFAULT_TOTAL_TIMEOUT_MS = 45_000
 const DEFAULT_CONCURRENCY = 8
@@ -380,6 +383,22 @@ const DEFAULT_GET_ITEM_CONCURRENCY = 4
 // コード。終了済み・削除済みの出品として扱い、同期全体は止めない。
 const GET_ITEM_NOT_FOUND_ERROR_CODES = new Set(['17', '37', '21916750', '21917182'])
 
+// 本番で確認した不具合(2026-09-26): 手動同期を1日に7回ほど実行した結果、
+// 695件×7回 ≒ 4,900回のGetItemでeBayの日次上限に達し、同期が失敗し続けた。
+// 上限超過は時間をおけば回復するため、他のエラーと区別できるようにする。
+export class EbayCallLimitError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'EbayCallLimitError'
+  }
+}
+
+const GET_ITEM_CALL_LIMIT_ERROR_CODES = new Set(['218050', '21917053', '18000'])
+
+function isCallLimitMessage(message: string): boolean {
+  return /exceeded usage limit|call limit|exceeded the number of calls/i.test(message)
+}
+
 export interface KnownListingFetchResult {
   // 現在もactiveな出品(最新の在庫数・価格で更新する)
   items: InventoryListingInput[]
@@ -398,6 +417,12 @@ export function parseGetItemResponse(xml: string, itemId: string): InventoryList
     const code = getTag(xml, 'ErrorCode')
     if (GET_ITEM_NOT_FOUND_ERROR_CODES.has(code)) return 'not_found'
     const errMsg = getTag(xml, 'LongMessage') || getTag(xml, 'ShortMessage')
+    if (GET_ITEM_CALL_LIMIT_ERROR_CODES.has(code) || isCallLimitMessage(errMsg)) {
+      throw new EbayCallLimitError(
+        'eBayの呼び出し回数の上限に達しました（同期を短時間に繰り返すと発生します）。'
+        + '時間をおいてから、または翌日の自動実行をお待ちください。',
+      )
+    }
     throw new Error(`eBay GetItem error (${itemId}): ${errMsg || `code ${code}`}`)
   }
 
@@ -599,19 +624,24 @@ export async function fetchSellerListPage(
   const outputSelectors = OUTPUT_SELECTORS
     .map((field) => `  <OutputSelector>${field}</OutputSelector>`)
     .join('\n')
+  // 本番で確認した不具合(2026-09-26): akebono-32(UK/AU)の走査が
+  // 「seller list page 1 exceeded 10000ms」で毎回タイムアウトし、UKに出品した
+  // 127件が在庫管理に入らなかった。商品との紐付けにSKUが必要なため
+  // DetailLevel=ReturnAll は維持しつつ、1ページの件数を減らして応答を軽くし、
+  // タイムアウトも30秒に伸ばす。
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <GetSellerListRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <StartTimeFrom>${range.from.toISOString()}</StartTimeFrom>
   <StartTimeTo>${range.to.toISOString()}</StartTimeTo>
   <Pagination>
-    <EntriesPerPage>${PAGE_SIZE}</EntriesPerPage>
+    <EntriesPerPage>${SELLER_LIST_PAGE_SIZE}</EntriesPerPage>
     <PageNumber>${page}</PageNumber>
   </Pagination>
   <DetailLevel>ReturnAll</DetailLevel>
 ${outputSelectors}
 </GetSellerListRequest>`
 
-  const timeoutMs = options.timeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS
+  const timeoutMs = options.timeoutMs ?? SELLER_LIST_PAGE_TIMEOUT_MS
   const controller = new AbortController()
   let timedOut = false
   const timeout = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
@@ -671,7 +701,7 @@ export async function scanSellerListByStartTime(
     const remaining = options.timeBudgetMs - (Date.now() - startedAt)
     if (remaining <= 1_000) break
     const result = await fetchSellerListPage(tokens, range, page, {
-      timeoutMs: Math.min(options.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS, remaining),
+      timeoutMs: Math.min(options.pageTimeoutMs ?? SELLER_LIST_PAGE_TIMEOUT_MS, remaining),
       signal: options.signal,
       siteId: options.siteId,
     })
