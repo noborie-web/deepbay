@@ -109,10 +109,14 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const dangerSettingsFetchedRef = useRef(false)
 
   // 危険単語: 判定対象項目(タイトル/ブランド/商品詳細)を個別に選択できる。
-  // 公式ツールに合わせデフォルトは全て有効。
+  // 本番で確認した不具合(2026-09-26): 146件中103件が除外対象になり、内訳を
+  // 調べると該当はタイトル0件・ブランド16件・商品詳細128件だった。仕入元の
+  // タイトルは日本語なので英語の危険単語には当たらず、英訳した商品詳細の長文に
+  // Ink / CAP のような一般語が入っているだけだった。既定は「タイトル+ブランド」
+  // にして、商品詳細まで見たいときだけ利用者が有効にする。
   const [wordCheckTitle, setWordCheckTitle] = useState(true)
   const [wordCheckBrand, setWordCheckBrand] = useState(true)
-  const [wordCheckDescription, setWordCheckDescription] = useState(true)
+  const [wordCheckDescription, setWordCheckDescription] = useState(false)
 
   // スポット文字: 危険単語と同様、判定対象項目(タイトル/ブランド/商品詳細)を
   // 個別に選択できる。公式ツールに合わせデフォルトは全て有効。
@@ -967,6 +971,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     抽出危険設定に登録した危険単語が含まれている商品を除外します。大文字小文字関係なく、
                     英数字の単語は前後が英字でないとき(例: Gundam は gun に当たりません)、
                     日本語の単語は部分一致で判定します。
+                    商品詳細は英訳した長文に一般語(Ink・CAP など)が入りやすく誤爆が多いため、既定では判定しません。
                   </p>
                   {wordBreakdown && wordBreakdown.hits.length > 0 && (
                     <div className="rounded border bg-gray-50 px-3 py-2">

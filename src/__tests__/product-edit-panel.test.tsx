@@ -326,7 +326,7 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
 
   // 既存ツール(公式)との機能監査で発見: 危険単語除外はタイトルだけでなく
   // ブランド・商品詳細も判定対象にでき、それぞれチェックボックスで
-  // オン/オフできる(デフォルト全部オン)。
+  // オン/オフできる。商品詳細は誤爆が多かったため既定オフ(2026-09-26)。
   it('危険単語除外は「ブランドに含む」のチェックを外すとブランド一致の商品を対象外にできる', async () => {
     fetchMock
       .mockResolvedValueOnce({
@@ -351,7 +351,7 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
       ).textContent ?? ''
     }
 
-    // デフォルトは全項目チェック済みなのでブランド一致の1件が対象
+    // 既定はタイトル+ブランドなのでブランド一致の1件が対象
     await waitFor(() => expect(getPreviewText()).toMatch(/全2件中\s*1件が対象です/))
 
     // 「ブランドに含む」のチェックを外すと対象0件になる
@@ -359,7 +359,10 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     expect(getPreviewText()).toMatch(/全2件中\s*0件が対象です/)
   })
 
-  it('危険単語除外は「商品詳細に含む」がオンだと説明文にキーワードを含む商品も対象になる', async () => {
+  // 本番で確認した不具合(2026-09-26): 146件中103件が危険単語で除外対象になり、
+  // 該当はタイトル0件・ブランド16件・商品詳細128件だった(英訳した長文に
+  // Ink・CAP などの一般語が入るため)。商品詳細は既定オフにする。
+  it('危険単語除外は「商品詳細に含む」が既定オフで、オンにすると説明文の一致も対象になる', async () => {
     fetchMock
       .mockResolvedValueOnce({
         ok: true,
@@ -378,12 +381,18 @@ describe('ProductEditPanel: 未実装だった除外機能', () => {
     await userEvent.click(screen.getByRole('button', { name: /^除外$/ }))
     await userEvent.click(screen.getByRole('button', { name: '危険単語を除外' }))
 
-    await waitFor(() => {
-      const previewText = screen.getByText((_content, element) =>
-        element?.tagName === 'P' && /全1件中\s*1件が対象です/.test(element.textContent ?? ''),
-      )
-      expect(previewText).toBeInTheDocument()
-    })
+    function getPreviewText(): string {
+      return screen.getByText((_content, element) =>
+        element?.tagName === 'P' && /全1件中\s*\d+件が対象です/.test(element.textContent ?? ''),
+      ).textContent ?? ''
+    }
+
+    const descriptionCheckbox = screen.getByRole('checkbox', { name: '商品詳細に含む' })
+    expect(descriptionCheckbox).not.toBeChecked()
+    await waitFor(() => expect(getPreviewText()).toMatch(/全1件中\s*0件が対象です/))
+
+    await userEvent.click(descriptionCheckbox)
+    await waitFor(() => expect(getPreviewText()).toMatch(/全1件中\s*1件が対象です/))
   })
 
   // 既存ツール(公式)との機能監査で発見: スポット文字除外も危険単語と同様に
