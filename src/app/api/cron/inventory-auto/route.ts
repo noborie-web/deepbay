@@ -10,6 +10,7 @@ import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricing'
 import { currencyForSite } from '@/lib/ebay-sites'
 import { applyRevisedPrices, markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
+import { allocateSyncBudgets } from '@/lib/inventory-sync-budget'
 import { checkSupplierListings, normalizePriceChangeFilter } from '@/lib/inventory-supplier-check'
 
 // 1回の実行で「①GetItem同期(148件〜)」「②仕入先チェック」「③取り下げ」
@@ -190,7 +191,21 @@ export async function GET(req: NextRequest) {
 
     if (settings.ebay_auto_sync) {
       const startedAt = new Date().toISOString()
-      // 実行時間(300秒)は全セラーで分け合う。1セラーのときは従来と同じ予算。
+      // 実行時間(300秒)は全セラーで分け合う。単純に等分すると、出品0件の
+      // セラーにも半分取られて既存セラーの一巡が遅くなるため(2026-09-26に
+      // 695件が1回で回らなくなった)、出品件数に比例して配る。
+      const listingCounts: number[] = []
+      for (const account of syncTargets) {
+        if (!account) { listingCounts.push(0); continue }
+        const { count } = await db
+          .from('inventory_active_listings')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', userId)
+          .eq('seller_account_id', account.id)
+          .not('product_id', 'is', null)
+        listingCounts.push(count ?? 0)
+      }
+      const budgets = allocateSyncBudgets(listingCounts, { maxItems: 800, fetchMs: 110_000 })
       const share = syncTargets.length
       const syncResults: Record<string, unknown>[] = []
       try {
@@ -203,10 +218,11 @@ export async function GET(req: NextRequest) {
         // 上限付きにして、続きは次の実行(3/9/15/21時)から再開する。
         for (const [index, account] of syncTargets.entries()) {
           const syncResult = await syncKnownInventoryListings(db, userId, tokenFor(account), {
-            fetchTotalTimeoutMs: Math.floor(110_000 / share),
+            fetchTotalTimeoutMs: budgets[index].fetchTotalTimeoutMs,
+            // 新規出品の発見はどのセラーでも必要なので、ここは均等に分ける
             discoveryTimeBudgetMs: Math.floor(30_000 / share),
             getItemConcurrency: 8,
-            maxItemsPerRun: Math.floor(800 / share),
+            maxItemsPerRun: budgets[index].maxItemsPerRun,
             cursorItemId: account ? account.inventory_sync_cursor_item_id : (settings.sync_cursor_item_id ?? null),
             sellerAccountId: account?.id ?? null,
             // 出品セラー未設定の古い抽出は、最初に接続したセラーのものとして扱う

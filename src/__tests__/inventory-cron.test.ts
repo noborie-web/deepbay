@@ -14,18 +14,28 @@ let mockSettings: Array<Record<string, unknown>> = []
 // = 従来どおり単一トークンで動かすケース。
 let mockSellerAccounts: Array<Record<string, unknown>> = []
 const mockSellerAccountUpdates: Array<Record<string, unknown>> = []
+// セラーごとの出品件数(同期の予算配分に使われる)
+let mockSellerListingCounts: number[] = []
 
 // inventory_active_listings への問い合わせチェーンを記録するモック。
 // 自動取り下げが「Kakehashi商品に紐付く出品だけ」を対象にしているか検証する。
 function listingQueryMock() {
   const chain: Record<string, unknown> = {}
+  // 件数照会(select(_, {count:'exact', head:true}))のときは、セラーごとの
+  // 出品件数を順に返す(同期の予算配分の検証用)。
+  let counting = false
   for (const method of ['select', 'eq', 'not', 'lte', 'is']) {
     chain[method] = vi.fn((...args: unknown[]) => {
       mockListingQueryCalls.push([method, ...args])
+      if (method === 'select' && (args[1] as { head?: boolean } | undefined)?.head) counting = true
       return chain
     })
   }
-  chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+  chain.then = (resolve: (v: unknown) => void) => resolve(
+    counting
+      ? { data: null, error: null, count: mockSellerListingCounts.shift() ?? 0 }
+      : { data: [], error: null },
+  )
   return chain
 }
 
@@ -107,6 +117,7 @@ describe('GET /api/cron/inventory-auto', () => {
     mockResolveSellerAccountToken.mockReset().mockImplementation(async (_db: unknown, _userId: string, id: string) => `token-${id}`)
     mockSellerAccounts = []
     mockSellerAccountUpdates.length = 0
+    mockSellerListingCounts = []
     mockSyncInventoryListings.mockReset().mockResolvedValue({ total: 12, matched: 8, ended: 0, discovered: 0, processed: 12, nextCursorItemId: null })
     mockCheckSupplierListings.mockReset().mockResolvedValue({
       total: 2,
@@ -332,6 +343,8 @@ describe('GET /api/cron/inventory-auto', () => {
       { id: 'seller-a', seller_id: 'miyabi-24', display_name: null, ebay_marketplace_id: 'EBAY_US', inventory_enabled: true, ebay_connected_at: '2026-07-26T00:00:00Z', inventory_discovery_scanned_until: null, inventory_sync_cursor_item_id: 'item-100' },
       { id: 'seller-b', seller_id: 'akebono-32', display_name: null, ebay_marketplace_id: 'EBAY_AU', inventory_enabled: true, ebay_connected_at: '2026-09-25T00:00:00Z', inventory_discovery_scanned_until: null, inventory_sync_cursor_item_id: null },
     ]
+    // miyabi-24 は695件、akebono-32 はまだ0件
+    mockSellerListingCounts = [695, 0]
     const { GET } = await import('@/app/api/cron/inventory-auto/route')
     const res = await GET(new NextRequest('http://localhost/api/cron/inventory-auto?slot=9', {
       headers: { authorization: 'Bearer cron-secret' },
@@ -346,10 +359,11 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(mockSyncInventoryListings).toHaveBeenNthCalledWith(2, expect.anything(), 'user-1', 'token-seller-b', expect.objectContaining({
       sellerAccountId: 'seller-b', cursorItemId: null, ownsUnassignedProducts: false,
     }))
-    // 実行時間は2セラーで分け合う
+    // 実行時間は出品件数の比率で分ける(出品0件のセラーには最低限だけ)
     const firstOptions = mockSyncInventoryListings.mock.calls[0][3] as { fetchTotalTimeoutMs: number; maxItemsPerRun: number }
-    expect(firstOptions.fetchTotalTimeoutMs).toBe(55_000)
-    expect(firstOptions.maxItemsPerRun).toBe(400)
+    const secondOptions = mockSyncInventoryListings.mock.calls[1][3] as { fetchTotalTimeoutMs: number; maxItemsPerRun: number }
+    expect(firstOptions).toMatchObject({ fetchTotalTimeoutMs: 110_000, maxItemsPerRun: 800 })
+    expect(secondOptions).toMatchObject({ fetchTotalTimeoutMs: 15_000, maxItemsPerRun: 50 })
     // 従来の単一トークンには一度もフォールバックしない
     expect(mockResolveAccessToken).not.toHaveBeenCalled()
     // カーソルはセラーごとに記録する
