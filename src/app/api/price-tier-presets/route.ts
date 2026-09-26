@@ -95,6 +95,9 @@ export async function PUT(req: NextRequest) {
     ad_rate: numberField(body.ad_rate, 0),
     customs_rate: numberField(body.customs_rate, 0),
     discount_rate: numberField(body.discount_rate, 0),
+    // ユーザー要望(2026-09-26): 関税率は米国向けの設定なので、UK/AU出品では
+    // 適用しない(既定ON)
+    skip_customs_outside_us: body.skip_customs_outside_us !== false,
     updated_at: new Date().toISOString(),
   }
 

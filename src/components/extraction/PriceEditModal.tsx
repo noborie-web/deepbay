@@ -75,6 +75,9 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
   const [adRate, setAdRate] = useState('0')
   const [customsRate, setCustomsRate] = useState('0')
   const [discountRate, setDiscountRate] = useState('0')
+  // ユーザー要望(2026-09-26): 関税率13%は米国向けの設定。UK/AU出品では
+  // 適用しない(既定ON)。UK/AUのCSV価格と価格追従がこの分だけ安くなる。
+  const [skipCustomsOutsideUs, setSkipCustomsOutsideUs] = useState(true)
   const [profitTiers, setProfitTiers] = useState<ProfitTierInput[]>(INITIAL_PROFIT_TIERS)
   const [exchangeRateStatus, setExchangeRateStatus] = useState<'loading' | 'success' | 'error'>('loading')
   const [exchangeRateDate, setExchangeRateDate] = useState('')
@@ -101,6 +104,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
           fixed_cost_usd: parseFloat(fixedCostUsd),
           ad_rate: parseFloat(adRate) / 100,
           customs_rate: parseFloat(customsRate) / 100,
+          skip_customs_outside_us: skipCustomsOutsideUs,
           discount_rate: parseFloat(discountRate) / 100,
         }),
       })
@@ -123,6 +127,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
     fixed_cost_usd: number
     ad_rate: number
     customs_rate: number
+    skip_customs_outside_us?: boolean
     discount_rate: number
   }
   const [tierPresets, setTierPresets] = useState<TierPreset[]>([])
@@ -143,6 +148,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
     setFixedCostUsd(String(saved.fixed_cost_usd))
     setAdRate(String(saved.ad_rate * 100))
     setCustomsRate(String(saved.customs_rate * 100))
+    setSkipCustomsOutsideUs(saved.skip_customs_outside_us !== false)
     setDiscountRate(String(saved.discount_rate * 100))
   }
 
@@ -181,6 +187,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
           fixed_cost_usd: parseFloat(fixedCostUsd),
           ad_rate: parseFloat(adRate) / 100,
           customs_rate: parseFloat(customsRate) / 100,
+          skip_customs_outside_us: skipCustomsOutsideUs,
           discount_rate: parseFloat(discountRate) / 100,
         }),
       })
@@ -255,7 +262,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
     let cancelled = false
     fetch('/api/price-tier-settings')
       .then((res) => res.json())
-      .then((data: { setting?: { tiers: { maxPurchaseJpy: number | null; profitJpy: number }[]; ebay_fee_rate: number; shipping_jpy: number; fixed_cost_usd: number; ad_rate: number; customs_rate: number; discount_rate: number } | null }) => {
+      .then((data: { setting?: { tiers: { maxPurchaseJpy: number | null; profitJpy: number }[]; ebay_fee_rate: number; shipping_jpy: number; fixed_cost_usd: number; ad_rate: number; customs_rate: number; skip_customs_outside_us?: boolean; discount_rate: number } | null }) => {
         if (cancelled || !data.setting) return
         const saved = data.setting
         setProfitTiers(saved.tiers.map((t, index) => ({
@@ -269,6 +276,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
         setFixedCostUsd(String(saved.fixed_cost_usd))
         setAdRate(String(saved.ad_rate * 100))
         setCustomsRate(String(saved.customs_rate * 100))
+    setSkipCustomsOutsideUs(saved.skip_customs_outside_us !== false)
         setDiscountRate(String(saved.discount_rate * 100))
       })
       .catch(() => {})
@@ -355,6 +363,17 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
   const parsedDiscountRate = parseFloat(discountRate) / 100
   // 海外送料の入力は円のため、計算式が使うUSDへ為替レートで変換する。
   const parsedShippingUsd = parseFloat(shippingJpy) / parseFloat(jpyPerUsd)
+
+  // UK/AU価格が何倍になるかを、入力中の値から計算して示す
+  const customsAdjustmentLabel = (() => {
+    const feeRate = parseFloat(ebayFeeRate)
+    if (![feeRate, parsedAdRate, parsedCustomsRate, parsedDiscountRate].every(Number.isFinite)) return ''
+    if (!(parsedCustomsRate > 0)) return ''
+    const withCustoms = 1 - feeRate - parsedAdRate - parsedCustomsRate - parsedDiscountRate
+    const withoutCustoms = 1 - feeRate - parsedAdRate - parsedDiscountRate
+    if (!(withCustoms > 0) || !(withoutCustoms > 0)) return ''
+    return `（現在の設定では約${(withCustoms / withoutCustoms).toFixed(3)}倍）`
+  })()
 
   const profitValidationError = mode === 'profit' ? validateProfitParams({
     purchasePriceJpy: 1000,
@@ -649,6 +668,24 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
                     className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
                 </label>
               </div>
+
+              {/* 関税率は米国向けの設定のため、UK/AU出品では適用しない切り替え */}
+              <label className="flex items-start gap-2 rounded border bg-gray-50 px-3 py-2">
+                <input
+                  type="checkbox"
+                  aria-label="US以外では関税率を適用しない"
+                  checked={skipCustomsOutsideUs}
+                  onChange={(e) => setSkipCustomsOutsideUs(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span className="text-xs text-gray-600">
+                  US以外（UK・AU）では関税率を適用しない
+                  <span className="block text-[11px] text-gray-500">
+                    関税率は米国向けの設定です。ONのとき、UK/AUのCSV価格と価格追従は
+                    その分だけ安くなります{customsAdjustmentLabel}。
+                  </span>
+                </span>
+              </label>
 
               {mode === 'tiered' && (
                 <div className="border rounded-lg p-3 space-y-2 bg-gray-50">

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { convertListingPrice, EBAY_SITES, normalizeSiteKeys, tradingSiteIdFor } from '@/lib/ebay-sites'
 import { generateListingCsv, listingFilename, listingPriceForSite } from '@/lib/listing-export'
+import { sitePriceAdjustment } from '@/lib/inventory-pricing'
 import type { Product } from '@/types/database'
 
 // ユーザー要望(2026-09-25): US に加えて UK・AU にも直接アップロードしたい。
@@ -77,5 +78,42 @@ describe('generateListingCsv: 出品先サイト', () => {
   it('複数サイトのときはファイル名にサイトを入れる', () => {
     expect(listingFilename('miyabi-24', 'listing', 'UK')).toMatch(/^ebay_listing_UK_miyabi-24_\d{8}\.csv$/)
     expect(listingFilename('miyabi-24', 'listing')).toMatch(/^ebay_listing_miyabi-24_\d{8}\.csv$/)
+  })
+})
+
+// ユーザー要望(2026-09-26): 関税率13%は米国向けの設定なので、UK/AU出品では
+// 適用しない(既定ON)。UK/AUの価格はその分だけ安くなる。
+describe('US以外で関税率を適用しない設定', () => {
+  const model = {
+    kind: 'tiered' as const,
+    tiers: [{ maxPurchaseJpy: null, profitJpy: 3000 }],
+    ebayFeeRate: 0.15, shippingJpy: 6000, fixedCostUsd: 0,
+    adRate: 0.04, customsRate: 0.13, discountRate: 0.05,
+    skipCustomsOutsideUs: true,
+  }
+
+  it('USは補正しない', () => {
+    expect(sitePriceAdjustment(model, 'US')).toBe(1)
+    expect(sitePriceAdjustment(model, null)).toBe(1)
+  })
+
+  it('UK/AUは関税分だけ安くなる(0.63/0.76)', () => {
+    expect(sitePriceAdjustment(model, 'UK')).toBeCloseTo(0.63 / 0.76, 6)
+    expect(sitePriceAdjustment(model, 'AU')).toBeCloseTo(0.63 / 0.76, 6)
+  })
+
+  it('設定がOFF・関税率0・モデル無しなら補正しない', () => {
+    expect(sitePriceAdjustment({ ...model, skipCustomsOutsideUs: false }, 'UK')).toBe(1)
+    expect(sitePriceAdjustment({ ...model, customsRate: 0 }, 'UK')).toBe(1)
+    expect(sitePriceAdjustment(null, 'UK')).toBe(1)
+  })
+
+  it('CSVの出品価格にも補正が反映される', () => {
+    // 110USD × 157円 = 17,270円 → ÷210円/GBP = 82.24 → ×0.8289 = 68.18(切り上げ)
+    const price = listingPriceForSite(
+      { ebay_price: 110, pricing_jpy_per_usd: 157 },
+      { siteId: 'UK', currency: 'GBP', jpyPerCurrency: 210, fallbackJpyPerUsd: 157, priceAdjustment: 0.63 / 0.76 },
+    )
+    expect(price).toBe(68.18)
   })
 })

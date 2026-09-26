@@ -27,6 +27,9 @@ export interface ListingExportOptions extends ListingPolicies {
     jpyPerCurrency: number
     // 出品時レートが商品に記録されていない場合に使う 円/USD
     fallbackJpyPerUsd: number
+    // ユーザー要望(2026-09-26): 関税率は米国向けの設定なので、UK/AU出品では
+    // 適用しない。その場合の価格の補正率(例: 15/4/13/5% なら約0.829)。
+    priceAdjustment?: number
   }
 }
 
@@ -299,7 +302,10 @@ export function listingPriceForSite(
     ? Number(product.pricing_jpy_per_usd)
     : site.fallbackJpyPerUsd
   const converted = convertListingPrice(usdPrice, jpyPerUsd, site.jpyPerCurrency)
-  return converted ?? usdPrice
+  if (converted === null) return usdPrice
+  const adjustment = site.priceAdjustment
+  if (!adjustment || !(adjustment > 0) || adjustment === 1) return converted
+  return Math.ceil(converted * adjustment * 100) / 100
 }
 
 export function generateListingCsv(

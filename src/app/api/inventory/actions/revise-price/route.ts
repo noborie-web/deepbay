@@ -6,6 +6,7 @@ import { applyRevisedPrices } from '@/lib/inventory-sync'
 import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
 import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricing'
 import { currencyForSite } from '@/lib/ebay-sites'
+import { loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 
 function admin() {
@@ -39,6 +40,7 @@ export async function GET() {
   // UK/AU出品は、実行時と同じ換算(維持した利益額→出品通貨)でプレビューする。
   // ここでUSD価格のまま並べると、実行結果と食い違って確認の意味がなくなる。
   const rates = await loadJpyRates((listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')))
+  const pricingModel = await loadPricingModel(db, user.id)
 
   const items = (listings ?? []).flatMap(l => {
     const p = productMap.get(l.product_id!)
@@ -49,6 +51,7 @@ export async function GET() {
       jpyPerUsd: p?.pricing_jpy_per_usd ?? null,
       siteId: (l.site_id as string | null) ?? 'US',
       jpyPerCurrency: rates.get(currency) ?? null,
+      priceAdjustment: sitePriceAdjustment(pricingModel, (l.site_id as string | null) ?? 'US'),
     })
     if (decision.action !== 'revise') return []
     const before = Number(l.current_price)
@@ -103,6 +106,7 @@ export async function POST(req: NextRequest) {
   }
   // UK/AU出品はUSD価格を出品通貨へ換算する(維持している利益額はそのまま)
   const rates = await loadJpyRates((listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')))
+  const pricingModel = await loadPricingModel(db, user.id)
 
   const entries: Array<{ itemId: string; price: number; siteId: string | null; sellerAccountId: string | null }> = []
   const beforePrices = new Map<string, number>()
@@ -119,6 +123,7 @@ export async function POST(req: NextRequest) {
       jpyPerUsd: p?.pricing_jpy_per_usd ?? null,
       siteId: (l.site_id as string | null) ?? 'US',
       jpyPerCurrency: rates.get(currency) ?? null,
+      priceAdjustment: sitePriceAdjustment(pricingModel, (l.site_id as string | null) ?? 'US'),
     })
     if (decision.action === 'skip') {
       if (decision.reason === 'no_rate') skippedNoRate++

@@ -10,6 +10,7 @@ import {
 } from '@/lib/listing-export'
 import { loadActiveHtmlTemplate } from '@/lib/html-template'
 import { EBAY_SITES, normalizeSiteKeys } from '@/lib/ebay-sites'
+import { loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { fetchJpyRate } from '@/lib/exchange-rate'
 import { getCategoryItemSpecificsNames } from '@/lib/ebay-taxonomy'
 import type { Product } from '@/types/database'
@@ -153,6 +154,11 @@ export async function GET(req: NextRequest) {
   }
   const fallbackJpyPerUsd = currencyRates.get('USD') ?? (await fetchJpyRate('USD').then(r => r.rate).catch(() => 0))
 
+  // 関税率の扱い(US以外では適用しない)を価格設定から読む
+  const pricingModel = await loadPricingModel(
+    createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!),
+    user.id,
+  )
   const files = siteKeys.map(key => {
     const site = EBAY_SITES[key]
     const jpyPerCurrency = currencyRates.get(site.currency) ?? 0
@@ -165,7 +171,14 @@ export async function GET(req: NextRequest) {
       returnProfileName: returnProfile,
       shippingProfileName: shippingProfile,
       // USは従来どおり換算しない(出品価格をそのまま使う)
-      site: key === 'US' ? undefined : { siteId: site.siteId, currency: site.currency, jpyPerCurrency, fallbackJpyPerUsd },
+      site: key === 'US' ? undefined : {
+        siteId: site.siteId,
+        currency: site.currency,
+        jpyPerCurrency,
+        fallbackJpyPerUsd,
+        // 関税率を米国だけに適用する設定なら、UK/AUの価格はその分安くする
+        priceAdjustment: sitePriceAdjustment(pricingModel, site.siteId),
+      },
     }, itemSpecificColumns)
     return {
       site: key,
