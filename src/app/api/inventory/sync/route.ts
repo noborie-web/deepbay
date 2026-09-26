@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
+import { EbayCallLimitError } from '@/lib/ebay-inventory'
 import { expireStaleInventorySyncRuns } from '@/lib/inventory-run'
 import { syncKnownInventoryListingBatch } from '@/lib/inventory-sync'
 import { createInventorySyncCursor, parseInventorySyncCursor } from '@/lib/inventory-sync-cursor'
@@ -136,6 +137,9 @@ export async function POST(request: Request) {
           discoveryTimeBudgetMs: 15_000,
           sellerAccountId: syncTargets[Math.min(sellerIndex, syncTargets.length - 1)]?.id ?? null,
           sellerSiteIds: syncTargets[Math.min(sellerIndex, syncTargets.length - 1)]?.listing_site_ids ?? null,
+          // eBayの呼び出し上限を使い切らないよう、直近30分に取得済みの出品は
+          // 再照会しない(新規出品の発見は毎回行う)
+          skipFetchedWithinMs: 30 * 60 * 1000,
           ownsUnassignedProducts: sellerIndex === 0,
         },
       ),
@@ -150,6 +154,10 @@ export async function POST(request: Request) {
     await db.from('inventory_runs').update({
       status: 'failed', error_message: msg, finished_at: new Date().toISOString(),
     }).eq('id', runId)
+    // 呼び出し上限は時間をおけば回復するため、失敗理由をそのまま伝える
+    if (e instanceof EbayCallLimitError) {
+      return NextResponse.json({ error: msg }, { status: 429 })
+    }
     return NextResponse.json({ error: `eBay取得失敗: ${msg}` }, { status: 500 })
   } finally {
     clearTimeout(routeTimeout)

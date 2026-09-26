@@ -36,6 +36,9 @@ export interface InventorySyncOptions {
   // 出品アカウント未設定の古い抽出(extractions.seller_account_id が null)の
   // 商品を、このセラーのものとして扱う(最初に接続したセラーのみ true)。
   ownsUnassignedProducts?: boolean
+  // 本番で確認した不具合(2026-09-26): 手動同期を1日に7回実行して GetItem が
+  // eBayの日次上限を超えた。直近に取得済みの出品は再照会しない(手動同期用)。
+  skipFetchedWithinMs?: number
 }
 
 export interface InventorySyncBatchResult extends InventorySyncResult {
@@ -453,8 +456,12 @@ export async function syncInventoryListings(
 const DISCOVERY_OVERLAP_MS = 2 * 60 * 60 * 1000
 // 1回の走査区間
 const DISCOVERY_CHUNK_MS = 24 * 60 * 60 * 1000
-// 走査時刻の記録がない場合に遡る期間
-const DISCOVERY_DEFAULT_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000
+// 走査時刻の記録がない場合に遡る期間。
+// 本番で確認した不具合(2026-09-26): 新しく追加したセラー(akebono-32)は30日分を
+// 1日ずつ走査することになり、時間予算内に1区間も終わらず走査位置が進まなかった。
+// 新しいセラーで取り込みたいのは直近にアップロードした出品なので、初回は
+// 短い期間だけ見る(必要ならItemIDの手動紐付けで補える)。
+const DISCOVERY_DEFAULT_LOOKBACK_MS = 3 * 24 * 60 * 60 * 1000
 const DEFAULT_DISCOVERY_TIME_BUDGET_MS = 20_000
 
 export interface DiscoveryResult {
@@ -507,12 +514,16 @@ async function collectKnownItemIds(
 
   let listingQuery = db
     .from('inventory_active_listings')
-    .select('ebay_item_id')
+    .select('ebay_item_id, fetched_at')
     .eq('user_id', userId)
     .not('product_id', 'is', null)
   // 他セラーのItemIDを自分のトークンで照会すると、取得できない/別の内容が
   // 返るため、必ずこのセラーの出品だけを対象にする。
   if (sellerAccountId) listingQuery = listingQuery.eq('seller_account_id', sellerAccountId)
+  // 直近に取得済みの出品は再照会しない(eBayの呼び出し上限を使い切らないため)
+  if (options.skipFetchedWithinMs && options.skipFetchedWithinMs > 0) {
+    listingQuery = listingQuery.lt('fetched_at', new Date(Date.now() - options.skipFetchedWithinMs).toISOString())
+  }
   const { data: listings, error: listingError } = await listingQuery
   if (listingError) throw new Error(`Known listing lookup failed: ${listingError.message}`)
   for (const row of listings ?? []) if (row.ebay_item_id) ids.add(String(row.ebay_item_id))
@@ -599,9 +610,7 @@ async function discoverNewListings(
     // 期間を1日ずつに区切って走査し、読み切れた区間まで走査時刻を進める。
     // 一度に長い期間を読もうとして時間切れになると永久に進まなくなるため、
     // 1日分が時間内に読める限り必ず前進するようにする。
-    // ただし初回(走査位置なし)は30日分を1日ずつ読むと時間切れで一度も前に
-    // 進まないため、まとめて1区間で読む(出品数の少ない新しいセラー向け)。
-    const chunkMs = scannedUntil ? DISCOVERY_CHUNK_MS : Math.max(DISCOVERY_CHUNK_MS, scanStartedAt.getTime() - from.getTime())
+    const chunkMs = DISCOVERY_CHUNK_MS
     const budgetMs = options.discoveryTimeBudgetMs ?? DEFAULT_DISCOVERY_TIME_BUDGET_MS
     const startedMs = Date.now()
     let discovered = 0
