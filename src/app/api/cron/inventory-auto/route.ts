@@ -9,6 +9,7 @@ import { isSlotActive, normalizeDailyRunCount, normalizeRevisePriceSchedule, res
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricing'
 import { currencyForSite } from '@/lib/ebay-sites'
+import { loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { applyRevisedPrices, markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
 import { allocateSyncBudgets } from '@/lib/inventory-sync-budget'
 import { checkSupplierListings, normalizePriceChangeFilter } from '@/lib/inventory-supplier-check'
@@ -350,6 +351,8 @@ export async function GET(req: NextRequest) {
       }
       // UK/AU出品はUSD価格を出品通貨へ換算して反映する(維持した利益額はそのまま)
       const rates = await loadJpyRates((listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')))
+      // 関税率を米国だけに適用する設定を、CSV出力と同じようにここでも効かせる
+      const pricingModel = await loadPricingModel(db, userId)
 
       // 本番で確認した不具合: 価格改定が135件になった日に、Vercelの実行時間
       // 上限(300秒)に達して途中で打ち切られ、実行ログも残らなかった。
@@ -372,6 +375,7 @@ export async function GET(req: NextRequest) {
           jpyPerUsd: p?.pricing_jpy_per_usd ?? null,
           siteId: (l.site_id as string | null) ?? 'US',
           jpyPerCurrency: rates.get(currency) ?? null,
+          priceAdjustment: sitePriceAdjustment(pricingModel, (l.site_id as string | null) ?? 'US'),
         })
         if (decision.action === 'skip') {
           if (decision.reason === 'no_rate') reviseSkippedNoRate++

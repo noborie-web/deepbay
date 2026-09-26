@@ -19,6 +19,8 @@ import { fetchJpyRate } from './exchange-rate'
 export const SITE_PRICE_DROP_GUARD_RATE = 0.85
 
 export interface SiteReviseInput {
+  // 関税率を米国だけに適用する設定のときの補正率(UK/AUは1未満。既定1)
+  priceAdjustment?: number
   // 在庫一覧の現在価格(出品通貨建て)
   currentPrice: number | null
   // 仕入先チェックが維持した出品価格(USD)と、その計算に使った円/USDレート
@@ -52,6 +54,11 @@ export function decideSiteRevisePrice(input: SiteReviseInput): SiteReviseDecisio
     const jpyPerCurrency = toPositiveNumber(input.jpyPerCurrency)
     if (jpyPerUsd === null || jpyPerCurrency === null) return { action: 'skip', reason: 'no_rate' }
     target = convertListingPrice(usdPrice, jpyPerUsd, jpyPerCurrency)
+    // 関税率を米国だけに適用する設定なら、CSV出力と同じ補正をかける
+    const adjustment = toPositiveNumber(input.priceAdjustment)
+    if (target !== null && adjustment !== null && adjustment !== 1) {
+      target = Math.ceil(target * adjustment * 100) / 100
+    }
   }
   if (target === null || !(target > 0)) return { action: 'skip', reason: 'no_price' }
 

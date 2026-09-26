@@ -22,6 +22,9 @@ export interface TieredPricingModel {
   adRate: number
   customsRate: number
   discountRate: number
+  // ユーザー要望(2026-09-26): 関税率は米国向けの設定なので、UK/AU出品では
+  // 適用しない(既定ON)。UK/AUの価格はこの分だけ安くなる。
+  skipCustomsOutsideUs: boolean
 }
 
 export type PricingModel = TieredPricingModel | null
@@ -46,14 +49,30 @@ export function toPricingModel(row: Record<string, unknown> | null | undefined):
     adRate: num(row.ad_rate, 0),
     customsRate: num(row.customs_rate, 0),
     discountRate: num(row.discount_rate, 0),
+    skipCustomsOutsideUs: row.skip_customs_outside_us !== false,
   }
+}
+
+/**
+ * 出品サイトに応じた価格の補正率。
+ * 関税率を米国だけに適用する設定のとき、US以外の価格は
+ *   (1 - 手数料 - 広告 - 関税 - ディスカウント) / (1 - 手数料 - 広告 - ディスカウント)
+ * 倍になる(例: 15/4/13/5% なら 0.63/0.76 ≒ 0.829)。
+ */
+export function sitePriceAdjustment(model: PricingModel, siteId: string | null | undefined): number {
+  if (!model || !model.skipCustomsOutsideUs || model.customsRate <= 0) return 1
+  if ((siteId ?? 'US').toUpperCase() === 'US') return 1
+  const withCustoms = 1 - model.ebayFeeRate - model.adRate - model.customsRate - model.discountRate
+  const withoutCustoms = 1 - model.ebayFeeRate - model.adRate - model.discountRate
+  if (!(withCustoms > 0) || !(withoutCustoms > 0)) return 1
+  return withCustoms / withoutCustoms
 }
 
 export async function loadPricingModel(db: SupabaseClient, userId: string): Promise<PricingModel> {
   try {
     const { data } = await db
       .from('price_tier_settings')
-      .select('tiers, ebay_fee_rate, shipping_jpy, fixed_cost_usd, ad_rate, customs_rate, discount_rate')
+      .select('tiers, ebay_fee_rate, shipping_jpy, fixed_cost_usd, ad_rate, customs_rate, discount_rate, skip_customs_outside_us')
       .eq('user_id', userId)
       .maybeSingle()
     return toPricingModel(data as Record<string, unknown> | null)

@@ -56,3 +56,30 @@ describe('UK/AU出品の価格追従', () => {
     })).toEqual({ action: 'skip', reason: 'no_price' })
   })
 })
+
+// ユーザー要望(2026-09-26): 関税率は米国向けの設定なので、UK/AU出品では
+// 適用しない。価格追従もCSV出力と同じ補正を使う(食い違わせない)。
+describe('US以外で関税率を適用しない設定（価格追従）', () => {
+  it('補正率を渡すとUK価格がその分だけ安くなる(£82.24 → £68.18)', () => {
+    const result = decideSiteRevisePrice({
+      currentPrice: 80, usdPrice: 110, jpyPerUsd: 157, siteId: 'UK',
+      jpyPerCurrency: 210, priceAdjustment: 0.63 / 0.76,
+    })
+    expect(result).toEqual({ action: 'revise', price: 68.18, currency: 'GBP' })
+  })
+
+  it('補正後の価格が15%超の値下げになる場合は安全網が効く', () => {
+    const result = decideSiteRevisePrice({
+      currentPrice: 85, usdPrice: 110, jpyPerUsd: 157, siteId: 'UK',
+      jpyPerCurrency: 210, priceAdjustment: 0.63 / 0.76,
+    })
+    expect(result).toEqual({ action: 'skip', reason: 'guarded' })
+  })
+
+  it('US出品には補正をかけない', () => {
+    expect(decideSiteRevisePrice({
+      currentPrice: 100, usdPrice: 110, jpyPerUsd: 157, siteId: 'US',
+      jpyPerCurrency: 157, priceAdjustment: 0.63 / 0.76,
+    })).toEqual({ action: 'revise', price: 110, currency: 'USD' })
+  })
+})
