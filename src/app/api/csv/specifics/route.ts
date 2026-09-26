@@ -8,6 +8,9 @@ import {
   specificsInFilename,
 } from '@/lib/listing-export'
 import { loadActiveHtmlTemplate } from '@/lib/html-template'
+import { EBAY_SITES, normalizeSiteKeys } from '@/lib/ebay-sites'
+import { fetchJpyRate } from '@/lib/exchange-rate'
+import { loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { getCategoryItemSpecificsNames } from '@/lib/ebay-taxonomy'
 import type { Product } from '@/types/database'
 
@@ -24,6 +27,9 @@ export async function GET(req: NextRequest) {
   const returnProfile = searchParams.get('returnProfile')?.trim() ?? ''
   const shippingProfile = searchParams.get('shippingProfile')?.trim() ?? ''
   const formatVersion = searchParams.get('formatVersion')?.trim()
+  // 本番で確認した不具合(2026-09-26): 出品先にUK/AUを選んでも、Specifics-IN
+  // CSVだけ常にUS・USDで出力されていた。出品CSVと同じくサイトごとに出す。
+  const siteKeys = normalizeSiteKeys(searchParams.get('sites'))
   if (formatVersion !== 'specificsin-45-v1') {
     return NextResponse.json(
       { error: '旧形式のCSV出力は廃止されました。画面を再読み込みして45列CSVを出力してください' },
@@ -97,21 +103,75 @@ export async function GET(req: NextRequest) {
     : null
   const itemSpecificColumns = categoryAspectNames ?? EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS
 
-  const csv = generateSpecificsCsv(products as Product[], {
-    categoryId,
-    conditionMap,
-    htmlTemplate,
-    sellerId: seller.seller_id,
-    paymentProfileName: paymentProfile,
-    returnProfileName: returnProfile,
-    shippingProfileName: shippingProfile,
-  }, itemSpecificColumns)
+  // 出品先サイトの通貨レート(円/通貨)をまとめて取得する
+  const currencyRates = new Map<string, number>()
+  for (const currency of new Set(siteKeys.map(key => EBAY_SITES[key].currency))) {
+    try {
+      const { rate } = await fetchJpyRate(currency)
+      currencyRates.set(currency, rate)
+    } catch (error) {
+      return NextResponse.json({
+        error: `${currency}の為替レートを取得できませんでした: ${error instanceof Error ? error.message : String(error)}`,
+      }, { status: 502 })
+    }
+  }
+  const fallbackJpyPerUsd = currencyRates.get('USD') ?? (await fetchJpyRate('USD').then(r => r.rate).catch(() => 0))
+  // 関税率の扱い(US以外では適用しない)を価格設定から読む
+  const pricingModel = await loadPricingModel(admin, user.id)
+
+  const files = siteKeys.map(key => {
+    const site = EBAY_SITES[key]
+    const jpyPerCurrency = currencyRates.get(site.currency) ?? 0
+    const csvForSite = generateSpecificsCsv(products as Product[], {
+      categoryId,
+      conditionMap,
+      htmlTemplate,
+      sellerId: seller.seller_id,
+      paymentProfileName: paymentProfile,
+      returnProfileName: returnProfile,
+      shippingProfileName: shippingProfile,
+      // USは従来どおり換算しない(出品価格をそのまま使う)
+      site: key === 'US' ? undefined : {
+        siteId: site.siteId,
+        currency: site.currency,
+        jpyPerCurrency,
+        fallbackJpyPerUsd,
+        priceAdjustment: sitePriceAdjustment(pricingModel, site.siteId),
+      },
+    }, itemSpecificColumns)
+    return {
+      site: key,
+      siteId: site.siteId,
+      currency: site.currency,
+      jpy_per_currency: key === 'US' ? fallbackJpyPerUsd : jpyPerCurrency,
+      filename: specificsInFilename(
+        seller.seller_id,
+        extraction.category?.ebay_category_id ?? null,
+        extractionId,
+        siteKeys.length > 1 ? site.siteId : undefined,
+      ),
+      csv: csvForSite,
+    }
+  })
+  const csv = files[0].csv
   // ユーザー要望: 出品CSVを出力した抽出に「出力済み」を表示する
   await admin
     .from('extractions')
     .update({ csv_exported_at: new Date().toISOString() })
     .eq('id', extractionId)
     .eq('user_id', user.id)
+
+  // 複数サイトを選んだ場合はまとめてJSONで返す(出品CSVと同じ形)
+  if (siteKeys.length > 1) {
+    return NextResponse.json({ files }, {
+      headers: {
+        'Cache-Control': 'private, no-store, max-age=0',
+        'X-Specifics-In-Format': '45-columns-v1',
+        'X-Specifics-In-Columns': String(specificsInColumnCount(itemSpecificColumns)),
+        'X-Content-Type-Options': 'nosniff',
+      },
+    })
+  }
 
   return new NextResponse(csv, {
     headers: {
@@ -120,11 +180,7 @@ export async function GET(req: NextRequest) {
       'X-Specifics-In-Format': '45-columns-v1',
       'X-Specifics-In-Columns': String(specificsInColumnCount(itemSpecificColumns)),
       'X-Content-Type-Options': 'nosniff',
-      'Content-Disposition': `attachment; filename="${specificsInFilename(
-        seller.seller_id,
-        extraction.category?.ebay_category_id ?? null,
-        extractionId,
-      )}"`,
+      'Content-Disposition': `attachment; filename="${files[0].filename}"`,
     },
   })
 }
