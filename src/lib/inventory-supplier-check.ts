@@ -3,7 +3,7 @@ import { findScraper, scrapeUrl } from '@/lib/scrapers'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { titleSimilarity } from '@/lib/supplier-match'
 import { calculateAutomaticEbayPrice } from '@/lib/extraction-run'
-import { calcModelPrice, calcPriceKeepingProfit, loadPricingModel, type PricingModel } from '@/lib/inventory-pricing'
+import { adjustedJpyRate, calcModelPrice, calcPriceKeepingProfit, loadPricingModel, type PricingModel } from '@/lib/inventory-pricing'
 
 // Yahoo!フリマの商品ページ取得上限(1回の実行あたり)。制限に達する前に止める。
 const FLEA_SUPPLIER_CHECK_PER_RUN = 12
@@ -358,9 +358,12 @@ export async function checkSupplierListings(
 
   // 為替レート取得に失敗しても売り切れチェック自体は継続する
   // (価格高騰への自動対応だけをスキップする)。
+  // ユーザー要望(2026-09-26): 円高に備えて実勢より低いレートで出品している。
+  // 価格追従も同じ基準で計算しないと、日が経つほど余裕が薄れてしまう。
   let jpyPerUsd: number | null = null
   try {
-    jpyPerUsd = (await fetchUsdJpyRate()).rate
+    const raw = (await fetchUsdJpyRate()).rate
+    jpyPerUsd = adjustedJpyRate(pricingModel, 'USD', raw, raw)
   } catch {
     jpyPerUsd = null
   }

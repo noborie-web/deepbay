@@ -397,7 +397,7 @@ describe('checkSupplierListings', () => {
         { profitJpy: 15000, maxPurchaseJpy: null },
       ],
       ebayFeeRate: 0.15, shippingJpy: 6000, fixedCostUsd: 0, adRate: 0.04, customsRate: 0.13, discountRate: 0.05,
-      skipCustomsOutsideUs: true,
+      skipCustomsOutsideUs: true, rateAdjustmentJpy: 0,
     }
 
     it('仕入価格が上がったら、ユーザーの段階利益設定の式で再計算して値上げする', async () => {

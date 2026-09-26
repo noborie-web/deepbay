@@ -25,6 +25,9 @@ export interface TieredPricingModel {
   // ユーザー要望(2026-09-26): 関税率は米国向けの設定なので、UK/AU出品では
   // 適用しない(既定ON)。UK/AUの価格はこの分だけ安くなる。
   skipCustomsOutsideUs: boolean
+  // ユーザー要望(2026-09-26): 円高に備えて、毎回「現在の為替より5円低いレート」
+  // で出品している。その差額(円)。UK/AUには同じ割合で適用する。
+  rateAdjustmentJpy: number
 }
 
 export type PricingModel = TieredPricingModel | null
@@ -50,7 +53,26 @@ export function toPricingModel(row: Record<string, unknown> | null | undefined):
     customsRate: num(row.customs_rate, 0),
     discountRate: num(row.discount_rate, 0),
     skipCustomsOutsideUs: row.skip_customs_outside_us !== false,
+    rateAdjustmentJpy: num(row.rate_adjustment_jpy, 0),
   }
+}
+
+/**
+ * 円高に備えた為替レートの調整。USDで指定した差額(例: -5円)を、他通貨には
+ * 同じ割合で適用する(USD 158.37→153.37 なら約3.16%引き)。
+ * レートを下げると価格は上がるため、値上げ方向にしか働かない。
+ */
+export function adjustedJpyRate(
+  model: PricingModel,
+  currency: string,
+  rate: number,
+  jpyPerUsd: number,
+): number {
+  if (!model || !(model.rateAdjustmentJpy > 0) || !(rate > 0) || !(jpyPerUsd > 0)) return rate
+  const ratio = 1 - model.rateAdjustmentJpy / jpyPerUsd
+  if (!(ratio > 0) || ratio >= 1) return rate
+  if (currency.toUpperCase() === 'USD') return Math.max(0, rate - model.rateAdjustmentJpy)
+  return rate * ratio
 }
 
 /**
@@ -72,7 +94,7 @@ export async function loadPricingModel(db: SupabaseClient, userId: string): Prom
   try {
     const { data } = await db
       .from('price_tier_settings')
-      .select('tiers, ebay_fee_rate, shipping_jpy, fixed_cost_usd, ad_rate, customs_rate, discount_rate, skip_customs_outside_us')
+      .select('tiers, ebay_fee_rate, shipping_jpy, fixed_cost_usd, ad_rate, customs_rate, discount_rate, skip_customs_outside_us, rate_adjustment_jpy')
       .eq('user_id', userId)
       .maybeSingle()
     return toPricingModel(data as Record<string, unknown> | null)

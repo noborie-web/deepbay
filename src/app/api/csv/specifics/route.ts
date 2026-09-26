@@ -10,7 +10,7 @@ import {
 import { loadActiveHtmlTemplate } from '@/lib/html-template'
 import { EBAY_SITES, normalizeSiteKeys } from '@/lib/ebay-sites'
 import { fetchJpyRate } from '@/lib/exchange-rate'
-import { loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
+import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { getCategoryItemSpecificsNames } from '@/lib/ebay-taxonomy'
 import type { Product } from '@/types/database'
 
@@ -103,21 +103,25 @@ export async function GET(req: NextRequest) {
     : null
   const itemSpecificColumns = categoryAspectNames ?? EBAY_UPLOAD_ITEM_SPECIFIC_COLUMNS
 
-  // 出品先サイトの通貨レート(円/通貨)をまとめて取得する
+  // 関税率の扱い(US以外では適用しない)と為替レートの調整を価格設定から読む
+  const pricingModel = await loadPricingModel(admin, user.id)
+
+  // 出品先サイトの通貨レート(円/通貨)をまとめて取得し、円高に備えた調整を
+  // 同じ割合で各通貨に適用する
+  const rawUsdRate = await fetchJpyRate('USD').then(r => r.rate).catch(() => 0)
   const currencyRates = new Map<string, number>()
   for (const currency of new Set(siteKeys.map(key => EBAY_SITES[key].currency))) {
     try {
       const { rate } = await fetchJpyRate(currency)
-      currencyRates.set(currency, rate)
+      currencyRates.set(currency, adjustedJpyRate(pricingModel, currency, rate, rawUsdRate))
     } catch (error) {
       return NextResponse.json({
         error: `${currency}の為替レートを取得できませんでした: ${error instanceof Error ? error.message : String(error)}`,
       }, { status: 502 })
     }
   }
-  const fallbackJpyPerUsd = currencyRates.get('USD') ?? (await fetchJpyRate('USD').then(r => r.rate).catch(() => 0))
-  // 関税率の扱い(US以外では適用しない)を価格設定から読む
-  const pricingModel = await loadPricingModel(admin, user.id)
+  const fallbackJpyPerUsd = currencyRates.get('USD')
+    ?? adjustedJpyRate(pricingModel, 'USD', rawUsdRate, rawUsdRate)
 
   const files = siteKeys.map(key => {
     const site = EBAY_SITES[key]

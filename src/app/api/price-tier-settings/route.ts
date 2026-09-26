@@ -76,6 +76,8 @@ export async function PUT(req: NextRequest) {
     // ユーザー要望(2026-09-26): 関税率は米国向けの設定なので、UK/AU出品では
     // 適用しない(既定ON)
     skip_customs_outside_us: body.skip_customs_outside_us !== false,
+    // ユーザー要望(2026-09-26): 円高に備えて実勢より低いレートで出品する差額(円)
+    rate_adjustment_jpy: Math.max(0, numberField(body.rate_adjustment_jpy, 0)),
     updated_at: new Date().toISOString(),
   }
 

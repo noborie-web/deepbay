@@ -78,6 +78,10 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
   // ユーザー要望(2026-09-26): 関税率13%は米国向けの設定。UK/AU出品では
   // 適用しない(既定ON)。UK/AUのCSV価格と価格追従がこの分だけ安くなる。
   const [skipCustomsOutsideUs, setSkipCustomsOutsideUs] = useState(true)
+  // ユーザー要望(2026-09-26): 毎回「現在の為替より5円低いレート」で出品して
+  // いる(円高への備え)。差額を保存して、レート取得時に自動で差し引く。
+  const [rateAdjustmentJpy, setRateAdjustmentJpy] = useState('0')
+  const rateAdjustmentRef = useRef(0)
   const [profitTiers, setProfitTiers] = useState<ProfitTierInput[]>(INITIAL_PROFIT_TIERS)
   const [exchangeRateStatus, setExchangeRateStatus] = useState<'loading' | 'success' | 'error'>('loading')
   const [exchangeRateDate, setExchangeRateDate] = useState('')
@@ -105,6 +109,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
           ad_rate: parseFloat(adRate) / 100,
           customs_rate: parseFloat(customsRate) / 100,
           skip_customs_outside_us: skipCustomsOutsideUs,
+          rate_adjustment_jpy: parseFloat(rateAdjustmentJpy) || 0,
           discount_rate: parseFloat(discountRate) / 100,
         }),
       })
@@ -128,6 +133,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
     ad_rate: number
     customs_rate: number
     skip_customs_outside_us?: boolean
+    rate_adjustment_jpy?: number
     discount_rate: number
   }
   const [tierPresets, setTierPresets] = useState<TierPreset[]>([])
@@ -149,6 +155,8 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
     setAdRate(String(saved.ad_rate * 100))
     setCustomsRate(String(saved.customs_rate * 100))
     setSkipCustomsOutsideUs(saved.skip_customs_outside_us !== false)
+    setRateAdjustmentJpy(String(saved.rate_adjustment_jpy ?? 0))
+    rateAdjustmentRef.current = Number(saved.rate_adjustment_jpy ?? 0) || 0
     setDiscountRate(String(saved.discount_rate * 100))
   }
 
@@ -188,6 +196,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
           ad_rate: parseFloat(adRate) / 100,
           customs_rate: parseFloat(customsRate) / 100,
           skip_customs_outside_us: skipCustomsOutsideUs,
+          rate_adjustment_jpy: parseFloat(rateAdjustmentJpy) || 0,
           discount_rate: parseFloat(discountRate) / 100,
         }),
       })
@@ -225,7 +234,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
     try {
       const data = await requestExchangeRate()
       if (force || !exchangeRateEditedRef.current) {
-        setJpyPerUsd(data.rate.toFixed(2))
+        setJpyPerUsd((data.rate - rateAdjustmentRef.current).toFixed(2))
         exchangeRateEditedRef.current = false
         setExchangeRateAdjusted(false)
       }
@@ -242,7 +251,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
       .then((data) => {
         if (cancelled) return
         if (!exchangeRateEditedRef.current) {
-          setJpyPerUsd(data.rate.toFixed(2))
+          setJpyPerUsd((data.rate - rateAdjustmentRef.current).toFixed(2))
           setExchangeRateAdjusted(false)
         }
         setExchangeRateDate(data.date)
@@ -262,7 +271,7 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
     let cancelled = false
     fetch('/api/price-tier-settings')
       .then((res) => res.json())
-      .then((data: { setting?: { tiers: { maxPurchaseJpy: number | null; profitJpy: number }[]; ebay_fee_rate: number; shipping_jpy: number; fixed_cost_usd: number; ad_rate: number; customs_rate: number; skip_customs_outside_us?: boolean; discount_rate: number } | null }) => {
+      .then((data: { setting?: { tiers: { maxPurchaseJpy: number | null; profitJpy: number }[]; ebay_fee_rate: number; shipping_jpy: number; fixed_cost_usd: number; ad_rate: number; customs_rate: number; skip_customs_outside_us?: boolean; rate_adjustment_jpy?: number; discount_rate: number } | null }) => {
         if (cancelled || !data.setting) return
         const saved = data.setting
         setProfitTiers(saved.tiers.map((t, index) => ({
@@ -277,6 +286,8 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
         setAdRate(String(saved.ad_rate * 100))
         setCustomsRate(String(saved.customs_rate * 100))
     setSkipCustomsOutsideUs(saved.skip_customs_outside_us !== false)
+    setRateAdjustmentJpy(String(saved.rate_adjustment_jpy ?? 0))
+    rateAdjustmentRef.current = Number(saved.rate_adjustment_jpy ?? 0) || 0
         setDiscountRate(String(saved.discount_rate * 100))
       })
       .catch(() => {})
@@ -614,7 +625,9 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
                     {exchangeRateStatus === 'success' && (
                       exchangeRateAdjusted
                         ? `${exchangeRateDate}時点の取得値から手動調整中`
-                        : `${exchangeRateDate}時点の最新レートを自動取得`
+                        : `${exchangeRateDate}時点の最新レートを自動取得${
+                          (parseFloat(rateAdjustmentJpy) || 0) > 0 ? `（−${rateAdjustmentJpy}円 調整済み）` : ''
+                        }`
                     )}
                     {exchangeRateStatus === 'error' && '自動取得できませんでした。手動入力値を使用します'}
                   </span>
@@ -668,6 +681,29 @@ export default function PriceEditModal({ products, getPurchaseJpy, onApply, onCl
                     className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300" />
                 </label>
               </div>
+
+              {/* 円高に備えた為替レートの調整(実勢より低いレートで出品する) */}
+              <label className="block space-y-1 rounded border bg-gray-50 px-3 py-2">
+                <span className="text-xs text-gray-600">為替レートの調整（円）</span>
+                <input
+                  aria-label="為替レートの調整"
+                  type="number"
+                  value={rateAdjustmentJpy}
+                  onChange={(e) => {
+                    setRateAdjustmentJpy(e.target.value)
+                    rateAdjustmentRef.current = parseFloat(e.target.value) || 0
+                  }}
+                  min="0"
+                  max="50"
+                  step="0.5"
+                  className="w-32 border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300"
+                />
+                <span className="block text-[11px] text-gray-500">
+                  円高に備えて、実勢より低いレートで出品するための差額です（例: 5 → 最新レートから5円引き）。
+                  「最新レートを再取得」したときに自動で差し引かれ、UK・AUには同じ割合で適用されます。
+                  在庫管理の価格追従も同じ基準で計算します。
+                </span>
+              </label>
 
               {/* 関税率は米国向けの設定のため、UK/AU出品では適用しない切り替え */}
               <label className="flex items-start gap-2 rounded border bg-gray-50 px-3 py-2">
