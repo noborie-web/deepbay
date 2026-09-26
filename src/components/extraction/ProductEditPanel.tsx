@@ -22,6 +22,7 @@ import type {
 import {
   findDangerSellerProductIds,
   findKeywordProductIds,
+  keywordMatchBreakdown,
   findLowRatingProductIds,
   findPriceRangeProductIds,
   findPriceTypeProductIds,
@@ -693,6 +694,12 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const veroPreviewCount = dangerSettings ? findVeroProductIds(products, dangerSettings.veroBrands).length : null
   const sellerPreviewCount = dangerSettings ? findDangerSellerProductIds(products, dangerSettings.sellerUrls).length : null
   const wordPreviewCount = dangerSettings ? findKeywordProductIds(products, dangerSettings.words, wordCheckFields()).length : null
+  // 本番で確認した不具合(2026-09-26): 146件中103件が危険単語で除外対象になり、
+  // 原因が "g" や "_" のような短い単語の誤爆だった。どの単語が何件に当たって
+  // いるかを見せて、危険単語リストを直せるようにする。
+  const wordBreakdown = dangerSettings
+    ? keywordMatchBreakdown(products, dangerSettings.words, wordCheckFields())
+    : null
   const spotPreviewCount = findKeywordProductIds(products, spotKeywords(), spotCheckFields()).length
   const quickPreviewCount = findKeywordProductIds(products, quickKeywordList()).length
   const pricePreviewCount = findPriceRangeProductIds(
@@ -957,8 +964,29 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                       : <>全{products.length}件中 <strong className="text-gray-900">{wordPreviewCount}件</strong>が対象です</>}
                   </p>
                   <p className="text-xs text-gray-500">
-                    抽出危険設定に登録した危険単語が含まれている商品を除外します。大文字小文字関係なく除外されます。
+                    抽出危険設定に登録した危険単語が含まれている商品を除外します。大文字小文字関係なく、
+                    英数字の単語は前後が英字でないとき(例: Gundam は gun に当たりません)、
+                    日本語の単語は部分一致で判定します。
                   </p>
+                  {wordBreakdown && wordBreakdown.hits.length > 0 && (
+                    <div className="rounded border bg-gray-50 px-3 py-2">
+                      <p className="text-xs text-gray-600">該当が多い単語（抽出危険設定で見直せます）</p>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {wordBreakdown.hits.slice(0, 12).map(({ keyword, count }) => (
+                          <span key={keyword}
+                            className={`rounded border px-1.5 py-0.5 text-[11px] ${count >= products.length / 2 ? 'border-red-300 bg-red-50 text-red-700' : 'border-gray-300 bg-white text-gray-600'}`}>
+                            {keyword} <strong>{count}</strong>
+                          </span>
+                        ))}
+                      </div>
+                      {wordBreakdown.ignored.length > 0 && (
+                        <p className="mt-2 text-[11px] text-gray-500">
+                          判定に使えないため無視した単語: {wordBreakdown.ignored.join(' / ')}
+                          （1文字の英数字や記号だけの単語は、ほぼ全件に当たってしまうため除外判定に使いません）
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

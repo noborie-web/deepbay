@@ -12,6 +12,8 @@ import {
   getProductPriceType,
   matchesVeroBrand,
   matchesVeroBrandInTitle,
+  isIgnorableKeyword,
+  keywordMatchBreakdown,
 } from '@/lib/product-exclusion'
 
 function makeProduct(id: string, overrides: Partial<Product> = {}): Product {
@@ -254,5 +256,48 @@ describe('評価数・発送日数・最終更新月の除外判定', () => {
       makeProduct('p3', { source_updated_at: null }),
     ]
     expect(findStaleProductIds(products, 3)).toEqual(['p1'])
+  })
+})
+
+// 本番で確認した不具合(2026-09-26): 146件中103件が危険単語で除外対象になった。
+// 危険単語に "g" や "_" が登録されており、部分一致で英語タイトルのほぼ全件に
+// 当たっていた(g=148件 / _=148件 / not=107件)。
+describe('危険単語の誤爆対策', () => {
+  const items = [
+    makeProduct('p1', { original_title: 'Rare Early 1900s Waterman Safety Fountain Pen Antique' }),
+    makeProduct('p2', { original_title: 'Gundam RG 1/144 model kit' }),
+    makeProduct('p3', { original_title: 'Air gun parts set' }),
+    makeProduct('p4', { original_title: 'iPhone12 ケース 未使用' }),
+    makeProduct('p5', { original_title: 'ゴジラ ソフビ フィギュア' }),
+  ]
+
+  it('1文字の英数字や記号だけの単語は判定に使わない', () => {
+    expect(findKeywordProductIds(items, ['g'])).toEqual([])
+    expect(findKeywordProductIds(items, ['_'])).toEqual([])
+    expect(isIgnorableKeyword('g')).toBe(true)
+    expect(isIgnorableKeyword('_')).toBe(true)
+    expect(isIgnorableKeyword('PS')).toBe(false)
+    expect(isIgnorableKeyword('ゴジラ')).toBe(false)
+  })
+
+  it('英数字の単語は前後が英字でないときだけ一致する(Gundamはgunに当たらない)', () => {
+    expect(findKeywordProductIds(items, ['gun'])).toEqual(['p3'])
+  })
+
+  it('英字以外が続く場合は一致する(iPhone12 は iPhone に当たる)', () => {
+    expect(findKeywordProductIds(items, ['iPhone'])).toEqual(['p4'])
+  })
+
+  it('日本語の単語は従来どおり部分一致', () => {
+    expect(findKeywordProductIds(items, ['ゴジラ'])).toEqual(['p5'])
+  })
+
+  it('どの単語が何件に当たっているかを返し、無視した単語も示す', () => {
+    const breakdown = keywordMatchBreakdown(items, ['gun', 'pen', 'g', '_', 'gun'])
+    expect(breakdown.hits).toEqual([
+      { keyword: 'gun', count: 1 },
+      { keyword: 'pen', count: 1 },
+    ])
+    expect(breakdown.ignored).toEqual(['g', '_'])
   })
 })

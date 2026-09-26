@@ -78,23 +78,104 @@ function keywordSearchText(product: Product, field: KeywordMatchField): string {
   }
 }
 
-// スポット文字・簡易除外・危険単語はいずれも「指定したキーワードが
-// 商品の特定項目に含まれるか」という同一のロジックのため、1つの関数に
-// まとめて共有する。判定対象項目(タイトル/ブランド/商品詳細)は
-// fieldsで指定でき、デフォルトはタイトルのみ(既存の呼び出し元との互換維持)。
+// ---------------------------------------------------------------------------
+// キーワード判定(危険単語・スポット文字・簡易除外で共通)
+//
+// 本番で確認した不具合(2026-09-26): 146件中103件が危険単語で除外対象になった。
+// 原因は「部分一致」と「短すぎる単語」で、登録済みの危険単語に "g" や "_" が
+// 含まれていたため英語タイトルのほぼ全件に当たっていた(g=148件 / _=148件 /
+// not=107件)。また gun が Gundam に、not が another に当たる状態だった。
+//
+// - 英数字のキーワードは前後が英字でないときだけ一致とみなす(Gundam は gun に
+//   当たらない。iPhone12 は iPhone に当たる)
+// - 日本語など英字以外を含むキーワードは、単語の区切りが無いので従来どおり
+//   部分一致で判定する
+// - 1文字の英数字や記号だけのキーワードは、意味のある一致にならないため無視する
+// ---------------------------------------------------------------------------
+
+const ASCII_KEYWORD_RE = /^[\x20-\x7e]+$/
+
+// 判定に使えないキーワード(1文字の英数字・記号だけ)かどうか
+export function isIgnorableKeyword(keyword: string): boolean {
+  const trimmed = keyword.trim()
+  if (!trimmed) return true
+  if (!/[\p{L}\p{N}]/u.test(trimmed)) return true
+  return ASCII_KEYWORD_RE.test(trimmed) && trimmed.length < 2
+}
+
+function keywordMatcher(keyword: string): (text: string) => boolean {
+  const trimmed = keyword.trim()
+  const lower = trimmed.toLowerCase()
+  if (!ASCII_KEYWORD_RE.test(trimmed)) {
+    // 日本語などは区切りが無いため部分一致
+    return (text) => text.includes(lower)
+  }
+  const re = new RegExp(`(?<![a-z])${escapeRegExp(lower)}(?![a-z])`, 'i')
+  return (text) => re.test(text)
+}
+
 export function findKeywordProductIds(
   products: Product[],
   keywords: string[],
   fields: KeywordMatchField[] = ['title'],
 ): string[] {
-  if (keywords.length === 0 || fields.length === 0) return []
-  const lowerKeywords = keywords.map((w) => w.toLowerCase())
+  const matchers = buildKeywordMatchers(keywords)
+  if (matchers.length === 0 || fields.length === 0) return []
   return products
     .filter((product) => {
-      const combined = fields.map((field) => keywordSearchText(product, field)).join(' ').toLowerCase()
-      return lowerKeywords.some((w) => combined.includes(w))
+      const combined = keywordText(product, fields)
+      return matchers.some(({ match }) => match(combined))
     })
     .map((product) => product.id)
+}
+
+function keywordText(product: Product, fields: KeywordMatchField[]): string {
+  return fields.map((field) => keywordSearchText(product, field)).join(' ').toLowerCase()
+}
+
+function buildKeywordMatchers(keywords: string[]): Array<{ keyword: string; match: (text: string) => boolean }> {
+  const seen = new Set<string>()
+  const matchers: Array<{ keyword: string; match: (text: string) => boolean }> = []
+  for (const keyword of keywords) {
+    const trimmed = keyword.trim()
+    if (isIgnorableKeyword(trimmed)) continue
+    const key = trimmed.toLowerCase()
+    // 同じ単語が重複登録されていても1回だけ評価する
+    if (seen.has(key)) continue
+    seen.add(key)
+    matchers.push({ keyword: trimmed, match: keywordMatcher(trimmed) })
+  }
+  return matchers
+}
+
+export interface KeywordMatchBreakdown {
+  // 単語ごとの該当件数(多い順)
+  hits: Array<{ keyword: string; count: number }>
+  // 判定に使えないため無視した単語(1文字の英数字・記号だけ)
+  ignored: string[]
+}
+
+/**
+ * どの単語が何件に当たっているかを返す。誤爆している単語を見つけて
+ * 危険単語リストを直せるようにするため、除外パネルで表示する。
+ */
+export function keywordMatchBreakdown(
+  products: Product[],
+  keywords: string[],
+  fields: KeywordMatchField[] = ['title'],
+): KeywordMatchBreakdown {
+  const ignored = Array.from(new Set(
+    keywords.map(k => k.trim()).filter(k => k.length > 0 && isIgnorableKeyword(k)),
+  ))
+  const matchers = buildKeywordMatchers(keywords)
+  if (matchers.length === 0 || fields.length === 0) return { hits: [], ignored }
+
+  const texts = products.map((product) => keywordText(product, fields))
+  const hits = matchers
+    .map(({ keyword, match }) => ({ keyword, count: texts.filter(text => match(text)).length }))
+    .filter(entry => entry.count > 0)
+    .sort((a, b) => b.count - a.count || a.keyword.localeCompare(b.keyword))
+  return { hits, ignored }
 }
 
 // バグ修正: 以前はproduct.source_url(商品ページURL)を登録済み危険セラー
