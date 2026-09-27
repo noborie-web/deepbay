@@ -140,6 +140,8 @@ export async function POST(request: Request) {
           // eBayの呼び出し上限を使い切らないよう、直近30分に取得済みの出品は
           // 再照会しない(新規出品の発見は毎回行う)
           skipFetchedWithinMs: 30 * 60 * 1000,
+          // GetMyeBaySelling(1回200件)でまとめて更新し、呼び出し回数を抑える
+          bulkRefresh: true,
           ownsUnassignedProducts: sellerIndex === 0,
         },
       ),

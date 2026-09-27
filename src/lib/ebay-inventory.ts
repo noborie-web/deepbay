@@ -42,6 +42,9 @@ export interface EbayInventoryFetchOptions {
   totalTimeoutMs?: number
   concurrency?: number
   signal?: AbortSignal
+  // ユーザー要望(2026-09-27): UK/AUの出品もまとめて取得する。
+  // GetMyeBaySelling はサイト単位の文脈で返るため、サイトを指定できるようにする。
+  siteId?: string | null
 }
 
 export interface EbayInventoryBatchResult {
@@ -165,6 +168,7 @@ async function fetchPage(
   page: number,
   timeoutMs: number,
   totalSignal?: AbortSignal,
+  siteId?: string | null,
 ): Promise<{
   items: InventoryListingInput[]
   hasMore: boolean
@@ -204,7 +208,7 @@ ${outputSelectors}
         'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
         'X-EBAY-API-CALL-NAME': 'GetMyeBaySelling',
         'X-EBAY-API-IAF-TOKEN': accessToken,
-        'X-EBAY-API-SITEID': '0',
+        'X-EBAY-API-SITEID': tradingSiteIdFor(siteId),
       },
       body: xml,
       signal: controller.signal,
@@ -275,6 +279,7 @@ async function fetchActiveListingRange(
           page,
           Math.min(pageTimeoutMs, getRemainingMs()),
           totalController.signal,
+          options.siteId,
         )
       } catch (error) {
         const isPageTimeout = error instanceof Error

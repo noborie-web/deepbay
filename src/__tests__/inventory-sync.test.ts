@@ -568,3 +568,72 @@ describe('eBayの呼び出し上限', () => {
     expect(mockUpsert).toHaveBeenCalled()
   })
 })
+
+// ユーザー要望(2026-09-27): 695件の更新に695回のGetItemを使い、eBayの日次
+// 呼び出し上限をすぐ使い切っていた。GetMyeBaySelling(1回200件)でまとめて
+// 更新し、一覧に無かった出品だけを個別確認する。
+describe('既存出品の一括更新', () => {
+  function dbFor(productIds: string[]) {
+    return {
+      from: (table: string) => {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'update']) chain[m] = () => chain
+          chain.maybeSingle = async () => ({ data: { inventory_discovery_scanned_until: new Date().toISOString() }, error: null })
+          chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+          return chain
+        }
+        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'products') return productsTableFor(productIds)
+        const chain: Record<string, unknown> = {}
+        chain.upsert = mockUpsert
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        chain.then = (resolve: (v: unknown) => void) => resolve({
+          data: [{ ebay_item_id: 'item-1' }, { ebay_item_id: 'item-2' }],
+          error: null,
+        })
+        return chain
+      },
+    } as unknown as SupabaseClient
+  }
+
+  beforeEach(() => {
+    mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: false, pagesFetched: 1, totalPages: 1 })
+    mockFetchListingsByItemIds.mockReset().mockResolvedValue({ items: [], endedItemIds: [] })
+    mockFetchActiveListingsBatch.mockReset()
+    mockUpsert.mockReset().mockResolvedValue({ error: null })
+    mockDeleteIs.mockReset().mockResolvedValue({ error: null })
+  })
+
+  it('一覧に居た出品はGetItemを使わずに更新し、無かった分だけ個別確認する', async () => {
+    const { label, productId } = kakehashiLabel(1)
+    mockFetchActiveListingsBatch.mockResolvedValue({
+      items: [{
+        ebayItemId: 'item-1', customLabel: label, title: 'Active item',
+        currentPrice: 100, quantity: 1, quantitySold: 0, listingStatus: 'Active',
+        startTime: null, endTime: null, siteId: 'US', currency: 'USD',
+      }],
+      nextPage: null, totalPages: 1, lastFetchedPage: 1, truncated: false, ebayTotalPages: 1,
+    })
+
+    const result = await syncKnownInventoryListings(dbFor([productId]), 'user-1', 'token', {
+      bulkRefresh: true, sellerAccountId: 'seller-a', sellerSiteIds: ['US'],
+    })
+
+    // 一括取得は1回、個別照会は「一覧に無かった item-2」だけ
+    expect(mockFetchActiveListingsBatch).toHaveBeenCalledTimes(1)
+    expect(mockFetchListingsByItemIds).toHaveBeenCalledWith(expect.anything(), ['item-2'], expect.anything())
+    expect(result.processed).toBe(2)
+  })
+
+  it('一括取得に失敗したら従来どおり個別照会にフォールバックする', async () => {
+    mockFetchActiveListingsBatch.mockRejectedValue(new Error('timeout'))
+    const { productId } = kakehashiLabel(1)
+
+    await syncKnownInventoryListings(dbFor([productId]), 'user-1', 'token', {
+      bulkRefresh: true, sellerAccountId: 'seller-a', sellerSiteIds: ['US'],
+    })
+
+    expect(mockFetchListingsByItemIds).toHaveBeenCalledWith(expect.anything(), ['item-1', 'item-2'], expect.anything())
+  })
+})
