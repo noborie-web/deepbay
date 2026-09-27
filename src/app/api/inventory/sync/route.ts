@@ -14,7 +14,11 @@ import { createInventorySyncCursor, parseInventorySyncCursor } from '@/lib/inven
 // 先に発火して正常にエラーを返せるようにする。
 export const maxDuration = 60
 
-const ROUTE_TIMEOUT_MS = 40_000
+const ROUTE_TIMEOUT_MS = 45_000
+// 本番で確認した不具合(2026-09-27): 一括取得(GetMyeBaySelling)に既定の45秒が
+// 渡り、ルート側の打ち切り(40秒)が先に来て「40秒を超えたため終了しました」で
+// 毎回失敗していた。eBayからの取得はルートの打ち切りより十分手前で終える。
+const FETCH_BUDGET_MS = 25_000
 // ユーザー要望: Kakehashiが出品したItemIDだけをGetItemで個別照会する。
 // 1リクエストで照会する件数(同時4件で1件あたり約1秒 → 15秒前後)。
 const ITEMS_PER_REQUEST = 60
@@ -134,7 +138,8 @@ export async function POST(request: Request) {
         ITEMS_PER_REQUEST,
         {
           signal: syncController.signal,
-          discoveryTimeBudgetMs: 15_000,
+          // 取得(25秒)と合わせてルートの打ち切り(45秒)に収める
+          discoveryTimeBudgetMs: 10_000,
           sellerAccountId: syncTargets[Math.min(sellerIndex, syncTargets.length - 1)]?.id ?? null,
           sellerSiteIds: syncTargets[Math.min(sellerIndex, syncTargets.length - 1)]?.listing_site_ids ?? null,
           // eBayの呼び出し上限を使い切らないよう、直近30分に取得済みの出品は
@@ -142,6 +147,10 @@ export async function POST(request: Request) {
           skipFetchedWithinMs: 30 * 60 * 1000,
           // GetMyeBaySelling(1回200件)でまとめて更新し、呼び出し回数を抑える
           bulkRefresh: true,
+          fetchTotalTimeoutMs: FETCH_BUDGET_MS,
+          getItemConcurrency: 8,
+          // 一覧に無かった出品の個別確認は、1リクエストで終わる件数に抑える
+          maxMissingChecksPerRun: 60,
           ownsUnassignedProducts: sellerIndex === 0,
         },
       ),
