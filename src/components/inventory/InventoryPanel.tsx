@@ -735,6 +735,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       let discoveryTruncated = false
       let discoveryError: string | null = null
       let callLimited = false
+      let authErrors: string[] = []
       let rounds = 0
       for (let requestNumber = 1; requestNumber <= 50; requestNumber++) {
         const controller = new AbortController()
@@ -756,6 +757,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             done: boolean
             discovery_error?: string | null
             call_limited?: boolean
+            auth_errors?: Array<{ seller_id: string; error: string }> | null
             cursor: string | null
             progress?: { processed: number; total: number }
           } = await res.json()
@@ -768,6 +770,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             discoveryError = json.discovery_error
           }
           if (json.call_limited) callLimited = true
+          // 接続に失敗して対象から外れたセラーがあると、そのセラーの出品は
+          // いつまでも取り込まれない。黙って終わらせずに知らせる。
+          if (Array.isArray(json.auth_errors) && json.auth_errors.length > 0) {
+            authErrors = json.auth_errors.map(e => `${e.seller_id}: ${e.error}`)
+          }
 
           if (json.progress) {
             setSyncProgress(`${json.progress.processed}/${json.progress.total}件`)
@@ -809,8 +816,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
         completed.discovered > 0 ? `新規${completed.discovered}件を発見` : null,
         completed.ended > 0 ? `終了済み${completed.ended}件を除外` : null,
       ].filter(Boolean).join('、')
-      showMsg(completed.discoveryTruncated || discoveryError || callLimited ? 'error' : 'success',
+      showMsg(completed.discoveryTruncated || discoveryError || callLimited || authErrors.length > 0 ? 'error' : 'success',
         `同期完了: Kakehashi出品${completed.total}件を更新${extras ? `（${extras}）` : ''}`
+        + (authErrors.length > 0 ? `。eBay接続に失敗した出品アカウントがあるため、そのセラーの出品は取り込めていません（${authErrors.join(' / ')}）。出品アカウント画面で「再接続」してください。` : '')
         + (callLimited ? '。eBayの呼び出し回数の上限に達したため、既存出品の更新は見送りました（新規出品の取り込みは実行済み）。時間をおいて再実行してください。' : '')
         + (discoveryError ? `。新規出品の発見に失敗しました: ${discoveryError}` : '')
         + (completed.discoveryTruncated && !discoveryError ? '。新規出品の走査が時間内に終わりませんでした。もう一度「同期」を実行してください。' : ''))

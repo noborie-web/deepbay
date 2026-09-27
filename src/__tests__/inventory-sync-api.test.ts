@@ -190,6 +190,11 @@ describe('POST /api/inventory/sync', () => {
       ok: true,
       discovery_error: null,
       call_limited: false,
+      // どのセラーを処理したかの診断情報(取り込まれない原因の切り分け用)
+      seller_id: null,
+      seller_index: 0,
+      seller_count: 1,
+      auth_errors: null,
       total: 1050,
       matched: 18,
       ended: 0,
