@@ -84,7 +84,8 @@ describe('scanSellerListByStartTime', () => {
     const result = await scanSellerListByStartTime(
       { accessToken: 't' },
       { from: new Date('2026-09-19T00:00:00.000Z'), to: new Date('2026-09-21T00:00:00.000Z') },
-      { timeBudgetMs: 1_050 },
+      // 1ページ読み切れない残り時間になったら打ち切る(残り5秒未満)
+      { timeBudgetMs: 5_200 },
     )
     expect(result.truncated).toBe(true)
     expect(result.pagesFetched).toBeGreaterThanOrEqual(1)

@@ -666,6 +666,46 @@ async function discoverNewListings(
     let discovered = 0
     let truncated = false
     let cursor = from
+
+    // 本番で確認した不具合(2026-09-27): 走査位置が無いセラー(追加したばかりの
+    // akebono-32)は古い日付から順に読むため、直近にアップロードしたUK出品へ
+    // たどり着く前に時間切れになり、いつまでも取り込めなかった。
+    // 初回は「新しい区間から」読み、当日分を最優先で取り込む。
+    if (!scannedUntil && sellerAccountId) {
+      const siteIds = options.sellerSiteIds && options.sellerSiteIds.length > 0 ? options.sellerSiteIds : ['US']
+      let chunkEnd = scanStartedAt
+      let newestDone = false
+      while (chunkEnd.getTime() > from.getTime()) {
+        const chunkStart = new Date(Math.max(from.getTime(), chunkEnd.getTime() - chunkMs))
+        let stop = false
+        for (const siteId of siteIds) {
+          const remaining = budgetMs - (Date.now() - startedMs)
+          if (remaining <= 1_000) { truncated = true; stop = true; break }
+          const scan = await scanSellerListByStartTime(
+            { accessToken },
+            { from: chunkStart, to: chunkEnd },
+            { timeBudgetMs: remaining, signal: options.signal, siteId },
+          )
+          const active = scan.items.filter(item => !item.listingStatus || item.listingStatus === 'Active')
+          const stored = await storeInventoryListings(db, userId, active, options)
+          discovered += stored.matched
+          if (scan.truncated) { truncated = true; stop = true; break }
+        }
+        if (!stop && !newestDone) {
+          // 直近の区間を読み切れたら、次回はその時点以降だけを見ればよい
+          newestDone = true
+          const { error } = await db
+            .from('seller_accounts')
+            .update({ inventory_discovery_scanned_until: scanStartedAt.toISOString() })
+            .eq('id', sellerAccountId)
+            .eq('user_id', userId)
+          if (error) console.warn('[inventory-sync] failed to record discovery time:', error.message)
+        }
+        if (stop) break
+        chunkEnd = chunkStart
+      }
+      return { discovered, truncated }
+    }
     while (cursor.getTime() < scanStartedAt.getTime()) {
       const chunkEnd = new Date(Math.min(cursor.getTime() + chunkMs, scanStartedAt.getTime()))
       const remaining = budgetMs - (Date.now() - startedMs)

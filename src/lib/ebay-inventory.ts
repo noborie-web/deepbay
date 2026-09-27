@@ -14,6 +14,8 @@ const MAX_PAGES = 50
 // GetSellerList は重いので1ページを小さくし、タイムアウトも長めに取る
 const SELLER_LIST_PAGE_SIZE = 50
 const SELLER_LIST_PAGE_TIMEOUT_MS = 30_000
+// 1ページの取得に最低限必要とみなす時間(これを下回ったら打ち切る)
+const SELLER_LIST_MIN_PAGE_MS = 5_000
 const DEFAULT_PAGE_TIMEOUT_MS = 10_000
 const DEFAULT_TOTAL_TIMEOUT_MS = 45_000
 const DEFAULT_CONCURRENCY = 8
@@ -704,7 +706,10 @@ export async function scanSellerListByStartTime(
   let page = 1
   for (; page <= totalPages && page <= maxPages; page++) {
     const remaining = options.timeBudgetMs - (Date.now() - startedAt)
-    if (remaining <= 1_000) break
+    // 本番で確認した不具合(2026-09-27): 残り時間が1.3秒しかない状態でリクエスト
+    // を出して「page 5 exceeded 1294ms」で失敗し、走査全体が中断していた。
+    // 1ページ読み切れない残り時間なら、失敗させず truncated で打ち切る。
+    if (remaining <= SELLER_LIST_MIN_PAGE_MS) break
     const result = await fetchSellerListPage(tokens, range, page, {
       timeoutMs: Math.min(options.pageTimeoutMs ?? SELLER_LIST_PAGE_TIMEOUT_MS, remaining),
       signal: options.signal,
