@@ -677,6 +677,48 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   }
 
   // eBay同期
+  // ユーザー要望(2026-09-27): APIの呼び出し上限に達したときでも運用できるよう、
+  // 価格改定・取り下げをCSVで出力してeBay(File Exchange)にアップロードできる
+  // ようにする。対象の決め方はAPI実行と同じ。
+  const [exportingCsv, setExportingCsv] = useState<'revise' | 'end' | null>(null)
+  const handleExportActionCsv = async (kind: 'revise' | 'end') => {
+    setExportingCsv(kind)
+    setMessage(null)
+    try {
+      const res = await fetch(`/api/inventory/actions/export-csv?kind=${kind}`, { cache: 'no-store' })
+      const json = await res.json() as {
+        files?: Array<{ site: string; filename: string; csv: string; rows: number }>
+        count?: number
+        error?: string
+      }
+      if (!res.ok) throw new Error(json.error ?? 'CSVを出力できませんでした')
+      const files = json.files ?? []
+      if (files.length === 0) {
+        showMsg('error', '対象が0件のため、CSVは出力していません')
+        return
+      }
+      for (const file of files) {
+        const blob = new Blob([file.csv], { type: 'text/csv;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = file.filename
+        document.body.appendChild(anchor)
+        anchor.click()
+        anchor.remove()
+        URL.revokeObjectURL(url)
+        await new Promise(resolve => setTimeout(resolve, 400))
+      }
+      showMsg('success',
+        `${kind === 'revise' ? '価格改定' : '取り下げ'}CSVを${files.length}ファイル出力しました（計${json.count ?? 0}件）。`
+        + 'eBayのFile Exchangeにアップロードすると反映されます。反映後の同期で在庫一覧にも取り込まれます。')
+    } catch (error) {
+      showMsg('error', error instanceof Error ? error.message : 'CSVを出力できませんでした')
+    } finally {
+      setExportingCsv(null)
+    }
+  }
+
   const handleSync = async () => {
     setSyncing(true); setMessage(null)
     setSyncProgress('開始中')
@@ -1335,6 +1377,12 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                   className="mt-3 w-full px-3 py-1.5 bg-orange-600 text-white text-xs rounded hover:bg-orange-700 disabled:opacity-40">
                   取り下げ実行
                 </button>
+                {/* API上限時の代替手段。CSVをeBayにアップロードして終了(End)する */}
+                <button onClick={() => handleExportActionCsv('end')}
+                  disabled={exportingCsv !== null || summaryLoading || actionSummary.delist === 0}
+                  className="mt-2 w-full px-3 py-1.5 border border-orange-400 text-orange-700 text-xs rounded hover:bg-orange-100 disabled:opacity-40">
+                  {exportingCsv === 'end' ? 'CSV作成中...' : '取り下げCSVを出力（End）'}
+                </button>
               </div>
               <div className="border rounded-lg p-4 bg-blue-50 border-blue-200">
                 <p className="text-xs text-blue-600 font-medium mb-1">価格改定対象</p>
@@ -1345,6 +1393,12 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 <button onClick={handlePreviewRevisePrice} disabled={summaryLoading || actionSummary.revise_price === 0}
                   className="mt-3 w-full px-3 py-1.5 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:opacity-40">
                   価格改定実行
+                </button>
+                {/* API上限時の代替手段。CSVをeBayにアップロードして反映する */}
+                <button onClick={() => handleExportActionCsv('revise')}
+                  disabled={exportingCsv !== null || summaryLoading || actionSummary.revise_price === 0}
+                  className="mt-2 w-full px-3 py-1.5 border border-blue-400 text-blue-700 text-xs rounded hover:bg-blue-100 disabled:opacity-40">
+                  {exportingCsv === 'revise' ? 'CSV作成中...' : '価格改定CSVを出力'}
                 </button>
               </div>
               <div className="border rounded-lg p-4 bg-green-50 border-green-200">
