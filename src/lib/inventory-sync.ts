@@ -39,6 +39,12 @@ export interface InventorySyncOptions {
   // 本番で確認した不具合(2026-09-26): 手動同期を1日に7回実行して GetItem が
   // eBayの日次上限を超えた。直近に取得済みの出品は再照会しない(手動同期用)。
   skipFetchedWithinMs?: number
+  // ユーザー要望(2026-09-27): 695件の更新に695回のGetItemを使っていたため、
+  // eBayの日次上限をすぐ使い切っていた。GetMyeBaySelling(1回200件)でまとめて
+  // 取得し、一覧に無かった出品だけを個別確認する(約30回で済む)。
+  bulkRefresh?: boolean
+  // 一覧に無かった出品を個別確認する上限(残りは次回に回す)
+  maxMissingChecksPerRun?: number
 }
 
 export interface InventorySyncBatchResult extends InventorySyncResult {
@@ -576,6 +582,38 @@ async function extractionIdsForSeller(
     .map(row => row.id as string)
 }
 
+// ---------------------------------------------------------------------------
+// 既存出品の一括更新(GetMyeBaySelling)
+//
+// ユーザー要望・本番で確認した問題(2026-09-27): 695件の更新に695回のGetItemを
+// 使っていたため、eBayアプリの日次呼び出し上限をすぐ使い切り、同期も新規出品の
+// 発見も止まっていた。GetMyeBaySellingは1回で200件返すため、同じ695件を
+// 約30回で更新できる。一覧に無かった出品(売却・終了の可能性)だけ、従来どおり
+// GetItemで個別に確認する。
+// ---------------------------------------------------------------------------
+const DEFAULT_MISSING_CHECKS_PER_RUN = 100
+
+async function fetchActiveListingMap(
+  accessToken: string,
+  siteIds: string[],
+  options: InventorySyncOptions,
+): Promise<{ map: Map<string, InventoryListingInput>; complete: boolean }> {
+  const map = new Map<string, InventoryListingInput>()
+  let complete = true
+  const sites = siteIds.length > 0 ? siteIds : [null]
+  for (const siteId of sites) {
+    const batch = await fetchActiveListingsBatch({ accessToken }, 1, 50, {
+      signal: options.signal,
+      totalTimeoutMs: options.fetchTotalTimeoutMs,
+      concurrency: options.getItemConcurrency,
+      siteId,
+    })
+    for (const item of batch.items) if (item.ebayItemId) map.set(item.ebayItemId, item)
+    if (batch.truncated || batch.nextPage !== null) complete = false
+  }
+  return { map, complete }
+}
+
 // 前回走査した時刻以降に出品開始された出品を全件確認し、Kakehashiの商品に
 // 紐付く新規出品を取り込む。発見処理の失敗で同期全体を止めない。
 async function discoverNewListings(
@@ -720,26 +758,67 @@ export async function syncKnownInventoryListingBatch(
   const knownIds = await collectKnownItemIds(db, userId, options)
   const totalBatches = Math.max(1, Math.ceil(knownIds.length / batchSize))
   const start = (batchIndex - 1) * batchSize
-  const targetIds = knownIds.slice(start, start + batchSize)
 
   let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
   let callLimited = false
-  try {
-    fetched = await fetchListingsByItemIds(
-      { accessToken },
-      targetIds,
-      { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
-    )
-  } catch (error) {
-    if (!(error instanceof EbayCallLimitError)) throw error
-    // 呼び出し上限。新規出品の発見結果は残し、既存出品の更新だけ見送る
-    callLimited = true
+
+  // GetMyeBaySelling(1回200件)でまとめて取得できた場合は、1リクエストで
+  // このセラーの全件を更新する(695件で約30回。GetItemなら695回かかる)。
+  let bulk: { map: Map<string, InventoryListingInput>; complete: boolean } | null = null
+  if (options.bulkRefresh === true && batchIndex === 1 && knownIds.length > 0) {
+    try {
+      bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
+    } catch (error) {
+      if (error instanceof EbayCallLimitError) callLimited = true
+      else console.warn('[inventory-sync] bulk refresh failed, falling back to GetItem:', error instanceof Error ? error.message : error)
+      bulk = null
+    }
+  }
+
+  const targetIds = bulk ? knownIds : knownIds.slice(start, start + batchSize)
+
+  if (bulk) {
+    const found: InventoryListingInput[] = []
+    const missing: string[] = []
+    for (const id of targetIds) {
+      const item = bulk.map.get(id)
+      if (item) found.push(item)
+      else missing.push(id)
+    }
+    const missingLimit = options.maxMissingChecksPerRun ?? DEFAULT_MISSING_CHECKS_PER_RUN
+    const toCheck = missing.slice(0, Math.max(0, missingLimit))
+    let checked: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
+    if (toCheck.length > 0) {
+      try {
+        checked = await fetchListingsByItemIds(
+          { accessToken },
+          toCheck,
+          { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
+        )
+      } catch (error) {
+        if (!(error instanceof EbayCallLimitError)) throw error
+        callLimited = true
+      }
+    }
+    fetched = { items: [...found, ...checked.items], endedItemIds: checked.endedItemIds }
+  } else if (!callLimited) {
+    try {
+      fetched = await fetchListingsByItemIds(
+        { accessToken },
+        targetIds,
+        { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
+      )
+    } catch (error) {
+      if (!(error instanceof EbayCallLimitError)) throw error
+      // 呼び出し上限。新規出品の発見結果は残し、既存出品の更新だけ見送る
+      callLimited = true
+    }
   }
   const stored = await storeInventoryListings(db, userId, fetched.items, options)
   await removeEndedListings(db, userId, fetched.endedItemIds, options.sellerAccountId)
   if (!callLimited) await purgeUnmanagedListings(db, userId, options.sellerAccountId)
 
-  const processedItems = Math.min(knownIds.length, start + targetIds.length)
+  const processedItems = bulk ? knownIds.length : Math.min(knownIds.length, start + targetIds.length)
   return {
     totalItems: knownIds.length,
     processedItems,
@@ -749,9 +828,10 @@ export async function syncKnownInventoryListingBatch(
     discoveryTruncated: discovery.truncated,
     discoveryError: discovery.error,
     callLimited,
-    // 上限中は同じセラーを繰り返し照会しても意味がないので、次へ進める
-    nextBatch: !callLimited && batchIndex < totalBatches ? batchIndex + 1 : null,
-    totalBatches,
+    // 一括更新できたときはこのセラーの分は1回で終わり。
+    // 上限中も同じセラーを繰り返し照会しても意味がないので次へ進める。
+    nextBatch: !bulk && !callLimited && batchIndex < totalBatches ? batchIndex + 1 : null,
+    totalBatches: bulk ? 1 : totalBatches,
   }
 }
 
@@ -776,17 +856,58 @@ export async function syncKnownInventoryListings(
   const finishedAll = startIndex + targetIds.length >= knownIds.length
   const nextCursorItemId = finishedAll ? null : targetIds[targetIds.length - 1] ?? null
 
-  let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
+  // まず GetMyeBaySelling でまとめて取得する(1回200件)。失敗したら従来どおり
+  // GetItemで1件ずつ照会する。
+  let bulk: { map: Map<string, InventoryListingInput>; complete: boolean } | null = null
   let callLimited = false
-  try {
-    fetched = await fetchListingsByItemIds(
-      { accessToken },
-      targetIds,
-      { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs, concurrency: options.getItemConcurrency },
-    )
-  } catch (error) {
-    if (!(error instanceof EbayCallLimitError)) throw error
-    callLimited = true
+  if (options.bulkRefresh === true && targetIds.length > 0) {
+    try {
+      bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
+    } catch (error) {
+      if (error instanceof EbayCallLimitError) callLimited = true
+      else console.warn('[inventory-sync] bulk refresh failed, falling back to GetItem:', error instanceof Error ? error.message : error)
+      bulk = null
+    }
+  }
+
+  let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
+  if (bulk) {
+    const found: InventoryListingInput[] = []
+    const missing: string[] = []
+    for (const id of targetIds) {
+      const item = bulk.map.get(id)
+      if (item) found.push(item)
+      else missing.push(id)
+    }
+    // 一覧に無かった出品は売却・終了の可能性。誤って消さないよう個別に確認する
+    // (件数は多くないのが通常。多い場合は上限までにして残りは次回へ)
+    const missingLimit = options.maxMissingChecksPerRun ?? DEFAULT_MISSING_CHECKS_PER_RUN
+    const toCheck = missing.slice(0, Math.max(0, missingLimit))
+    let checked: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
+    if (toCheck.length > 0) {
+      try {
+        checked = await fetchListingsByItemIds(
+          { accessToken },
+          toCheck,
+          { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs, concurrency: options.getItemConcurrency },
+        )
+      } catch (error) {
+        if (!(error instanceof EbayCallLimitError)) throw error
+        callLimited = true
+      }
+    }
+    fetched = { items: [...found, ...checked.items], endedItemIds: checked.endedItemIds }
+  } else if (!callLimited) {
+    try {
+      fetched = await fetchListingsByItemIds(
+        { accessToken },
+        targetIds,
+        { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs, concurrency: options.getItemConcurrency },
+      )
+    } catch (error) {
+      if (!(error instanceof EbayCallLimitError)) throw error
+      callLimited = true
+    }
   }
   const stored = await storeInventoryListings(db, userId, fetched.items, options)
   await removeEndedListings(db, userId, fetched.endedItemIds, options.sellerAccountId)

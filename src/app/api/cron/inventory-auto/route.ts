@@ -232,6 +232,8 @@ export async function GET(req: NextRequest) {
             cursorItemId: account ? account.inventory_sync_cursor_item_id : (settings.sync_cursor_item_id ?? null),
             sellerAccountId: account?.id ?? null,
             sellerSiteIds: account?.listing_site_ids ?? null,
+            // GetMyeBaySelling(1回200件)でまとめて更新し、eBayの呼び出し回数を抑える
+            bulkRefresh: true,
             // 出品セラー未設定の古い抽出は、最初に接続したセラーのものとして扱う
             ownsUnassignedProducts: index === 0,
           })
