@@ -105,9 +105,14 @@ export async function POST(request: Request) {
 
   let accessToken: string
   let syncTargets: Array<{ id: string; seller_id: string; listing_site_ids?: string[] } | null>
+  // 本番で確認した不具合(2026-09-28): akebono-32 が対象セラーから外れていても
+  // 画面にもDBにも何も出ず、「エラーは無いのに取り込まれない」状態になっていた。
+  // どのセラーを何件処理したのか、接続に失敗したセラーがあるのかを必ず残す。
+  let authErrors: Array<{ seller_id: string; error: string }> = []
   try {
     const tokenResolver = await createInventoryTokenResolver(db, user.id, settings ?? {})
     syncTargets = tokenResolver.accounts.length > 0 ? tokenResolver.accounts : [null]
+    authErrors = tokenResolver.authErrors
     const target = syncTargets[Math.min(sellerIndex, syncTargets.length - 1)]
     const token = target ? tokenResolver.tokenFor(target.id) : tokenResolver.defaultToken
     if (!token) throw new Error('eBayアカウントが接続されていません')
@@ -175,6 +180,7 @@ export async function POST(request: Request) {
     clearTimeout(routeTimeout)
   }
 
+  const currentTarget = syncTargets[Math.min(sellerIndex, syncTargets.length - 1)]
   const matched = previousMatched + syncResult.updated + syncResult.discovered
   // このセラーを処理し終えたら次のセラーの1バッチ目へ進む
   const hasNextBatch = syncResult.nextBatch !== null
@@ -196,15 +202,18 @@ export async function POST(request: Request) {
     items_total: total,
     items_matched: matched,
     // 新規出品の発見に失敗した理由を履歴にも残す(画面からもDBからも追える)
-    ...(syncResult.discoveryError || syncResult.callLimited
-      ? {
-        result_summary: {
-          discovery_error: syncResult.discoveryError ?? null,
-          call_limited: syncResult.callLimited ?? false,
-          seller_index: sellerIndex,
-        },
-      }
-      : {}),
+    result_summary: {
+      seller_index: sellerIndex,
+      seller_id: currentTarget?.seller_id ?? null,
+      seller_count: syncTargets.length,
+      seller_sites: currentTarget?.listing_site_ids ?? null,
+      discovered: syncResult.discovered,
+      discovery_truncated: syncResult.discoveryTruncated,
+      discovery_error: syncResult.discoveryError ?? null,
+      call_limited: syncResult.callLimited ?? false,
+      // 接続に失敗して対象から外れたセラー(これがあると永久に取り込まれない)
+      auth_errors: authErrors.length > 0 ? authErrors : null,
+    },
     finished_at: done ? new Date().toISOString() : null,
   }).eq('id', runId)
 
@@ -221,6 +230,11 @@ export async function POST(request: Request) {
     discovery_error: syncResult.discoveryError ?? null,
     // eBayの呼び出し上限に当たって既存出品の照会を見送った
     call_limited: syncResult.callLimited ?? false,
+    // どのセラーを処理したか(取り込まれない原因の切り分け用)
+    seller_id: currentTarget?.seller_id ?? null,
+    seller_index: sellerIndex,
+    seller_count: syncTargets.length,
+    auth_errors: authErrors.length > 0 ? authErrors : null,
     done,
     cursor: done
       ? null
