@@ -601,10 +601,15 @@ async function fetchActiveListingMap(
   const map = new Map<string, InventoryListingInput>()
   let complete = true
   const sites = siteIds.length > 0 ? siteIds : [null]
+  // 取得の時間予算はサイト間で分け合う(サイトごとに満額使うと、呼び出し側の
+  // 打ち切りに引っかかって毎回失敗する)
+  const perSiteTimeoutMs = options.fetchTotalTimeoutMs
+    ? Math.max(10_000, Math.floor(options.fetchTotalTimeoutMs / sites.length))
+    : undefined
   for (const siteId of sites) {
     const batch = await fetchActiveListingsBatch({ accessToken }, 1, 50, {
       signal: options.signal,
-      totalTimeoutMs: options.fetchTotalTimeoutMs,
+      totalTimeoutMs: perSiteTimeoutMs,
       concurrency: options.getItemConcurrency,
       siteId,
     })
