@@ -637,3 +637,49 @@ describe('既存出品の一括更新', () => {
     expect(mockFetchListingsByItemIds).toHaveBeenCalledWith(expect.anything(), ['item-1', 'item-2'], expect.anything())
   })
 })
+
+// 本番で確認した不具合(2026-09-27): 走査位置が無いセラー(追加したばかりの
+// akebono-32)は古い日付から順に読むため、直近にアップロードしたUK出品へ
+// たどり着く前に時間切れになり、いつまでも取り込めなかった。
+describe('初回走査は新しい区間から読む', () => {
+  it('当日の区間を最初に読み、読み切れたら走査位置を現在時刻まで進める', async () => {
+    const updates: Array<Record<string, unknown>> = []
+    mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: false, pagesFetched: 1, totalPages: 1 })
+    mockFetchListingsByItemIds.mockReset().mockResolvedValue({ items: [], endedItemIds: [] })
+    mockFetchActiveListingsBatch.mockReset().mockResolvedValue({
+      items: [], nextPage: null, totalPages: 1, lastFetchedPage: 1, truncated: false, ebayTotalPages: 1,
+    })
+
+    const db = {
+      from: (table: string) => {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          chain.select = () => chain
+          chain.eq = () => chain
+          chain.update = (values: Record<string, unknown>) => { updates.push(values); return chain }
+          chain.maybeSingle = async () => ({ data: { inventory_discovery_scanned_until: null }, error: null })
+          chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+          return chain
+        }
+        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'products') return productsTableFor([])
+        const chain: Record<string, unknown> = {}
+        chain.upsert = mockUpsert
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+        return chain
+      },
+    } as unknown as SupabaseClient
+
+    await syncKnownInventoryListings(db, 'user-1', 'token', {
+      sellerAccountId: 'seller-b', sellerSiteIds: ['UK'], discoveryTimeBudgetMs: 20_000,
+    })
+
+    // 最初に読む区間の終わりが「現在時刻」になっている(新しい区間から読む)
+    const firstRange = mockScanSellerList.mock.calls[0][1] as { from: Date; to: Date }
+    const secondRange = mockScanSellerList.mock.calls[1][1] as { from: Date; to: Date }
+    expect(firstRange.to.getTime()).toBeGreaterThan(secondRange.to.getTime())
+    // 直近の区間を読み切れたら走査位置を進める
+    expect(updates.some(u => typeof u.inventory_discovery_scanned_until === 'string')).toBe(true)
+  })
+})
