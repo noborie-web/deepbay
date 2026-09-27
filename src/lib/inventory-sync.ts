@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { fetchActiveListingsBatch, fetchAllActiveListings, fetchListingsByItemIds, scanSellerListByStartTime, SELLER_LIST_MAX_RANGE_MS } from './ebay-inventory'
+import { EbayCallLimitError, fetchActiveListingsBatch, fetchAllActiveListings, fetchListingsByItemIds, scanSellerListByStartTime, SELLER_LIST_MAX_RANGE_MS } from './ebay-inventory'
 import {
   extractProductIdFromCustomLabel,
   extractSourceLookupKeys,
@@ -487,6 +487,11 @@ export interface KnownInventorySyncBatchResult {
   discovered: number
   discoveryTruncated: boolean
   discoveryError?: string
+  // 本番で確認した不具合(2026-09-27): 1人目のセラーのGetItemが呼び出し上限で
+  // 失敗すると同期全体が止まり、2人目(akebono-32)の新規出品の発見まで
+  // たどり着けなかった。上限は既存出品の照会だけの問題なので、上限に当たった
+  // ことを返して次のセラーへ進められるようにする。
+  callLimited?: boolean
   nextBatch: number | null
   totalBatches: number
 }
@@ -498,6 +503,8 @@ export interface KnownInventorySyncResult {
   discovered: number
   discoveryTruncated: boolean
   discoveryError?: string
+  // 呼び出し上限に当たって既存出品の照会をスキップした
+  callLimited?: boolean
   // 今回照会した件数と、続きから再開するための位置(全件終わったら null)
   processed: number
   nextCursorItemId: string | null
@@ -715,14 +722,22 @@ export async function syncKnownInventoryListingBatch(
   const start = (batchIndex - 1) * batchSize
   const targetIds = knownIds.slice(start, start + batchSize)
 
-  const fetched = await fetchListingsByItemIds(
-    { accessToken },
-    targetIds,
-    { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
-  )
+  let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
+  let callLimited = false
+  try {
+    fetched = await fetchListingsByItemIds(
+      { accessToken },
+      targetIds,
+      { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
+    )
+  } catch (error) {
+    if (!(error instanceof EbayCallLimitError)) throw error
+    // 呼び出し上限。新規出品の発見結果は残し、既存出品の更新だけ見送る
+    callLimited = true
+  }
   const stored = await storeInventoryListings(db, userId, fetched.items, options)
   await removeEndedListings(db, userId, fetched.endedItemIds, options.sellerAccountId)
-  await purgeUnmanagedListings(db, userId, options.sellerAccountId)
+  if (!callLimited) await purgeUnmanagedListings(db, userId, options.sellerAccountId)
 
   const processedItems = Math.min(knownIds.length, start + targetIds.length)
   return {
@@ -733,7 +748,9 @@ export async function syncKnownInventoryListingBatch(
     discovered: discovery.discovered,
     discoveryTruncated: discovery.truncated,
     discoveryError: discovery.error,
-    nextBatch: batchIndex < totalBatches ? batchIndex + 1 : null,
+    callLimited,
+    // 上限中は同じセラーを繰り返し照会しても意味がないので、次へ進める
+    nextBatch: !callLimited && batchIndex < totalBatches ? batchIndex + 1 : null,
     totalBatches,
   }
 }
@@ -759,16 +776,23 @@ export async function syncKnownInventoryListings(
   const finishedAll = startIndex + targetIds.length >= knownIds.length
   const nextCursorItemId = finishedAll ? null : targetIds[targetIds.length - 1] ?? null
 
-  const fetched = await fetchListingsByItemIds(
-    { accessToken },
-    targetIds,
-    { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs, concurrency: options.getItemConcurrency },
-  )
+  let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
+  let callLimited = false
+  try {
+    fetched = await fetchListingsByItemIds(
+      { accessToken },
+      targetIds,
+      { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs, concurrency: options.getItemConcurrency },
+    )
+  } catch (error) {
+    if (!(error instanceof EbayCallLimitError)) throw error
+    callLimited = true
+  }
   const stored = await storeInventoryListings(db, userId, fetched.items, options)
   await removeEndedListings(db, userId, fetched.endedItemIds, options.sellerAccountId)
   // 途中までしか照会していない回では、紐付かない出品の掃除は行わない
   // (未照会の出品を誤って消さないため)
-  if (finishedAll) await purgeUnmanagedListings(db, userId, options.sellerAccountId)
+  if (finishedAll && !callLimited) await purgeUnmanagedListings(db, userId, options.sellerAccountId)
 
   return {
     total: knownIds.length,
@@ -777,7 +801,8 @@ export async function syncKnownInventoryListings(
     discovered: discovery.discovered,
     discoveryTruncated: discovery.truncated,
     discoveryError: discovery.error,
-    processed: targetIds.length,
+    callLimited,
+    processed: callLimited ? 0 : targetIds.length,
     nextCursorItemId,
   }
 }

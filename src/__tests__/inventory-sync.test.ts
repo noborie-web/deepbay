@@ -64,6 +64,8 @@ vi.mock('@/lib/ebay-inventory', () => ({
   fetchListingsByItemIds: mockFetchListingsByItemIds,
   scanSellerListByStartTime: mockScanSellerList,
   SELLER_LIST_MAX_RANGE_MS: 119 * 24 * 60 * 60 * 1000,
+  // 呼び出し上限の判定(instanceof)に使うため、モックでも同じクラスを提供する
+  EbayCallLimitError: class EbayCallLimitError extends Error {},
 }))
 
 describe('syncInventoryListings', () => {
@@ -514,5 +516,55 @@ describe('新規出品の発見（サイト別）', () => {
 
     const sites = mockScanSellerList.mock.calls.map(call => (call[2] as { siteId?: string }).siteId)
     expect(new Set(sites)).toEqual(new Set(['UK', 'AU']))
+  })
+})
+
+// 本番で確認した不具合(2026-09-27): 1人目のセラーのGetItemがeBayの呼び出し
+// 上限で失敗すると同期全体が止まり、2人目(akebono-32)の新規出品の発見まで
+// たどり着けなかった。上限は既存出品の照会だけの問題なので、発見結果は残す。
+describe('eBayの呼び出し上限', () => {
+  it('上限に当たっても新規出品の発見結果は残し、照会だけ見送る', async () => {
+    const { EbayCallLimitError } = await import('@/lib/ebay-inventory')
+    mockScanSellerList.mockReset().mockResolvedValue({
+      items: [{
+        ebayItemId: 'uk-1', customLabel: kakehashiLabel(1).label, title: 'UK item',
+        currentPrice: 82.24, quantity: 1, quantitySold: 0, listingStatus: 'Active',
+        startTime: null, endTime: null, siteId: 'UK', currency: 'GBP',
+      }],
+      truncated: false, pagesFetched: 1, totalPages: 1,
+    })
+    mockFetchListingsByItemIds.mockReset().mockRejectedValue(new EbayCallLimitError('上限に達しました'))
+    mockUpsert.mockReset().mockResolvedValue({ error: null })
+    mockDeleteIs.mockReset().mockResolvedValue({ error: null })
+
+    const db = {
+      from: (table: string) => {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'update']) chain[m] = () => chain
+          chain.maybeSingle = async () => ({ data: { inventory_discovery_scanned_until: null }, error: null })
+          chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+          return chain
+        }
+        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'products') return productsTableFor([kakehashiLabel(1).productId])
+        const chain: Record<string, unknown> = {}
+        chain.upsert = mockUpsert
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+        return chain
+      },
+    } as unknown as SupabaseClient
+
+    const result = await syncKnownInventoryListings(db, 'user-1', 'token', {
+      sellerAccountId: 'seller-b', sellerSiteIds: ['UK'], discoveryTimeBudgetMs: 5_000,
+    })
+
+    // 発見したUK出品は保存され、既存出品の照会だけ見送られる
+    expect(result.callLimited).toBe(true)
+    // 初回は直近3日を1日ずつ走査するため、モックは同じ出品を複数回返す
+    expect(result.discovered).toBeGreaterThan(0)
+    expect(result.processed).toBe(0)
+    expect(mockUpsert).toHaveBeenCalled()
   })
 })
