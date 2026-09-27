@@ -189,6 +189,7 @@ describe('POST /api/inventory/sync', () => {
     expect(secondJson).toEqual({
       ok: true,
       discovery_error: null,
+      call_limited: false,
       total: 1050,
       matched: 18,
       ended: 0,

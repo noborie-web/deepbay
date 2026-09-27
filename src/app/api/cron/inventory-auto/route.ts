@@ -217,7 +217,12 @@ export async function GET(req: NextRequest) {
         // 上げて短縮し、各工程の時間予算を合計で300秒に収める。
         // 出品が1,000件を超えても300秒に収まるよう、1回あたりの照会件数を
         // 上限付きにして、続きは次の実行(3/9/15/21時)から再開する。
+        // 本番で確認した不具合(2026-09-27): 1人目のセラーが失敗すると同期全体が
+        // 止まり、2人目(akebono-32)の新規出品の発見まで進まなかった。
+        // セラーごとに失敗を閉じ込めて、他のセラーは続行する。
+        let lastError: string | null = null
         for (const [index, account] of syncTargets.entries()) {
+          try {
           const syncResult = await syncKnownInventoryListings(db, userId, tokenFor(account), {
             fetchTotalTimeoutMs: budgets[index].fetchTotalTimeoutMs,
             // 新規出品の発見はどのセラーでも必要なので、ここは均等に分ける
@@ -239,6 +244,7 @@ export async function GET(req: NextRequest) {
             seller_id: account?.seller_id ?? null,
             discovered: syncResult.discovered, ended: syncResult.ended, discovery_truncated: syncResult.discoveryTruncated,
             discovery_error: syncResult.discoveryError ?? null,
+            call_limited: syncResult.callLimited ?? false,
             processed: syncResult.processed, remaining: syncResult.nextCursorItemId ? syncResult.total - syncResult.processed : 0,
           }
           syncResults.push({ ...summary, total: syncResult.total, matched: syncResult.matched })
@@ -252,8 +258,24 @@ export async function GET(req: NextRequest) {
             started_at: startedAt,
             finished_at: new Date().toISOString(),
           })
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            lastError = message
+            syncResults.push({ seller_id: account?.seller_id ?? null, error: message })
+            await db.from('inventory_runs').insert({
+              user_id: userId,
+              run_type: 'sync',
+              status: 'failed',
+              error_message: `${account?.seller_id ?? 'セラー不明'}: ${message}`,
+              result_summary: { seller_id: account?.seller_id ?? null, error: message },
+              started_at: startedAt,
+              finished_at: new Date().toISOString(),
+            })
+          }
         }
         userResult.sync = syncResults.length === 1 ? syncResults[0] : { sellers: syncResults }
+        // すべてのセラーで失敗したときだけ、後続の操作を古い在庫情報で行わない
+        if (lastError && syncResults.every(r => 'error' in r)) throw new Error(lastError)
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
         userResult.sync = { error: errorMessage }

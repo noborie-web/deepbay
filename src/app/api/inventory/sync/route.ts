@@ -184,8 +184,14 @@ export async function POST(request: Request) {
     items_total: total,
     items_matched: matched,
     // 新規出品の発見に失敗した理由を履歴にも残す(画面からもDBからも追える)
-    ...(syncResult.discoveryError
-      ? { result_summary: { discovery_error: syncResult.discoveryError, seller_index: sellerIndex } }
+    ...(syncResult.discoveryError || syncResult.callLimited
+      ? {
+        result_summary: {
+          discovery_error: syncResult.discoveryError ?? null,
+          call_limited: syncResult.callLimited ?? false,
+          seller_index: sellerIndex,
+        },
+      }
       : {}),
     finished_at: done ? new Date().toISOString() : null,
   }).eq('id', runId)
@@ -201,6 +207,8 @@ export async function POST(request: Request) {
     discovery_truncated: syncResult.discoveryTruncated,
     // 新規出品の発見に失敗した理由(UK/AUが取り込まれない等の原因を画面に出す)
     discovery_error: syncResult.discoveryError ?? null,
+    // eBayの呼び出し上限に当たって既存出品の照会を見送った
+    call_limited: syncResult.callLimited ?? false,
     done,
     cursor: done
       ? null

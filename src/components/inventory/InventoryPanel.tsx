@@ -692,6 +692,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       let discoveredTotal = 0
       let discoveryTruncated = false
       let discoveryError: string | null = null
+      let callLimited = false
       let rounds = 0
       for (let requestNumber = 1; requestNumber <= 50; requestNumber++) {
         const controller = new AbortController()
@@ -712,6 +713,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             discovery_truncated?: boolean
             done: boolean
             discovery_error?: string | null
+            call_limited?: boolean
             cursor: string | null
             progress?: { processed: number; total: number }
           } = await res.json()
@@ -723,6 +725,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           if (typeof json.discovery_error === 'string' && json.discovery_error) {
             discoveryError = json.discovery_error
           }
+          if (json.call_limited) callLimited = true
 
           if (json.progress) {
             setSyncProgress(`${json.progress.processed}/${json.progress.total}件`)
@@ -764,8 +767,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
         completed.discovered > 0 ? `新規${completed.discovered}件を発見` : null,
         completed.ended > 0 ? `終了済み${completed.ended}件を除外` : null,
       ].filter(Boolean).join('、')
-      showMsg(completed.discoveryTruncated || discoveryError ? 'error' : 'success',
+      showMsg(completed.discoveryTruncated || discoveryError || callLimited ? 'error' : 'success',
         `同期完了: Kakehashi出品${completed.total}件を更新${extras ? `（${extras}）` : ''}`
+        + (callLimited ? '。eBayの呼び出し回数の上限に達したため、既存出品の更新は見送りました（新規出品の取り込みは実行済み）。時間をおいて再実行してください。' : '')
         + (discoveryError ? `。新規出品の発見に失敗しました: ${discoveryError}` : '')
         + (completed.discoveryTruncated && !discoveryError ? '。新規出品の走査が時間内に終わりませんでした。もう一度「同期」を実行してください。' : ''))
       setRunsLoaded(false)
