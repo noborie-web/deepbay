@@ -211,6 +211,10 @@ export async function POST(request: Request) {
       discovery_truncated: syncResult.discoveryTruncated,
       discovery_error: syncResult.discoveryError ?? null,
       call_limited: syncResult.callLimited ?? false,
+      // 出品一覧(GetMyeBaySelling)の取得結果
+      bulk_items: syncResult.bulkItems ?? null,
+      bulk_complete: syncResult.bulkComplete ?? null,
+      bulk_error: syncResult.bulkError ?? null,
       // 接続に失敗して対象から外れたセラー(これがあると永久に取り込まれない)
       auth_errors: authErrors.length > 0 ? authErrors : null,
     },
