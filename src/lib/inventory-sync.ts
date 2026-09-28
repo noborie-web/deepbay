@@ -810,7 +810,9 @@ export async function syncKnownInventoryListingBatch(
   // GetMyeBaySelling(1回200件)でまとめて取得できた場合は、1リクエストで
   // このセラーの全件を更新する(695件で約30回。GetItemなら695回かかる)。
   let bulk: { map: Map<string, InventoryListingInput>; complete: boolean } | null = null
-  if (options.bulkRefresh === true && batchIndex === 1 && knownIds.length > 0) {
+  // knownIdsが0件でも実行する。出品一覧(GetMyeBaySelling)にはSKU付きで
+  // 全出品が返るため、新しいセラーの出品の発見にもそのまま使える。
+  if (options.bulkRefresh === true && batchIndex === 1) {
     try {
       bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
     } catch (error) {
@@ -823,12 +825,20 @@ export async function syncKnownInventoryListingBatch(
   const targetIds = bulk ? knownIds : knownIds.slice(start, start + batchSize)
 
   if (bulk) {
+    // 本番で確認した不具合(2026-09-28): 新しいセラー(akebono-32)は
+    // GetSellerListの走査が毎回時間切れになり、UKに出品した127件をいつまでも
+    // 発見できなかった。出品一覧に載っている出品は、在庫一覧に未登録でも
+    // そのまま取り込む(Kakehashiの商品に紐付くものだけが保存される)。
+    const known = new Set(targetIds)
     const found: InventoryListingInput[] = []
     const missing: string[] = []
     for (const id of targetIds) {
       const item = bulk.map.get(id)
       if (item) found.push(item)
       else missing.push(id)
+    }
+    for (const [itemId, item] of bulk.map) {
+      if (!known.has(itemId)) found.push(item)
     }
     const missingLimit = options.maxMissingChecksPerRun ?? DEFAULT_MISSING_CHECKS_PER_RUN
     const toCheck = missing.slice(0, Math.max(0, missingLimit))
@@ -905,7 +915,7 @@ export async function syncKnownInventoryListings(
   // GetItemで1件ずつ照会する。
   let bulk: { map: Map<string, InventoryListingInput>; complete: boolean } | null = null
   let callLimited = false
-  if (options.bulkRefresh === true && targetIds.length > 0) {
+  if (options.bulkRefresh === true) {
     try {
       bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
     } catch (error) {
@@ -917,12 +927,20 @@ export async function syncKnownInventoryListings(
 
   let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
   if (bulk) {
+    // 本番で確認した不具合(2026-09-28): 新しいセラー(akebono-32)は
+    // GetSellerListの走査が毎回時間切れになり、UKに出品した127件をいつまでも
+    // 発見できなかった。出品一覧に載っている出品は、在庫一覧に未登録でも
+    // そのまま取り込む(Kakehashiの商品に紐付くものだけが保存される)。
+    const known = new Set(targetIds)
     const found: InventoryListingInput[] = []
     const missing: string[] = []
     for (const id of targetIds) {
       const item = bulk.map.get(id)
       if (item) found.push(item)
       else missing.push(id)
+    }
+    for (const [itemId, item] of bulk.map) {
+      if (!known.has(itemId)) found.push(item)
     }
     // 一覧に無かった出品は売却・終了の可能性。誤って消さないよう個別に確認する
     // (件数は多くないのが通常。多い場合は上限までにして残りは次回へ)
