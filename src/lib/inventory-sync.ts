@@ -630,6 +630,10 @@ async function fetchActiveListingMap(
       const batch = await fetchActiveListingsBatch({ accessToken }, 1, 50, {
         signal: options.signal,
         totalTimeoutMs: remaining,
+        // 本番で確認した不具合(2026-09-28): 全体予算を増やしても、1ページの
+        // 上限(既定10秒)で「page 1 exceeded 10000ms」となり取得できなかった。
+        // 応答の遅いセラーに合わせて1ページの上限も伸ばす。
+        pageTimeoutMs: remaining ? Math.max(10_000, Math.min(25_000, remaining - 3_000)) : 25_000,
         concurrency: options.getItemConcurrency,
         siteId,
       })
