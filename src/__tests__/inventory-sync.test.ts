@@ -683,3 +683,51 @@ describe('初回走査は新しい区間から読む', () => {
     expect(updates.some(u => typeof u.inventory_discovery_scanned_until === 'string')).toBe(true)
   })
 })
+
+// 本番で確認した不具合(2026-09-28): 新しいセラー(akebono-32)は GetSellerList の
+// 走査が毎回時間切れ(truncated)になり、UKに出品した127件をいつまでも発見
+// できなかった。出品一覧(GetMyeBaySelling)はSKU付きで全出品が返るため、
+// 在庫一覧に未登録の出品もそのまま取り込む。
+describe('出品一覧からの新規取り込み', () => {
+  it('在庫一覧に無い出品も、Kakehashiの商品に紐付けば取り込む', async () => {
+    const { label, productId } = kakehashiLabel(7)
+    mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: true, pagesFetched: 0, totalPages: 1 })
+    mockFetchListingsByItemIds.mockReset().mockResolvedValue({ items: [], endedItemIds: [] })
+    mockFetchActiveListingsBatch.mockReset().mockResolvedValue({
+      items: [{
+        ebayItemId: 'uk-new', customLabel: label, title: 'UK new listing',
+        currentPrice: 82.24, quantity: 1, quantitySold: 0, listingStatus: 'Active',
+        startTime: null, endTime: null, siteId: 'UK', currency: 'GBP',
+      }],
+      nextPage: null, totalPages: 1, lastFetchedPage: 1, truncated: false, ebayTotalPages: 1,
+    })
+    mockUpsert.mockReset().mockResolvedValue({ error: null })
+
+    const db = {
+      from: (table: string) => {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'update']) chain[m] = () => chain
+          chain.maybeSingle = async () => ({ data: { inventory_discovery_scanned_until: null }, error: null })
+          chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+          return chain
+        }
+        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'products') return productsTableFor([productId])
+        // 在庫一覧は空(このセラーはまだ1件も登録されていない)
+        const chain: Record<string, unknown> = {}
+        chain.upsert = mockUpsert
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+        return chain
+      },
+    } as unknown as SupabaseClient
+
+    await syncKnownInventoryListings(db, 'user-1', 'token', {
+      bulkRefresh: true, sellerAccountId: 'seller-b', sellerSiteIds: ['UK'],
+    })
+
+    const upserted = mockUpsert.mock.calls.flatMap(call => call[0] as Array<Record<string, unknown>>)
+    expect(upserted.some(row => row.ebay_item_id === 'uk-new' && row.site_id === 'UK' && row.currency === 'GBP')).toBe(true)
+  })
+})
