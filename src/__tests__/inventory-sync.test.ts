@@ -731,3 +731,48 @@ describe('出品一覧からの新規取り込み', () => {
     expect(upserted.some(row => row.ebay_item_id === 'uk-new' && row.site_id === 'UK' && row.currency === 'GBP')).toBe(true)
   })
 })
+
+// 本番で確認した不具合(2026-09-28): 出品一覧の全件(他ツールの出品を含む)を
+// 保存処理に回したため、商品照会が膨大になり45秒で打ち切られた。
+describe('出品一覧の絞り込み', () => {
+  it('在庫一覧に無い出品は、Kakehashiのラベルが付いたものだけ保存処理に回す', async () => {
+    const { label, productId } = kakehashiLabel(9)
+    mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: false, pagesFetched: 1, totalPages: 1 })
+    mockFetchListingsByItemIds.mockReset().mockResolvedValue({ items: [], endedItemIds: [] })
+    mockFetchActiveListingsBatch.mockReset().mockResolvedValue({
+      items: [
+        { ebayItemId: 'ours', customLabel: label, title: 'Kakehashi出品', currentPrice: 10, quantity: 1, quantitySold: 0, listingStatus: 'Active', startTime: null, endTime: null },
+        { ebayItemId: 'theirs-1', customLabel: 'OTHER-TOOL-001', title: '他ツールの出品', currentPrice: 20, quantity: 1, quantitySold: 0, listingStatus: 'Active', startTime: null, endTime: null },
+        { ebayItemId: 'theirs-2', customLabel: null, title: 'ラベルなし', currentPrice: 30, quantity: 1, quantitySold: 0, listingStatus: 'Active', startTime: null, endTime: null },
+      ],
+      nextPage: null, totalPages: 1, lastFetchedPage: 1, truncated: false, ebayTotalPages: 1,
+    })
+    mockUpsert.mockReset().mockResolvedValue({ error: null })
+
+    const db = {
+      from: (table: string) => {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'update']) chain[m] = () => chain
+          chain.maybeSingle = async () => ({ data: { inventory_discovery_scanned_until: new Date().toISOString() }, error: null })
+          chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+          return chain
+        }
+        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'products') return productsTableFor([productId])
+        const chain: Record<string, unknown> = {}
+        chain.upsert = mockUpsert
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+        return chain
+      },
+    } as unknown as SupabaseClient
+
+    await syncKnownInventoryListings(db, 'user-1', 'token', {
+      bulkRefresh: true, sellerAccountId: 'seller-a', sellerSiteIds: ['US'],
+    })
+
+    const upserted = mockUpsert.mock.calls.flatMap(call => call[0] as Array<Record<string, unknown>>)
+    expect(upserted.map(r => r.ebay_item_id)).toEqual(['ours'])
+  })
+})

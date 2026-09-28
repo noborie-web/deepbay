@@ -593,6 +593,14 @@ async function extractionIdsForSeller(
 // ---------------------------------------------------------------------------
 const DEFAULT_MISSING_CHECKS_PER_RUN = 100
 
+// Kakehashiが出品したもの(CustomLabelが kakehashi_/deepbay_ 由来)かどうか。
+// 出品一覧には他ツールの出品も含まれるため、保存処理に回す前にここで絞る。
+function hasKakehashiLabel(customLabel: string | null | undefined): boolean {
+  if (!customLabel) return false
+  return extractProductIdFromCustomLabel(customLabel) !== null
+    || extractSourceLookupKeys(customLabel).length > 0
+}
+
 async function fetchActiveListingMap(
   accessToken: string,
   siteIds: string[],
@@ -837,8 +845,13 @@ export async function syncKnownInventoryListingBatch(
       if (item) found.push(item)
       else missing.push(id)
     }
+    // 本番で確認した不具合(2026-09-28): 出品一覧の全件(他ツールの出品を含めて
+    // 約5,400件)を保存処理に回したため、商品照会が膨大になり45秒で打ち切られた。
+    // 在庫一覧に未登録の分は、Kakehashiのラベルが付いた出品だけに絞る。
     for (const [itemId, item] of bulk.map) {
-      if (!known.has(itemId)) found.push(item)
+      if (known.has(itemId)) continue
+      if (!hasKakehashiLabel(item.customLabel)) continue
+      found.push(item)
     }
     const missingLimit = options.maxMissingChecksPerRun ?? DEFAULT_MISSING_CHECKS_PER_RUN
     const toCheck = missing.slice(0, Math.max(0, missingLimit))
@@ -939,8 +952,13 @@ export async function syncKnownInventoryListings(
       if (item) found.push(item)
       else missing.push(id)
     }
+    // 本番で確認した不具合(2026-09-28): 出品一覧の全件(他ツールの出品を含めて
+    // 約5,400件)を保存処理に回したため、商品照会が膨大になり45秒で打ち切られた。
+    // 在庫一覧に未登録の分は、Kakehashiのラベルが付いた出品だけに絞る。
     for (const [itemId, item] of bulk.map) {
-      if (!known.has(itemId)) found.push(item)
+      if (known.has(itemId)) continue
+      if (!hasKakehashiLabel(item.customLabel)) continue
+      found.push(item)
     }
     // 一覧に無かった出品は売却・終了の可能性。誤って消さないよう個別に確認する
     // (件数は多くないのが通常。多い場合は上限までにして残りは次回へ)
