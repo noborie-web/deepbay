@@ -498,6 +498,9 @@ export interface KnownInventorySyncBatchResult {
   // たどり着けなかった。上限は既存出品の照会だけの問題なので、上限に当たった
   // ことを返して次のセラーへ進められるようにする。
   callLimited?: boolean
+  bulkItems?: number
+  bulkComplete?: boolean
+  bulkError?: string
   nextBatch: number | null
   totalBatches: number
 }
@@ -511,6 +514,10 @@ export interface KnownInventorySyncResult {
   discoveryError?: string
   // 呼び出し上限に当たって既存出品の照会をスキップした
   callLimited?: boolean
+  // 出品一覧(GetMyeBaySelling)の取得結果(取り込まれない原因の切り分け用)
+  bulkItems?: number
+  bulkComplete?: boolean
+  bulkError?: string
   // 今回照会した件数と、続きから再開するための位置(全件終わったら null)
   processed: number
   nextCursorItemId: string | null
@@ -817,6 +824,8 @@ export async function syncKnownInventoryListingBatch(
 
   // GetMyeBaySelling(1回200件)でまとめて取得できた場合は、1リクエストで
   // このセラーの全件を更新する(695件で約30回。GetItemなら695回かかる)。
+  let bulkError: string | undefined
+  const fetchStartedAt = Date.now()
   let bulk: { map: Map<string, InventoryListingInput>; complete: boolean } | null = null
   // knownIdsが0件でも実行する。出品一覧(GetMyeBaySelling)にはSKU付きで
   // 全出品が返るため、新しいセラーの出品の発見にもそのまま使える。
@@ -825,10 +834,17 @@ export async function syncKnownInventoryListingBatch(
       bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
     } catch (error) {
       if (error instanceof EbayCallLimitError) callLimited = true
-      else console.warn('[inventory-sync] bulk refresh failed, falling back to GetItem:', error instanceof Error ? error.message : error)
+      bulkError = error instanceof Error ? error.message : String(error)
+      console.warn('[inventory-sync] bulk refresh failed, falling back to GetItem:', bulkError)
       bulk = null
     }
   }
+  // 本番で確認した不具合(2026-09-28): 一括取得が時間切れした後に個別照会を
+  // 重ねてルートの打ち切り(45秒)を超えていた。eBayへの取得に使ってよい残り
+  // 時間を計算し、足りなければ個別照会は次回に回す。
+  const fetchBudgetMs = options.fetchTotalTimeoutMs
+  const remainingFetchMs = fetchBudgetMs ? fetchBudgetMs - (Date.now() - fetchStartedAt) : undefined
+  const canFetchItems = remainingFetchMs === undefined || remainingFetchMs > 5_000
 
   const targetIds = bulk ? knownIds : knownIds.slice(start, start + batchSize)
 
@@ -854,14 +870,14 @@ export async function syncKnownInventoryListingBatch(
       found.push(item)
     }
     const missingLimit = options.maxMissingChecksPerRun ?? DEFAULT_MISSING_CHECKS_PER_RUN
-    const toCheck = missing.slice(0, Math.max(0, missingLimit))
+    const toCheck = canFetchItems ? missing.slice(0, Math.max(0, missingLimit)) : []
     let checked: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
     if (toCheck.length > 0) {
       try {
         checked = await fetchListingsByItemIds(
           { accessToken },
           toCheck,
-          { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs },
+          { signal: options.signal, totalTimeoutMs: remainingFetchMs },
         )
       } catch (error) {
         if (!(error instanceof EbayCallLimitError)) throw error
@@ -869,7 +885,7 @@ export async function syncKnownInventoryListingBatch(
       }
     }
     fetched = { items: [...found, ...checked.items], endedItemIds: checked.endedItemIds }
-  } else if (!callLimited) {
+  } else if (!callLimited && canFetchItems) {
     try {
       fetched = await fetchListingsByItemIds(
         { accessToken },
@@ -896,6 +912,9 @@ export async function syncKnownInventoryListingBatch(
     discoveryTruncated: discovery.truncated,
     discoveryError: discovery.error,
     callLimited,
+    bulkItems: bulk?.map.size,
+    bulkComplete: bulk?.complete,
+    bulkError,
     // 一括更新できたときはこのセラーの分は1回で終わり。
     // 上限中も同じセラーを繰り返し照会しても意味がないので次へ進める。
     nextBatch: !bulk && !callLimited && batchIndex < totalBatches ? batchIndex + 1 : null,
@@ -928,15 +947,24 @@ export async function syncKnownInventoryListings(
   // GetItemで1件ずつ照会する。
   let bulk: { map: Map<string, InventoryListingInput>; complete: boolean } | null = null
   let callLimited = false
+  let bulkError: string | undefined
+  const fetchStartedAt = Date.now()
   if (options.bulkRefresh === true) {
     try {
       bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
     } catch (error) {
       if (error instanceof EbayCallLimitError) callLimited = true
-      else console.warn('[inventory-sync] bulk refresh failed, falling back to GetItem:', error instanceof Error ? error.message : error)
+      bulkError = error instanceof Error ? error.message : String(error)
+      console.warn('[inventory-sync] bulk refresh failed, falling back to GetItem:', bulkError)
       bulk = null
     }
   }
+  // 本番で確認した不具合(2026-09-28): 一括取得が時間切れした後に個別照会を
+  // 重ねてルートの打ち切り(45秒)を超えていた。eBayへの取得に使ってよい残り
+  // 時間を計算し、足りなければ個別照会は次回に回す。
+  const fetchBudgetMs = options.fetchTotalTimeoutMs
+  const remainingFetchMs = fetchBudgetMs ? fetchBudgetMs - (Date.now() - fetchStartedAt) : undefined
+  const canFetchItems = remainingFetchMs === undefined || remainingFetchMs > 5_000
 
   let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
   if (bulk) {
@@ -963,14 +991,14 @@ export async function syncKnownInventoryListings(
     // 一覧に無かった出品は売却・終了の可能性。誤って消さないよう個別に確認する
     // (件数は多くないのが通常。多い場合は上限までにして残りは次回へ)
     const missingLimit = options.maxMissingChecksPerRun ?? DEFAULT_MISSING_CHECKS_PER_RUN
-    const toCheck = missing.slice(0, Math.max(0, missingLimit))
+    const toCheck = canFetchItems ? missing.slice(0, Math.max(0, missingLimit)) : []
     let checked: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
     if (toCheck.length > 0) {
       try {
         checked = await fetchListingsByItemIds(
           { accessToken },
           toCheck,
-          { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs, concurrency: options.getItemConcurrency },
+          { signal: options.signal, totalTimeoutMs: remainingFetchMs, concurrency: options.getItemConcurrency },
         )
       } catch (error) {
         if (!(error instanceof EbayCallLimitError)) throw error
@@ -978,7 +1006,7 @@ export async function syncKnownInventoryListings(
       }
     }
     fetched = { items: [...found, ...checked.items], endedItemIds: checked.endedItemIds }
-  } else if (!callLimited) {
+  } else if (!callLimited && canFetchItems) {
     try {
       fetched = await fetchListingsByItemIds(
         { accessToken },
@@ -1004,6 +1032,9 @@ export async function syncKnownInventoryListings(
     discoveryTruncated: discovery.truncated,
     discoveryError: discovery.error,
     callLimited,
+    bulkItems: bulk?.map.size,
+    bulkComplete: bulk?.complete,
+    bulkError,
     processed: callLimited ? 0 : targetIds.length,
     nextCursorItemId,
   }

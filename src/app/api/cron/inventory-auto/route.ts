@@ -247,6 +247,9 @@ export async function GET(req: NextRequest) {
             discovered: syncResult.discovered, ended: syncResult.ended, discovery_truncated: syncResult.discoveryTruncated,
             discovery_error: syncResult.discoveryError ?? null,
             call_limited: syncResult.callLimited ?? false,
+            bulk_items: syncResult.bulkItems ?? null,
+            bulk_complete: syncResult.bulkComplete ?? null,
+            bulk_error: syncResult.bulkError ?? null,
             processed: syncResult.processed, remaining: syncResult.nextCursorItemId ? syncResult.total - syncResult.processed : 0,
           }
           syncResults.push({ ...summary, total: syncResult.total, matched: syncResult.matched })
