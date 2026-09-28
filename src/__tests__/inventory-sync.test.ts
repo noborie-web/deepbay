@@ -818,3 +818,44 @@ describe('出品一覧の取得予算', () => {
     expect(firstOptions.totalTimeoutMs).toBeGreaterThan(25_000)
   })
 })
+
+// 本番で確認した不具合(2026-09-28): 全体予算を増やしても1ページの上限(10秒)で
+// 「page 1 exceeded 10000ms」となり、応答の遅いセラーの出品一覧を取得できなかった。
+describe('出品一覧の1ページの上限', () => {
+  it('1ページの上限も残り時間に合わせて伸ばす', async () => {
+    mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: false, pagesFetched: 1, totalPages: 1 })
+    mockFetchListingsByItemIds.mockReset().mockResolvedValue({ items: [], endedItemIds: [] })
+    mockUpsert.mockReset().mockResolvedValue({ error: null })
+    mockFetchActiveListingsBatch.mockReset().mockResolvedValue({
+      items: [], nextPage: null, totalPages: 1, lastFetchedPage: 1, truncated: false, ebayTotalPages: 1,
+    })
+
+    const db = {
+      from: (table: string) => {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'update']) chain[m] = () => chain
+          chain.maybeSingle = async () => ({ data: { inventory_discovery_scanned_until: new Date().toISOString() }, error: null })
+          chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+          return chain
+        }
+        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'products') return productsTableFor([])
+        const chain: Record<string, unknown> = {}
+        chain.upsert = mockUpsert
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+        return chain
+      },
+    } as unknown as SupabaseClient
+
+    await syncKnownInventoryListings(db, 'user-1', 'token', {
+      bulkRefresh: true, sellerAccountId: 'seller-b', sellerSiteIds: ['UK'],
+      fetchTotalTimeoutMs: 32_000,
+    })
+
+    const options = mockFetchActiveListingsBatch.mock.calls[0][3] as { pageTimeoutMs: number }
+    expect(options.pageTimeoutMs).toBeGreaterThan(10_000)
+    expect(options.pageTimeoutMs).toBeLessThanOrEqual(25_000)
+  })
+})
