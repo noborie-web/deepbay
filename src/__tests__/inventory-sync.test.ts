@@ -776,3 +776,45 @@ describe('出品一覧の絞り込み', () => {
     expect(upserted.map(r => r.ebay_item_id)).toEqual(['ours'])
   })
 })
+
+// 本番で確認した不具合(2026-09-28): 取得の予算をサイト数で均等割りしたため、
+// 応答の遅いセラー(akebono-32)は12.5秒で1ページも取れず毎回失敗していた。
+describe('出品一覧の取得予算', () => {
+  it('サイトで均等割りせず、先頭のサイトに残り時間を使わせる', async () => {
+    mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: false, pagesFetched: 1, totalPages: 1 })
+    mockFetchListingsByItemIds.mockReset().mockResolvedValue({ items: [], endedItemIds: [] })
+    mockUpsert.mockReset().mockResolvedValue({ error: null })
+    mockFetchActiveListingsBatch.mockReset().mockResolvedValue({
+      items: [], nextPage: null, totalPages: 1, lastFetchedPage: 1, truncated: false, ebayTotalPages: 1,
+    })
+
+    const db = {
+      from: (table: string) => {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'update']) chain[m] = () => chain
+          chain.maybeSingle = async () => ({ data: { inventory_discovery_scanned_until: new Date().toISOString() }, error: null })
+          chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+          return chain
+        }
+        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'products') return productsTableFor([])
+        const chain: Record<string, unknown> = {}
+        chain.upsert = mockUpsert
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+        return chain
+      },
+    } as unknown as SupabaseClient
+
+    await syncKnownInventoryListings(db, 'user-1', 'token', {
+      bulkRefresh: true, sellerAccountId: 'seller-b', sellerSiteIds: ['UK', 'AU'],
+      fetchTotalTimeoutMs: 30_000,
+    })
+
+    // 1サイト目は30秒近い予算を受け取る(15秒ずつに割らない)
+    const firstOptions = mockFetchActiveListingsBatch.mock.calls[0][3] as { totalTimeoutMs: number; siteId: string }
+    expect(firstOptions.siteId).toBe('UK')
+    expect(firstOptions.totalTimeoutMs).toBeGreaterThan(25_000)
+  })
+})

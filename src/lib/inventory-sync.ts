@@ -616,20 +616,31 @@ async function fetchActiveListingMap(
   const map = new Map<string, InventoryListingInput>()
   let complete = true
   const sites = siteIds.length > 0 ? siteIds : [null]
-  // 取得の時間予算はサイト間で分け合う(サイトごとに満額使うと、呼び出し側の
-  // 打ち切りに引っかかって毎回失敗する)
-  const perSiteTimeoutMs = options.fetchTotalTimeoutMs
-    ? Math.max(10_000, Math.floor(options.fetchTotalTimeoutMs / sites.length))
-    : undefined
+  // 本番で確認した不具合(2026-09-28): 予算をサイト数で均等割りした結果、
+  // 応答の遅いセラー(akebono-32)は12.5秒では1ページも取れず
+  // 「exceeded 12500ms」で毎回失敗していた。均等割りをやめ、先頭のサイトから
+  // 残り時間を使い切る形にする(全部失敗するより、1サイトでも取り込めた方がよい。
+  // 残りのサイトは次回の同期で取り込む)。
+  const startedAt = Date.now()
+  const budgetMs = options.fetchTotalTimeoutMs
   for (const siteId of sites) {
-    const batch = await fetchActiveListingsBatch({ accessToken }, 1, 50, {
-      signal: options.signal,
-      totalTimeoutMs: perSiteTimeoutMs,
-      concurrency: options.getItemConcurrency,
-      siteId,
-    })
-    for (const item of batch.items) if (item.ebayItemId) map.set(item.ebayItemId, item)
-    if (batch.truncated || batch.nextPage !== null) complete = false
+    const remaining = budgetMs ? budgetMs - (Date.now() - startedAt) : undefined
+    if (remaining !== undefined && remaining < 8_000) { complete = false; break }
+    try {
+      const batch = await fetchActiveListingsBatch({ accessToken }, 1, 50, {
+        signal: options.signal,
+        totalTimeoutMs: remaining,
+        concurrency: options.getItemConcurrency,
+        siteId,
+      })
+      for (const item of batch.items) if (item.ebayItemId) map.set(item.ebayItemId, item)
+      if (batch.truncated || batch.nextPage !== null) complete = false
+    } catch (error) {
+      // 1サイトが取れなくても、取れたサイトの分は活かす
+      complete = false
+      if (map.size === 0) throw error
+      console.warn(`[inventory-sync] active list failed for site ${siteId ?? 'US'}:`, error instanceof Error ? error.message : error)
+    }
   }
   return { map, complete }
 }
