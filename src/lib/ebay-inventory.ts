@@ -4,8 +4,10 @@ import type { InventoryListingInput } from './inventory'
 import { resolveListingSite, tradingSiteIdFor } from './ebay-sites'
 
 const EBAY_TRADING_API_URL = 'https://api.ebay.com/ws/api.dll'
-// 1ページ200件は応答が重く、遅いセラーではタイムアウトしていたため半分にする
-const PAGE_SIZE = 100
+// 本番で確認した不具合(2026-09-29): 応答の遅いセラー向けに100件へ減らしたが、
+// 出品数の多いセラー(約5,400件)ではページ数が倍増して時間内に取得できなく
+// なった。遅いセラーは個別照会(GetItem)に切り替えたので200件に戻す。
+const PAGE_SIZE = 200
 // 実データで確認した不具合: 以前は25ページ(5,000件)で打ち切っており、
 // アカウント上のactive出品が約5,400件あったため、後ろの約400件(Kakehashi
 // で直近に出品した149件を含む)が取得されず、在庫管理に1件も紐付かなかった。
