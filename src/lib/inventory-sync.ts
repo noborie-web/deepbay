@@ -39,6 +39,9 @@ export interface InventorySyncOptions {
   // 本番で確認した不具合(2026-09-26): 手動同期を1日に7回実行して GetItem が
   // eBayの日次上限を超えた。直近に取得済みの出品は再照会しない(手動同期用)。
   skipFetchedWithinMs?: number
+  // 把握している出品がこの件数未満のセラーは、一覧取得(全件ダウンロード)を
+  // 使わず個別照会にする。既定300件。
+  preferItemLookupBelow?: number
   // ユーザー要望(2026-09-27): 695件の更新に695回のGetItemを使っていたため、
   // eBayの日次上限をすぐ使い切っていた。GetMyeBaySelling(1回200件)でまとめて
   // 取得し、一覧に無かった出品だけを個別確認する(約30回で済む)。
@@ -600,6 +603,13 @@ async function extractionIdsForSeller(
 // ---------------------------------------------------------------------------
 const DEFAULT_MISSING_CHECKS_PER_RUN = 100
 
+// ユーザー指摘(2026-09-29): 出品一覧(GetMyeBaySelling)はアカウントの全出品を
+// ダウンロードしてから自社分だけを残す方式のため、他ツールの出品が多い
+// セラー(akebono-32)では応答が重くタイムアウトしていた。把握している出品が
+// 少ないセラーは、ItemIDを名指しする個別照会(GetItem)の方が速く確実なので、
+// 一覧取得を飛ばす。件数が多いセラーは従来どおり一覧取得(約30回)を使う。
+const BULK_REFRESH_MIN_KNOWN_ITEMS = 300
+
 // Kakehashiが出品したもの(CustomLabelが kakehashi_/deepbay_ 由来)かどうか。
 // 出品一覧には他ツールの出品も含まれるため、保存処理に回す前にここで絞る。
 function hasKakehashiLabel(customLabel: string | null | undefined): boolean {
@@ -842,9 +852,11 @@ export async function syncKnownInventoryListingBatch(
   let bulkError: string | undefined
   const fetchStartedAt = Date.now()
   let bulk: { map: Map<string, InventoryListingInput>; complete: boolean } | null = null
-  // knownIdsが0件でも実行する。出品一覧(GetMyeBaySelling)にはSKU付きで
-  // 全出品が返るため、新しいセラーの出品の発見にもそのまま使える。
-  if (options.bulkRefresh === true && batchIndex === 1) {
+  // 把握している出品が少ないセラーは、一覧取得(全件ダウンロード)より
+  // ItemIDを名指しする個別照会の方が速い。0件のときは発見のため一覧を使う。
+  const preferItemLookup = knownIds.length > 0
+    && knownIds.length < (options.preferItemLookupBelow ?? BULK_REFRESH_MIN_KNOWN_ITEMS)
+  if (options.bulkRefresh === true && batchIndex === 1 && !preferItemLookup) {
     try {
       bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
     } catch (error) {
@@ -964,7 +976,10 @@ export async function syncKnownInventoryListings(
   let callLimited = false
   let bulkError: string | undefined
   const fetchStartedAt = Date.now()
-  if (options.bulkRefresh === true) {
+  // 把握している出品が少ないセラーは個別照会の方が速い(上と同じ考え方)
+  const preferItemLookup = knownIds.length > 0
+    && knownIds.length < (options.preferItemLookupBelow ?? BULK_REFRESH_MIN_KNOWN_ITEMS)
+  if (options.bulkRefresh === true && !preferItemLookup) {
     try {
       bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
     } catch (error) {
