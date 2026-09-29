@@ -5,7 +5,7 @@ import { endItem, reviseInventoryStatusBatch, addFixedPriceItem } from '@/lib/eb
 import { resolveInventoryAccessToken, resolveSellerAccountAccessToken } from '@/lib/inventory-auth'
 import { listInventorySellerAccounts, sellerAccountLabel, type InventorySellerAccount } from '@/lib/inventory-seller-accounts'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
-import { isSlotActive, normalizeDailyRunCount, normalizeRevisePriceSchedule, resolveRunSlot, shouldRevisePriceInSlot } from '@/lib/inventory-schedule'
+import { isSlotActive, normalizeDailyRunCount, normalizeRevisePriceSchedule, resolveRunSlot, shouldRevisePriceInSlot, startOfJstDay } from '@/lib/inventory-schedule'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricing'
 import { currencyForSite } from '@/lib/ebay-sites'
@@ -78,13 +78,18 @@ export async function GET(req: NextRequest) {
       results.push(userResult)
       continue
     }
-    // 同じ時間帯に二重起動しない(Vercel cron と pg_cron の朝の重なり等)
+    // 同じ時間帯に二重起動しない(Vercel cron と pg_cron の朝の重なり等)。
+    // 本番で確認した不具合(2026-09-30): 「90分以内に同期があればスキップ」に
+    // 手動同期まで含めていたため、20時台に手動同期を実行したことで21時の
+    // 自動実行が丸ごと(同期・仕入先チェック・取り下げ・価格改定とも)
+    // スキップされていた。自動実行どうしの重なりだけを見る。
     const { data: recentRun } = await db
       .from('inventory_runs')
       .select('id')
       .eq('user_id', userId)
       .eq('run_type', 'sync')
-      .gte('started_at', new Date(Date.now() - 90 * 60 * 1000).toISOString())
+      .gte('started_at', startOfJstDay(new Date()).toISOString())
+      .filter('result_summary->>slot', 'eq', String(slot))
       .limit(1)
       .maybeSingle()
     if (recentRun && !force) {
@@ -243,6 +248,8 @@ export async function GET(req: NextRequest) {
             await db.from('inventory_settings').update({ sync_cursor_item_id: syncResult.nextCursorItemId }).eq('user_id', userId)
           }
           const summary = {
+            // 自動実行の目印。二重起動の判定にも使う(手動同期と区別する)
+            slot,
             seller_id: account?.seller_id ?? null,
             discovered: syncResult.discovered, ended: syncResult.ended, discovery_truncated: syncResult.discoveryTruncated,
             discovery_error: syncResult.discoveryError ?? null,

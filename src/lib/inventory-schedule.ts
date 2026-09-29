@@ -56,3 +56,12 @@ export function resolveRunSlot(slotParam: string | null | undefined, now: Date =
 export function formatSlotHours(slots: RunSlotHour[]): string {
   return slots.map(h => `${h}:00`).join(' / ')
 }
+
+// 日本時間のその日の0時(UTCのDateとして返す)。
+// 自動実行の二重起動判定を「同じ日の同じ時間帯」で行うために使う。
+export function startOfJstDay(now: Date = new Date()): Date {
+  const jstMs = now.getTime() + 9 * 60 * 60 * 1000
+  const jst = new Date(jstMs)
+  const startJst = Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate())
+  return new Date(startJst - 9 * 60 * 60 * 1000)
+}

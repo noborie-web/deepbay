@@ -16,6 +16,8 @@ let mockSellerAccounts: Array<Record<string, unknown>> = []
 const mockSellerAccountUpdates: Array<Record<string, unknown>> = []
 // セラーごとの出品件数(同期の予算配分に使われる)
 let mockSellerListingCounts: number[] = []
+// 二重起動の判定に使ったフィルタ(手動同期を含めていないかの検証用)
+const mockRecentRunFilters: Array<[string, string, string]> = []
 
 // inventory_active_listings への問い合わせチェーンを記録するモック。
 // 自動取り下げが「Kakehashi商品に紐付く出品だけ」を対象にしているか検証する。
@@ -53,7 +55,13 @@ vi.mock('@supabase/supabase-js', () => ({
       }
       if (table === 'inventory_runs') {
         // 二重起動防止の「直近の同期があるか」の照会は、無し(null)を返す
-        const recent = { select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), gte: vi.fn().mockReturnThis(), limit: vi.fn().mockReturnThis(), maybeSingle: vi.fn(async () => ({ data: null, error: null })) }
+        // 二重起動の判定は「同じ日の同じ時間帯の自動実行」を探す(filterを使う)
+        const recent: Record<string, unknown> = {
+          select: vi.fn(() => recent), eq: vi.fn(() => recent), gte: vi.fn(() => recent),
+          filter: vi.fn((...args: unknown[]) => { mockRecentRunFilters.push(args as [string, string, string]); return recent }),
+          limit: vi.fn(() => recent),
+          maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+        }
         return { ...recent, insert: mockRunInsert.mockImplementation(async () => ({ error: null })) }
       }
       if (table === 'seller_accounts') {
@@ -118,6 +126,7 @@ describe('GET /api/cron/inventory-auto', () => {
     mockSellerAccounts = []
     mockSellerAccountUpdates.length = 0
     mockSellerListingCounts = []
+    mockRecentRunFilters.length = 0
     mockSyncInventoryListings.mockReset().mockResolvedValue({ total: 12, matched: 8, ended: 0, discovered: 0, processed: 12, nextCursorItemId: null })
     mockCheckSupplierListings.mockReset().mockResolvedValue({
       total: 2,
@@ -371,5 +380,24 @@ describe('GET /api/cron/inventory-auto', () => {
       { inventory_sync_cursor_item_id: null },
       { inventory_sync_cursor_item_id: null },
     ])
+  })
+
+  // 本番で確認した不具合(2026-09-30): 二重起動防止が「90分以内の同期」を
+  // 手動同期も含めて見ていたため、20時台に手動同期をすると21時の自動実行が
+  // 丸ごとスキップされていた。自動実行どうしの重なりだけを見る。
+  it('二重起動の判定は同じ日の同じ時間帯の自動実行だけを見る', async () => {
+    mockSettings = [{ ...mockSettings[0], daily_run_count: 4 }]
+    const { GET } = await import('@/app/api/cron/inventory-auto/route')
+    await GET(new NextRequest('http://localhost/api/cron/inventory-auto?slot=21', {
+      headers: { authorization: 'Bearer cron-secret' },
+    }))
+
+    // 手動同期(slotなし)は判定に含めない
+    expect(mockRecentRunFilters).toContainEqual(['result_summary->>slot', 'eq', '21'])
+    // 自動実行の同期には slot を記録する(次回の判定に使う)
+    const syncInsert = mockRunInsert.mock.calls
+      .map(call => call[0] as Record<string, unknown>)
+      .find(row => row.run_type === 'sync')
+    expect((syncInsert?.result_summary as Record<string, unknown>).slot).toBe(21)
   })
 })
