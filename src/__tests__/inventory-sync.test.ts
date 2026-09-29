@@ -617,7 +617,8 @@ describe('既存出品の一括更新', () => {
     })
 
     const result = await syncKnownInventoryListings(dbFor([productId]), 'user-1', 'token', {
-      bulkRefresh: true, sellerAccountId: 'seller-a', sellerSiteIds: ['US'],
+      // 件数に関わらず一覧取得を使う設定にして、一括更新の動きを検証する
+      bulkRefresh: true, preferItemLookupBelow: 0, sellerAccountId: 'seller-a', sellerSiteIds: ['US'],
     })
 
     // 一括取得は1回、個別照会は「一覧に無かった item-2」だけ
@@ -631,7 +632,7 @@ describe('既存出品の一括更新', () => {
     const { productId } = kakehashiLabel(1)
 
     await syncKnownInventoryListings(dbFor([productId]), 'user-1', 'token', {
-      bulkRefresh: true, sellerAccountId: 'seller-a', sellerSiteIds: ['US'],
+      bulkRefresh: true, preferItemLookupBelow: 0, sellerAccountId: 'seller-a', sellerSiteIds: ['US'],
     })
 
     expect(mockFetchListingsByItemIds).toHaveBeenCalledWith(expect.anything(), ['item-1', 'item-2'], expect.anything())
@@ -857,5 +858,60 @@ describe('出品一覧の1ページの上限', () => {
     const options = mockFetchActiveListingsBatch.mock.calls[0][3] as { pageTimeoutMs: number }
     expect(options.pageTimeoutMs).toBeGreaterThan(10_000)
     expect(options.pageTimeoutMs).toBeLessThanOrEqual(25_000)
+  })
+})
+
+// ユーザー指摘(2026-09-29): 出品一覧(GetMyeBaySelling)はアカウントの全出品を
+// ダウンロードしてから自社分を残す方式のため、他ツールの出品が多いセラーでは
+// 重い。把握している出品が少ないセラーは個別照会(GetItem)の方が速い。
+describe('少数セラーは個別照会を優先する', () => {
+  function dbWithKnownIds(ids: string[], productIds: string[]) {
+    return {
+      from: (table: string) => {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'update']) chain[m] = () => chain
+          chain.maybeSingle = async () => ({ data: { inventory_discovery_scanned_until: new Date().toISOString() }, error: null })
+          chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+          return chain
+        }
+        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'products') return productsTableFor(productIds)
+        const chain: Record<string, unknown> = {}
+        chain.upsert = mockUpsert
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        chain.then = (resolve: (v: unknown) => void) => resolve({
+          data: ids.map(id => ({ ebay_item_id: id })), error: null,
+        })
+        return chain
+      },
+    } as unknown as SupabaseClient
+  }
+
+  beforeEach(() => {
+    mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: false, pagesFetched: 1, totalPages: 1 })
+    mockFetchListingsByItemIds.mockReset().mockResolvedValue({ items: [], endedItemIds: [] })
+    mockFetchActiveListingsBatch.mockReset().mockResolvedValue({
+      items: [], nextPage: null, totalPages: 1, lastFetchedPage: 1, truncated: false, ebayTotalPages: 1,
+    })
+    mockUpsert.mockReset().mockResolvedValue({ error: null })
+  })
+
+  it('把握している出品が少なければ一覧取得を使わない', async () => {
+    const ids = Array.from({ length: 5 }, (_, i) => `uk-${i}`)
+    await syncKnownInventoryListings(dbWithKnownIds(ids, []), 'user-1', 'token', {
+      bulkRefresh: true, sellerAccountId: 'seller-b', sellerSiteIds: ['UK'],
+    })
+
+    expect(mockFetchActiveListingsBatch).not.toHaveBeenCalled()
+    expect(mockFetchListingsByItemIds).toHaveBeenCalledWith(expect.anything(), ids, expect.anything())
+  })
+
+  it('把握している出品が0件なら、発見のため一覧取得を使う', async () => {
+    await syncKnownInventoryListings(dbWithKnownIds([], []), 'user-1', 'token', {
+      bulkRefresh: true, sellerAccountId: 'seller-b', sellerSiteIds: ['UK'],
+    })
+
+    expect(mockFetchActiveListingsBatch).toHaveBeenCalled()
   })
 })
