@@ -9,6 +9,7 @@ import {
   resolveInventoryProductId,
 } from '@/lib/inventory'
 import { applyListingStateToProducts } from '@/lib/inventory-sync'
+import { EBAY_SITES, isEbaySiteKey } from '@/lib/ebay-sites'
 
 function admin() {
   return createServiceClient(
@@ -25,6 +26,14 @@ export async function POST(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // ユーザー要望(2026-09-29): 出品アカウントを複数運用しているため、CSV取込も
+  // 「どのセラーの、どのサイトの出品か」を指定できるようにする。指定しないと
+  // 他セラーの在庫まで置き換えてしまう(本番でその手前まで来ていた)。
+  const sellerAccountId = req.nextUrl.searchParams.get('sellerAccountId')?.trim() || null
+  const siteParam = (req.nextUrl.searchParams.get('siteId')?.trim() || 'US').toUpperCase()
+  const siteKey = isEbaySiteKey(siteParam) ? siteParam : 'US'
+  const site = EBAY_SITES[siteKey]
 
   const contentType = req.headers.get('content-type') ?? ''
   let csvText = ''
@@ -68,13 +77,28 @@ export async function POST(req: NextRequest) {
   const db = admin()
   const now = new Date().toISOString()
 
+  if (sellerAccountId) {
+    const { data: seller } = await db
+      .from('seller_accounts')
+      .select('id')
+      .eq('id', sellerAccountId)
+      .eq('user_id', user.id)
+      .maybeSingle()
+    if (!seller) return NextResponse.json({ error: '出品アカウントが見つかりません' }, { status: 404 })
+  }
+
   // An active report is a complete snapshot. Remove the previous snapshot
   // before inserting this upload so the displayed count is the latest count,
   // rather than the cumulative total of all uploads.
-  const { error: clearError } = await db
+  // セラー(とサイト)を指定した場合は、その範囲だけを置き換える。
+  let clearQuery = db
     .from('inventory_active_listings')
     .delete()
     .eq('user_id', user.id)
+  if (sellerAccountId) {
+    clearQuery = clearQuery.eq('seller_account_id', sellerAccountId).eq('site_id', site.siteId)
+  }
+  const { error: clearError } = await clearQuery
   if (clearError) return NextResponse.json({ error: `既存の在庫スナップショットを更新できません: ${clearError.message}` }, { status: 500 })
 
   // Create audit run
@@ -147,6 +171,7 @@ export async function POST(req: NextRequest) {
     if (!productId) return []
 
     return [{
+      ...(sellerAccountId ? { seller_account_id: sellerAccountId, site_id: site.siteId, currency: site.currency } : {}),
       user_id: user.id,
       ebay_item_id: l.ebayItemId,
       custom_label: l.customLabel,
