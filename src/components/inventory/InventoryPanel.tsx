@@ -681,6 +681,28 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // 価格改定・取り下げをCSVで出力してeBay(File Exchange)にアップロードできる
   // ようにする。対象の決め方はAPI実行と同じ。
   const [exportingCsv, setExportingCsv] = useState<'revise' | 'end' | null>(null)
+  // ユーザー要望(2026-09-29): 出品アカウントを複数運用しているため、CSV取込でも
+  // 「どのセラーの、どのサイトの出品か」を指定する(指定しないと他セラーの在庫を
+  // 置き換えてしまう)。
+  const [uploadSellers, setUploadSellers] = useState<Array<{ id: string; seller_id: string; display_name: string | null; listing_site_ids: string[] | null }>>([])
+  const [uploadSellerId, setUploadSellerId] = useState('')
+  const [uploadSiteId, setUploadSiteId] = useState('US')
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void fetch('/api/seller-accounts')
+        .then(r => r.json())
+        .then((data: { sellers?: Array<{ id: string; seller_id: string; display_name: string | null; listing_site_ids: string[] | null }> }) => {
+          const list = data.sellers ?? []
+          setUploadSellers(list)
+          if (list.length > 0) {
+            setUploadSellerId(prev => prev || list[0].id)
+            setUploadSiteId(prev => prev || (list[0].listing_site_ids ?? ['US'])[0] || 'US')
+          }
+        })
+        .catch(() => {})
+    }, 0)
+    return () => window.clearTimeout(timeout)
+  }, [])
   const handleExportActionCsv = async (kind: 'revise' | 'end') => {
     setExportingCsv(kind)
     setMessage(null)
@@ -845,7 +867,12 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       const { error: storageError } = await supabase.storage.from('inventory-uploads').uploadToSignedUrl(uploadInfo.path, uploadInfo.token, file)
       if (storageError) throw new Error(storageError.message)
       setUploadStatus('processing')
-      const res = await fetch('/api/inventory/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: uploadInfo.path }) })
+      const uploadParams = new URLSearchParams()
+      if (uploadSellerId) {
+        uploadParams.set('sellerAccountId', uploadSellerId)
+        uploadParams.set('siteId', uploadSiteId)
+      }
+      const res = await fetch(`/api/inventory/upload${uploadParams.toString() ? `?${uploadParams}` : ''}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: uploadInfo.path }) })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Upload failed')
       showMsg('success', `アップロード完了: ${json.total}件取得、${json.matched}件マッチ`)
@@ -1452,6 +1479,25 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               </div>
               <div className="flex flex-col gap-1">
                 <span className="text-xs font-medium text-gray-500">② CSVファイルで取り込む（代替）</span>
+                {uploadSellers.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <select value={uploadSellerId} onChange={(e) => {
+                      setUploadSellerId(e.target.value)
+                      const seller = uploadSellers.find(s => s.id === e.target.value)
+                      setUploadSiteId((seller?.listing_site_ids ?? ['US'])[0] || 'US')
+                    }} className="rounded border px-2 py-1">
+                      {uploadSellers.map(seller => (
+                        <option key={seller.id} value={seller.id}>{seller.display_name || seller.seller_id}</option>
+                      ))}
+                    </select>
+                    <select value={uploadSiteId} onChange={(e) => setUploadSiteId(e.target.value)} className="rounded border px-2 py-1">
+                      {(uploadSellers.find(s => s.id === uploadSellerId)?.listing_site_ids ?? ['US', 'UK', 'AU']).map(site => (
+                        <option key={site} value={site}>{site}</option>
+                      ))}
+                    </select>
+                    <span className="text-gray-500">のレポートとして取り込む</span>
+                  </div>
+                )}
                 <label className={`flex items-center gap-2 border rounded px-3 py-2 text-sm cursor-pointer ${uploading ? 'opacity-50 pointer-events-none bg-gray-50' : 'bg-white hover:bg-gray-50'}`}>
                   <input type="file" accept=".csv,text/csv" className="hidden" ref={fileRef} onChange={handleUpload} disabled={uploading} />
                   <span>📎</span>
