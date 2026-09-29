@@ -57,8 +57,12 @@ export async function GET(req: NextRequest) {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
     const files = buildEndCsvFiles(
-      (listings ?? []).map(l => ({ ebayItemId: l.ebay_item_id as string, siteId: (l.site_id as string | null) ?? 'US' })),
-      sellerNames.get((listings ?? [])[0]?.seller_account_id as string) ?? defaultSeller,
+      (listings ?? []).map(l => ({
+        ebayItemId: l.ebay_item_id as string,
+        siteId: (l.site_id as string | null) ?? 'US',
+        sellerId: sellerNames.get(l.seller_account_id as string) ?? null,
+      })),
+      defaultSeller,
     )
     return NextResponse.json({ files, count: files.reduce((sum, f) => sum + f.rows, 0) })
   }
@@ -98,12 +102,14 @@ export async function GET(req: NextRequest) {
       priceAdjustment: sitePriceAdjustment(pricingModel, (l.site_id as string | null) ?? 'US'),
     })
     if (decision.action !== 'revise') return []
-    return [{ ebayItemId: l.ebay_item_id as string, price: decision.price, siteId: (l.site_id as string | null) ?? 'US' }]
+    return [{
+      ebayItemId: l.ebay_item_id as string,
+      price: decision.price,
+      siteId: (l.site_id as string | null) ?? 'US',
+      sellerId: sellerNames.get(l.seller_account_id as string) ?? null,
+    }]
   })
 
-  const files = buildReviseCsvFiles(
-    rows,
-    sellerNames.get((listings ?? [])[0]?.seller_account_id as string) ?? defaultSeller,
-  )
+  const files = buildReviseCsvFiles(rows, defaultSeller)
   return NextResponse.json({ files, count: files.reduce((sum, f) => sum + f.rows, 0) })
 }

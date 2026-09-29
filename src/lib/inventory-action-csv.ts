@@ -15,15 +15,22 @@ export interface ReviseCsvRow {
   ebayItemId: string
   price: number
   siteId: string | null
+  // 本番で確認した問題(2026-09-30): ファイル名のセラー名を先頭行から取って
+  // いたため、US(miyabi-24)とUK(akebono-32)の両方に対象があると両方のファイルが
+  // 同じセラー名になり、アップロード先を取り違える恐れがあった。行ごとに
+  // セラーを持たせ、セラー×サイトでファイルを分ける。
+  sellerId?: string | null
 }
 
 export interface EndCsvRow {
   ebayItemId: string
   siteId: string | null
+  sellerId?: string | null
 }
 
 export interface BuiltActionCsv {
   site: EbaySiteKey
+  sellerId: string
   filename: string
   csv: string
   rows: number
@@ -51,13 +58,19 @@ function filenameFor(seller: string, kind: 'revise' | 'end', site: EbaySiteKey, 
   return [safeSeller, ...(multiSite ? [site] : []), kind, dateStamp(now)].join('_') + '.csv'
 }
 
-function groupBySite<T extends { siteId: string | null }>(rows: T[]): Map<EbaySiteKey, T[]> {
-  const groups = new Map<EbaySiteKey, T[]>()
+// セラー×サイトでまとめる(eBayへのアップロードはアカウント単位・サイト単位)
+function groupBySellerSite<T extends { siteId: string | null; sellerId?: string | null }>(
+  rows: T[],
+  fallbackSeller: string,
+): Map<string, { seller: string; site: EbaySiteKey; rows: T[] }> {
+  const groups = new Map<string, { seller: string; site: EbaySiteKey; rows: T[] }>()
   for (const row of rows) {
-    const key = siteKeyOf(row.siteId)
-    const list = groups.get(key) ?? []
-    list.push(row)
-    groups.set(key, list)
+    const site = siteKeyOf(row.siteId)
+    const seller = row.sellerId?.trim() || fallbackSeller
+    const key = `${seller}\u0000${site}`
+    const group = groups.get(key) ?? { seller, site, rows: [] as T[] }
+    group.rows.push(row)
+    groups.set(key, group)
   }
   return groups
 }
@@ -66,15 +79,16 @@ function groupBySite<T extends { siteId: string | null }>(rows: T[]): Map<EbaySi
  * 価格改定CSV。アップロードするとその価格に更新される。
  */
 export function buildReviseCsvFiles(rows: ReviseCsvRow[], seller: string, now?: Date): BuiltActionCsv[] {
-  const groups = groupBySite(rows)
-  const multiSite = groups.size > 1
-  return Array.from(groups.entries()).map(([site, siteRows]) => {
-    const { siteId, currency } = EBAY_SITES[site]
+  const groups = groupBySellerSite(rows, seller)
+  const multi = groups.size > 1
+  return Array.from(groups.values()).map(group => {
+    const { siteId, currency } = EBAY_SITES[group.site]
     const header = line(['Action(CC=Cp1252)', 'ItemID', 'StartPrice', 'Currency', 'SiteID'])
-    const body = siteRows.map(row => line(['Revise', row.ebayItemId, row.price.toFixed(2), currency, siteId]))
+    const body = group.rows.map(row => line(['Revise', row.ebayItemId, row.price.toFixed(2), currency, siteId]))
     return {
-      site,
-      filename: filenameFor(seller, 'revise', site, multiSite, now),
+      site: group.site,
+      sellerId: group.seller,
+      filename: filenameFor(group.seller, 'revise', group.site, multi, now),
       csv: `﻿${[header, ...body].join('\r\n')}`,
       rows: body.length,
     }
@@ -85,16 +99,17 @@ export function buildReviseCsvFiles(rows: ReviseCsvRow[], seller: string, now?: 
  * 取り下げCSV。アップロードすると出品が終了する(End)。
  */
 export function buildEndCsvFiles(rows: EndCsvRow[], seller: string, now?: Date): BuiltActionCsv[] {
-  const groups = groupBySite(rows)
-  const multiSite = groups.size > 1
-  return Array.from(groups.entries()).map(([site, siteRows]) => {
-    const { siteId, currency } = EBAY_SITES[site]
+  const groups = groupBySellerSite(rows, seller)
+  const multi = groups.size > 1
+  return Array.from(groups.values()).map(group => {
+    const { siteId, currency } = EBAY_SITES[group.site]
     const header = line(['Action(CC=Cp1252)', 'ItemID', 'EndCode', 'Currency', 'SiteID'])
     // NotAvailable: 商品が用意できなくなったため終了(仕入先の売り切れ)
-    const body = siteRows.map(row => line(['End', row.ebayItemId, 'NotAvailable', currency, siteId]))
+    const body = group.rows.map(row => line(['End', row.ebayItemId, 'NotAvailable', currency, siteId]))
     return {
-      site,
-      filename: filenameFor(seller, 'end', site, multiSite, now),
+      site: group.site,
+      sellerId: group.seller,
+      filename: filenameFor(group.seller, 'end', group.site, multi, now),
       csv: `﻿${[header, ...body].join('\r\n')}`,
       rows: body.length,
     }

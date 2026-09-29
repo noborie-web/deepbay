@@ -34,6 +34,39 @@ describe('価格改定CSV', () => {
   })
 })
 
+// 本番で確認した問題(2026-09-30): ファイル名のセラー名を先頭行から取っていた
+// ため、US(miyabi-24)とUK(akebono-32)の両方に対象があると両方のファイルが同じ
+// セラー名になり、アップロード先を取り違える恐れがあった。
+describe('セラーが混在する場合', () => {
+  it('セラー×サイトでファイルを分け、ファイル名もセラーごとになる', () => {
+    const files = buildReviseCsvFiles([
+      { ebayItemId: '111', price: 110, siteId: 'US', sellerId: 'miyabi-24' },
+      { ebayItemId: '222', price: 82.24, siteId: 'UK', sellerId: 'akebono-32' },
+    ], 'fallback', NOW)
+
+    expect(files).toHaveLength(2)
+    const us = files.find(f => f.site === 'US')!
+    const uk = files.find(f => f.site === 'UK')!
+    expect(us.sellerId).toBe('miyabi-24')
+    expect(us.filename).toBe('miyabi-24_US_revise_20260927.csv')
+    expect(uk.sellerId).toBe('akebono-32')
+    expect(uk.filename).toBe('akebono-32_UK_revise_20260927.csv')
+    expect(us.csv).toContain('Revise,111,110.00,USD,US')
+    expect(uk.csv).toContain('Revise,222,82.24,GBP,UK')
+  })
+
+  it('同じセラーの同じサイトだけなら1ファイル(ファイル名にサイトは入らない)', () => {
+    const files = buildEndCsvFiles([
+      { ebayItemId: '333', siteId: 'UK', sellerId: 'akebono-32' },
+      { ebayItemId: '444', siteId: 'UK', sellerId: 'akebono-32' },
+    ], 'fallback', NOW)
+
+    expect(files).toHaveLength(1)
+    expect(files[0].filename).toBe('akebono-32_end_20260927.csv')
+    expect(files[0].rows).toBe(2)
+  })
+})
+
 describe('取り下げCSV', () => {
   it('End(NotAvailable)で出力する', () => {
     const [file] = buildEndCsvFiles([{ ebayItemId: '444', siteId: 'UK' }], 'akebono-32', NOW)
