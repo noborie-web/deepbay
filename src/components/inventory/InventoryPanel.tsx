@@ -681,6 +681,31 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // 価格改定・取り下げをCSVで出力してeBay(File Exchange)にアップロードできる
   // ようにする。対象の決め方はAPI実行と同じ。
   const [exportingCsv, setExportingCsv] = useState<'revise' | 'end' | null>(null)
+  // ユーザー要望(2026-09-30): APIの容量と消費が見えるようにしたい。
+  // eBayのGetAPIAccessRulesで、呼び出しごとの当日使用量と上限を取得する。
+  const [apiUsage, setApiUsage] = useState<Array<{ callName: string; dailyUsage: number; dailyLimit: number; hourlyUsage: number; hourlyLimit: number; used: boolean }> | null>(null)
+  const [apiUsageAt, setApiUsageAt] = useState<string | null>(null)
+  const [apiUsageLoading, setApiUsageLoading] = useState(false)
+  const [apiUsageError, setApiUsageError] = useState('')
+  const loadApiUsage = async () => {
+    setApiUsageLoading(true)
+    setApiUsageError('')
+    try {
+      const res = await fetch('/api/inventory/api-usage', { cache: 'no-store' })
+      const json = await res.json() as {
+        rules?: Array<{ callName: string; dailyUsage: number; dailyLimit: number; hourlyUsage: number; hourlyLimit: number; used: boolean }>
+        fetched_at?: string
+        error?: string
+      }
+      if (!res.ok) throw new Error(json.error ?? '利用状況を取得できませんでした')
+      setApiUsage(json.rules ?? [])
+      setApiUsageAt(json.fetched_at ?? new Date().toISOString())
+    } catch (error) {
+      setApiUsageError(error instanceof Error ? error.message : '利用状況を取得できませんでした')
+    } finally {
+      setApiUsageLoading(false)
+    }
+  }
   // ユーザー要望(2026-09-29): 出品アカウントを複数運用しているため、CSV取込でも
   // 「どのセラーの、どのサイトの出品か」を指定する(指定しないと他セラーの在庫を
   // 置き換えてしまう)。
@@ -1448,6 +1473,46 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* eBay APIの容量と消費(上限に近づいていないかを確認する) */}
+          <div className="border rounded-lg p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-800">eBay APIの利用状況</h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  呼び出し枠はeBayのアプリ単位・1日ごと（太平洋時間で切り替わります）。
+                  {apiUsageAt ? `　最終確認: ${new Date(apiUsageAt).toLocaleString('ja-JP')}` : ''}
+                </p>
+              </div>
+              <button onClick={loadApiUsage} disabled={apiUsageLoading}
+                className="rounded border px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+                {apiUsageLoading ? '確認中...' : apiUsage ? '再確認' : '利用状況を確認'}
+              </button>
+            </div>
+            {apiUsageError && <p className="mt-2 text-xs text-red-600">{apiUsageError}</p>}
+            {apiUsage && (
+              <div className="mt-3 space-y-1.5">
+                {apiUsage.filter(rule => rule.used && rule.dailyLimit > 0).map(rule => {
+                  const ratio = rule.dailyLimit > 0 ? rule.dailyUsage / rule.dailyLimit : 0
+                  const tone = ratio >= 0.9 ? 'bg-red-500' : ratio >= 0.7 ? 'bg-amber-500' : 'bg-blue-500'
+                  return (
+                    <div key={rule.callName} className="flex items-center gap-3">
+                      <span className="w-44 shrink-0 truncate text-xs text-gray-600" title={rule.callName}>{rule.callName}</span>
+                      <div className="h-2 flex-1 overflow-hidden rounded bg-gray-100">
+                        <div className={`h-full ${tone}`} style={{ width: `${Math.min(100, Math.round(ratio * 100))}%` }} />
+                      </div>
+                      <span className={`w-40 shrink-0 text-right text-xs ${ratio >= 0.9 ? 'text-red-600 font-medium' : 'text-gray-600'}`}>
+                        {rule.dailyUsage.toLocaleString()} / {rule.dailyLimit.toLocaleString()}（{Math.round(ratio * 100)}%）
+                      </span>
+                    </div>
+                  )
+                })}
+                {apiUsage.filter(rule => rule.used && rule.dailyLimit > 0).length === 0 && (
+                  <p className="text-xs text-gray-500">上限の設定された呼び出しはありませんでした。</p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* ユーザー要望: 全体在庫管理を手動で今すぐ実行 */}
