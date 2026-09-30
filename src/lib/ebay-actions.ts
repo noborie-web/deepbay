@@ -1,6 +1,7 @@
 // eBay Trading API mutation helpers — EndItem, ReviseInventoryStatus, ReviseItem, AddFixedPriceItem (stack)
 import { refreshEbayToken } from './ebay-inventory'
 import { currencyForSite, tradingSiteIdFor } from './ebay-sites'
+import { recordEbayCall } from './ebay-call-counter'
 
 const TRADING_API_URL = 'https://api.ebay.com/ws/api.dll'
 const TRADING_API_VERSION = '1455'
@@ -22,6 +23,7 @@ async function tradingCall(
   body: string,
   siteId?: string | null,
 ): Promise<string> {
+  recordEbayCall(callName)
   const res = await fetch(TRADING_API_URL, {
     method: 'POST',
     headers: {

@@ -681,31 +681,47 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // 価格改定・取り下げをCSVで出力してeBay(File Exchange)にアップロードできる
   // ようにする。対象の決め方はAPI実行と同じ。
   const [exportingCsv, setExportingCsv] = useState<'revise' | 'end' | null>(null)
-  // ユーザー要望(2026-09-30): APIの容量と消費が見えるようにしたい。
-  // eBayのGetAPIAccessRulesで、呼び出しごとの当日使用量と上限を取得する。
-  const [apiUsage, setApiUsage] = useState<Array<{ callName: string; dailyUsage: number; dailyLimit: number; hourlyUsage: number; hourlyLimit: number; used: boolean }> | null>(null)
-  const [apiUsageAt, setApiUsageAt] = useState<string | null>(null)
-  const [apiUsageLoading, setApiUsageLoading] = useState(false)
-  const [apiUsageError, setApiUsageError] = useState('')
-  const loadApiUsage = async () => {
-    setApiUsageLoading(true)
-    setApiUsageError('')
+  // ユーザー要望(2026-09-27): APIの呼び出し上限に達したときでも運用できるよう、
+  // 価格改定・取り下げをCSVで出力してeBay(File Exchange)にアップロードできる
+  // ようにする。対象の決め方はAPI実行と同じ。
+  const handleExportActionCsv = async (kind: 'revise' | 'end') => {
+    setExportingCsv(kind)
+    setMessage(null)
     try {
-      const res = await fetch('/api/inventory/api-usage', { cache: 'no-store' })
+      const res = await fetch(`/api/inventory/actions/export-csv?kind=${kind}`, { cache: 'no-store' })
       const json = await res.json() as {
-        rules?: Array<{ callName: string; dailyUsage: number; dailyLimit: number; hourlyUsage: number; hourlyLimit: number; used: boolean }>
-        fetched_at?: string
+        files?: Array<{ site: string; filename: string; csv: string; rows: number }>
+        count?: number
         error?: string
       }
-      if (!res.ok) throw new Error(json.error ?? '利用状況を取得できませんでした')
-      setApiUsage(json.rules ?? [])
-      setApiUsageAt(json.fetched_at ?? new Date().toISOString())
+      if (!res.ok) throw new Error(json.error ?? 'CSVを出力できませんでした')
+      const files = json.files ?? []
+      if (files.length === 0) {
+        showMsg('error', '対象が0件のため、CSVは出力していません')
+        return
+      }
+      for (const file of files) {
+        const blob = new Blob([file.csv], { type: 'text/csv;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const anchorEl = document.createElement('a')
+        anchorEl.href = url
+        anchorEl.download = file.filename
+        document.body.appendChild(anchorEl)
+        anchorEl.click()
+        anchorEl.remove()
+        URL.revokeObjectURL(url)
+        await new Promise(resolve => setTimeout(resolve, 400))
+      }
+      showMsg('success',
+        `${kind === 'revise' ? '価格改定' : '取り下げ'}CSVを${files.length}ファイル出力しました（計${json.count ?? 0}件）。`
+        + 'eBayのFile Exchangeにアップロードすると反映されます。反映後の同期で在庫一覧にも取り込まれます。')
     } catch (error) {
-      setApiUsageError(error instanceof Error ? error.message : '利用状況を取得できませんでした')
+      showMsg('error', error instanceof Error ? error.message : 'CSVを出力できませんでした')
     } finally {
-      setApiUsageLoading(false)
+      setExportingCsv(null)
     }
   }
+
   // ユーザー要望(2026-09-29): 出品アカウントを複数運用しているため、CSV取込でも
   // 「どのセラーの、どのサイトの出品か」を指定する(指定しないと他セラーの在庫を
   // 置き換えてしまう)。
@@ -728,41 +744,32 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     }, 0)
     return () => window.clearTimeout(timeout)
   }, [])
-  const handleExportActionCsv = async (kind: 'revise' | 'end') => {
-    setExportingCsv(kind)
-    setMessage(null)
+
+  // ユーザー要望(2026-09-30): APIの容量と消費が見えるようにしたい。
+  // eBayのGetApiAccessRulesは廃止(HTTP 410)されているため、Kakehashiが送った
+  // 回数を自分で数えて表示する。
+  interface ApiUsage {
+    today: string
+    daily_limit: number
+    total: number
+    calls: Array<{ callName: string; count: number }>
+    history: Array<{ day: string; count: number }>
+  }
+  const [apiUsage, setApiUsage] = useState<ApiUsage | null>(null)
+  const [apiUsageLoading, setApiUsageLoading] = useState(false)
+  const [apiUsageError, setApiUsageError] = useState('')
+  const loadApiUsage = async () => {
+    setApiUsageLoading(true)
+    setApiUsageError('')
     try {
-      const res = await fetch(`/api/inventory/actions/export-csv?kind=${kind}`, { cache: 'no-store' })
-      const json = await res.json() as {
-        files?: Array<{ site: string; filename: string; csv: string; rows: number }>
-        count?: number
-        error?: string
-      }
-      if (!res.ok) throw new Error(json.error ?? 'CSVを出力できませんでした')
-      const files = json.files ?? []
-      if (files.length === 0) {
-        showMsg('error', '対象が0件のため、CSVは出力していません')
-        return
-      }
-      for (const file of files) {
-        const blob = new Blob([file.csv], { type: 'text/csv;charset=utf-8' })
-        const url = URL.createObjectURL(blob)
-        const anchor = document.createElement('a')
-        anchor.href = url
-        anchor.download = file.filename
-        document.body.appendChild(anchor)
-        anchor.click()
-        anchor.remove()
-        URL.revokeObjectURL(url)
-        await new Promise(resolve => setTimeout(resolve, 400))
-      }
-      showMsg('success',
-        `${kind === 'revise' ? '価格改定' : '取り下げ'}CSVを${files.length}ファイル出力しました（計${json.count ?? 0}件）。`
-        + 'eBayのFile Exchangeにアップロードすると反映されます。反映後の同期で在庫一覧にも取り込まれます。')
+      const res = await fetch('/api/inventory/api-usage', { cache: 'no-store' })
+      const json = await res.json() as ApiUsage & { error?: string }
+      if (!res.ok) throw new Error(json.error ?? '利用状況を取得できませんでした')
+      setApiUsage(json)
     } catch (error) {
-      showMsg('error', error instanceof Error ? error.message : 'CSVを出力できませんでした')
+      setApiUsageError(error instanceof Error ? error.message : '利用状況を取得できませんでした')
     } finally {
-      setExportingCsv(null)
+      setApiUsageLoading(false)
     }
   }
 
@@ -1481,8 +1488,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               <div>
                 <h3 className="text-sm font-semibold text-gray-800">eBay APIの利用状況</h3>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  呼び出し枠はeBayのアプリ単位・1日ごと（太平洋時間で切り替わります）。
-                  {apiUsageAt ? `　最終確認: ${new Date(apiUsageAt).toLocaleString('ja-JP')}` : ''}
+                  Kakehashiが送った回数です。枠はeBayのアプリ単位・1日ごと（太平洋時間の0時＝日本時間の16〜17時に切り替わります）。
                 </p>
               </div>
               <button onClick={loadApiUsage} disabled={apiUsageLoading}
@@ -1491,28 +1497,41 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               </button>
             </div>
             {apiUsageError && <p className="mt-2 text-xs text-red-600">{apiUsageError}</p>}
-            {apiUsage && (
-              <div className="mt-3 space-y-1.5">
-                {apiUsage.filter(rule => rule.used && rule.dailyLimit > 0).map(rule => {
-                  const ratio = rule.dailyLimit > 0 ? rule.dailyUsage / rule.dailyLimit : 0
-                  const tone = ratio >= 0.9 ? 'bg-red-500' : ratio >= 0.7 ? 'bg-amber-500' : 'bg-blue-500'
-                  return (
-                    <div key={rule.callName} className="flex items-center gap-3">
-                      <span className="w-44 shrink-0 truncate text-xs text-gray-600" title={rule.callName}>{rule.callName}</span>
-                      <div className="h-2 flex-1 overflow-hidden rounded bg-gray-100">
-                        <div className={`h-full ${tone}`} style={{ width: `${Math.min(100, Math.round(ratio * 100))}%` }} />
-                      </div>
-                      <span className={`w-40 shrink-0 text-right text-xs ${ratio >= 0.9 ? 'text-red-600 font-medium' : 'text-gray-600'}`}>
-                        {rule.dailyUsage.toLocaleString()} / {rule.dailyLimit.toLocaleString()}（{Math.round(ratio * 100)}%）
+            {apiUsage && (() => {
+              const ratio = apiUsage.daily_limit > 0 ? apiUsage.total / apiUsage.daily_limit : 0
+              const tone = ratio >= 0.9 ? 'bg-red-500' : ratio >= 0.7 ? 'bg-amber-500' : 'bg-blue-500'
+              return (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <div className="flex items-end justify-between gap-2">
+                      <span className="text-xs text-gray-600">本日（{apiUsage.today}・太平洋時間）の合計</span>
+                      <span className={`text-sm font-semibold ${ratio >= 0.9 ? 'text-red-600' : 'text-gray-800'}`}>
+                        {apiUsage.total.toLocaleString()} / {apiUsage.daily_limit.toLocaleString()} 回（{Math.round(ratio * 100)}%）
                       </span>
                     </div>
-                  )
-                })}
-                {apiUsage.filter(rule => rule.used && rule.dailyLimit > 0).length === 0 && (
-                  <p className="text-xs text-gray-500">上限の設定された呼び出しはありませんでした。</p>
-                )}
-              </div>
-            )}
+                    <div className="mt-1 h-2 overflow-hidden rounded bg-gray-100">
+                      <div className={`h-full ${tone}`} style={{ width: `${Math.min(100, Math.round(ratio * 100))}%` }} />
+                    </div>
+                  </div>
+                  {apiUsage.calls.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {apiUsage.calls.map(call => (
+                        <span key={call.callName} className="rounded border bg-gray-50 px-2 py-0.5 text-[11px] text-gray-600">
+                          {call.callName} <strong className="text-gray-800">{call.count.toLocaleString()}</strong>
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-500">本日はまだeBayへの呼び出しがありません。</p>
+                  )}
+                  {apiUsage.history.length > 1 && (
+                    <p className="text-[11px] text-gray-500">
+                      直近: {apiUsage.history.map(h => `${h.day.slice(5)} ${h.count.toLocaleString()}回`).join(' / ')}
+                    </p>
+                  )}
+                </div>
+              )
+            })()}
           </div>
 
           {/* ユーザー要望: 全体在庫管理を手動で今すぐ実行 */}

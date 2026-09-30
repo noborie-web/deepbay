@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { checkSupplierListings, normalizePriceChangeFilter, type SupplierCheckResult } from '@/lib/inventory-supplier-check'
 import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
+import { flushEbayCallCounts } from '@/lib/ebay-call-counter'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { reviseInventoryStatusBatch } from '@/lib/ebay-actions'
 import { markListingsDelisted } from '@/lib/inventory-sync'
@@ -114,6 +115,8 @@ export async function runQuickSupplierCheck(
     } catch (error) {
       userResult.error = error instanceof Error ? error.message : String(error)
     }
+    // eBayの呼び出し回数を記録する(利用状況の表示に使う)
+    await flushEbayCallCounts(db, userId)
     results.push(userResult)
   }
   return results

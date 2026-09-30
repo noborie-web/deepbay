@@ -2,6 +2,7 @@
 // 現在は監視モードです。eBay商品の自動取り下げ・価格変更は実行しません。
 import type { InventoryListingInput } from './inventory'
 import { resolveListingSite, tradingSiteIdFor } from './ebay-sites'
+import { recordEbayCall } from './ebay-call-counter'
 
 const EBAY_TRADING_API_URL = 'https://api.ebay.com/ws/api.dll'
 // 本番で確認した不具合(2026-09-29): 応答の遅いセラー向けに100件へ減らしたが、
@@ -206,6 +207,7 @@ ${outputSelectors}
   totalSignal?.addEventListener('abort', abortForTotalTimeout, { once: true })
 
   try {
+    recordEbayCall('GetMyeBaySelling')
     const res = await fetch(EBAY_TRADING_API_URL, {
       method: 'POST',
       headers: {
@@ -507,6 +509,7 @@ async function fetchItemById(
   totalSignal?.addEventListener('abort', abortForTotal, { once: true })
 
   try {
+    recordEbayCall('GetItem')
     const res = await fetch(EBAY_TRADING_API_URL, {
       method: 'POST',
       headers: {
@@ -659,6 +662,7 @@ ${outputSelectors}
   options.signal?.addEventListener('abort', abortForCaller, { once: true })
 
   try {
+    recordEbayCall('GetSellerList')
     const res = await fetch(EBAY_TRADING_API_URL, {
       method: 'POST',
       headers: {
