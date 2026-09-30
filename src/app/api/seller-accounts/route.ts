@@ -32,7 +32,7 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { data, error } = await admin()
     .from('seller_accounts')
-    .select('id, seller_id, display_name, is_default, ebay_user_id, ebay_marketplace_id, ebay_connected_at, listing_site_ids, created_at')
+    .select('id, seller_id, display_name, is_default, ebay_user_id, ebay_marketplace_id, ebay_connected_at, listing_site_ids, inventory_mode, created_at')
     .eq('user_id', user.id)
     .order('is_default', { ascending: false })
     .order('created_at', { ascending: true })
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  const body = await req.json().catch(() => ({})) as { id?: string; display_name?: string | null; is_default?: boolean; listing_site_ids?: unknown }
+  const body = await req.json().catch(() => ({})) as { id?: string; display_name?: string | null; is_default?: boolean; listing_site_ids?: unknown; inventory_mode?: unknown }
   if (!body.id) return NextResponse.json({ error: 'id が必要です' }, { status: 400 })
   const db = admin()
 
@@ -95,6 +95,13 @@ export async function PATCH(req: NextRequest) {
 
   const update: Record<string, unknown> = {}
   if (body.display_name !== undefined) update.display_name = body.display_name?.trim() || null
+  if (body.inventory_mode !== undefined) {
+    // 'auto' = eBay APIで自動運用 / 'csv' = CSVのみ
+    if (body.inventory_mode !== 'auto' && body.inventory_mode !== 'csv') {
+      return NextResponse.json({ error: '運用モードの指定が不正です' }, { status: 400 })
+    }
+    update.inventory_mode = body.inventory_mode
+  }
   if (body.listing_site_ids !== undefined) {
     const sites = normalizeListingSites(body.listing_site_ids)
     if (!sites) return NextResponse.json({ error: '出品サイトの指定が不正です' }, { status: 400 })

@@ -400,4 +400,27 @@ describe('GET /api/cron/inventory-auto', () => {
       .find(row => row.run_type === 'sync')
     expect((syncInsert?.result_summary as Record<string, unknown>).slot).toBe(21)
   })
+
+  // ユーザー要望(2026-09-30): CSV運用のみのセラーは、eBay APIを使う処理
+  // (同期・取り下げ・価格改定)の対象から外す。
+  it('CSV運用のセラーは同期の対象から外す', async () => {
+    mockSellerAccounts = [
+      { id: 'seller-a', seller_id: 'miyabi-24', display_name: null, ebay_marketplace_id: 'EBAY_US', inventory_enabled: true, ebay_connected_at: '2026-07-26T00:00:00Z', inventory_discovery_scanned_until: null, inventory_sync_cursor_item_id: null, listing_site_ids: ['US'], inventory_mode: 'auto' },
+      { id: 'seller-b', seller_id: 'akebono-32', display_name: null, ebay_marketplace_id: 'EBAY_AU', inventory_enabled: true, ebay_connected_at: '2026-09-25T00:00:00Z', inventory_discovery_scanned_until: null, inventory_sync_cursor_item_id: null, listing_site_ids: ['UK'], inventory_mode: 'csv' },
+    ]
+    mockSellerListingCounts = [695]
+    const { GET } = await import('@/app/api/cron/inventory-auto/route')
+    const res = await GET(new NextRequest('http://localhost/api/cron/inventory-auto?slot=9', {
+      headers: { authorization: 'Bearer cron-secret' },
+    }))
+    const json = await res.json()
+
+    expect(res.status).toBe(200)
+    // 同期はAPI自動運用のセラーだけ
+    expect(mockSyncInventoryListings).toHaveBeenCalledTimes(1)
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'token-seller-a', expect.objectContaining({
+      sellerAccountId: 'seller-a',
+    }))
+    expect(json.results[0].csv_only_sellers).toEqual(['akebono-32'])
+  })
 })

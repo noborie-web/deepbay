@@ -17,6 +17,7 @@ interface SellerAccount {
   ebay_marketplace_id: string | null
   ebay_connected_at: string | null
   listing_site_ids: string[] | null
+  inventory_mode: 'auto' | 'csv' | null
   created_at: string
 }
 
@@ -145,15 +146,18 @@ export default function SellersPage() {
         <p className="mt-2 text-xs text-gray-500">
           セラーIDはeBayのユーザーID（出品画面に表示される名前）です。追加後に「eBayに接続」すると、ビジネスポリシーの自動取得とダイレクト出品・在庫管理が使えます。
           「出品サイト」はそのアカウントで出すサイトです（例: miyabi-24 は US、akebono-32 は UK/AU）。CSV出品のサイト選択がこの設定に合わせて初期表示されます。
+          「在庫管理の運用」を「CSVのみ」にすると、そのアカウントの出品はeBay APIでの同期・取り下げ・価格改定を行いません
+          （仕入先チェックと対象の検出は続くので、在庫管理からCSVを出して反映できます）。
         </p>
       </div>
 
       {/* 一覧 */}
       <div className="mt-6 max-w-5xl rounded-lg border border-gray-200 bg-white">
-        <div className="grid grid-cols-[1fr_1fr_160px_100px_150px_190px] gap-3 border-b bg-gray-50 px-4 py-2 text-xs font-medium text-gray-500">
+        <div className="grid grid-cols-[1fr_140px_150px_140px_90px_140px_170px] gap-3 border-b bg-gray-50 px-4 py-2 text-xs font-medium text-gray-500">
           <span>セラーID</span>
           <span>表示名</span>
           <span>出品サイト</span>
+          <span>在庫管理の運用</span>
           <span>既定</span>
           <span>eBay接続</span>
           <span></span>
@@ -166,7 +170,7 @@ export default function SellersPage() {
             出品アカウントがありません。上のフォームから追加してください。
           </div>
         ) : sellers.map(seller => (
-          <div key={seller.id} className="grid grid-cols-[1fr_1fr_160px_100px_150px_190px] items-center gap-3 border-b px-4 py-3 text-sm last:border-0">
+          <div key={seller.id} className="grid grid-cols-[1fr_140px_150px_140px_90px_140px_170px] items-center gap-3 border-b px-4 py-3 text-sm last:border-0">
             <span className="font-mono text-gray-800">{seller.seller_id}</span>
             {editingId === seller.id ? (
               <input value={editDisplayName} onChange={e => setEditDisplayName(e.target.value)}
@@ -187,6 +191,21 @@ export default function SellersPage() {
                   {site}
                 </label>
               ))}
+            </span>
+            {/* ユーザー要望(2026-09-30): セラーごとにAPI自動運用とCSV運用を
+                選べるようにする。CSVのみなら同期・取り下げ・価格改定を
+                eBay APIで行わない(仕入先チェックと対象の検出は続ける) */}
+            <span>
+              <select
+                value={seller.inventory_mode ?? 'auto'}
+                onChange={(e) => call('PATCH', { id: seller.id, inventory_mode: e.target.value })}
+                disabled={saving}
+                className="w-full rounded border px-1.5 py-1 text-xs"
+                title="CSVのみにすると、このセラーの出品はeBay APIで同期・取り下げ・価格改定を行いません"
+              >
+                <option value="auto">API自動</option>
+                <option value="csv">CSVのみ</option>
+              </select>
             </span>
             <span>
               {seller.is_default ? (

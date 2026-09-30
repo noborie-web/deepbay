@@ -208,3 +208,27 @@ describe('出品アカウントの出品サイト', () => {
     expect(update?.payload).toEqual({ listing_site_ids: ['UK'] })
   })
 })
+
+// ユーザー要望(2026-09-30): 出品アカウントごとに「API自動運用」と「CSV運用のみ」を
+// 切り替えられるようにする。
+describe('在庫管理の運用モード', () => {
+  beforeEach(() => {
+    mocks.getUser.mockReset().mockResolvedValue({ data: { user: { id: 'user-1' } } })
+    mocks.createServiceClient.mockReset()
+  })
+
+  it('PATCH で csv / auto を切り替えられる', async () => {
+    const { db, calls } = makeDatabase({ existingSeller: { id: 's1' } })
+    mocks.createServiceClient.mockReturnValue(db)
+    const res = await PATCH(jsonRequest({ id: 's1', inventory_mode: 'csv' }))
+    expect(res.status).toBe(200)
+    expect(calls.filter(c => c.op === 'update').at(-1)?.payload).toEqual({ inventory_mode: 'csv' })
+  })
+
+  it('PATCH は不正な運用モードを拒否する', async () => {
+    const { db } = makeDatabase({ existingSeller: { id: 's1' } })
+    mocks.createServiceClient.mockReturnValue(db)
+    const res = await PATCH(jsonRequest({ id: 's1', inventory_mode: 'manual' }))
+    expect(res.status).toBe(400)
+  })
+})

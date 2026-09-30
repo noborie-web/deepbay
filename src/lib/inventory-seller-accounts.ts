@@ -13,6 +13,9 @@ export interface InventorySellerAccount {
   inventory_sync_cursor_item_id: string | null
   // このセラーで出品しているサイト(US/UK/AU)
   listing_site_ids: string[]
+  // ユーザー要望(2026-09-30): セラーごとに運用を選べるようにする。
+  // 'auto' = eBay APIで自動運用 / 'csv' = CSVのみ(APIを使う処理の対象外)
+  inventory_mode: 'auto' | 'csv'
 }
 
 /**
@@ -24,7 +27,7 @@ export async function listInventorySellerAccounts(
 ): Promise<InventorySellerAccount[]> {
   const { data, error } = await db
     .from('seller_accounts')
-    .select('id, seller_id, display_name, ebay_marketplace_id, inventory_enabled, ebay_connected_at, inventory_discovery_scanned_until, inventory_sync_cursor_item_id, listing_site_ids')
+    .select('id, seller_id, display_name, ebay_marketplace_id, inventory_enabled, ebay_connected_at, inventory_discovery_scanned_until, inventory_sync_cursor_item_id, listing_site_ids, inventory_mode')
     .eq('user_id', userId)
     .not('ebay_connected_at', 'is', null)
     .order('ebay_connected_at', { ascending: true })
@@ -39,6 +42,7 @@ export async function listInventorySellerAccounts(
       inventory_discovery_scanned_until: (row.inventory_discovery_scanned_until as string | null) ?? null,
       inventory_sync_cursor_item_id: (row.inventory_sync_cursor_item_id as string | null) ?? null,
       listing_site_ids: normalizeSiteKeys(((row.listing_site_ids as string[] | null) ?? ['US']).join(',')),
+      inventory_mode: row.inventory_mode === 'csv' ? 'csv' : 'auto',
     }))
 }
 
