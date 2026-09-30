@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
+import { flushEbayCallCounts } from '@/lib/ebay-call-counter'
 import { reviseInventoryStatusBatch } from '@/lib/ebay-actions'
 import { applyRevisedPrices } from '@/lib/inventory-sync'
 import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
@@ -190,6 +191,8 @@ export async function POST(req: NextRequest) {
   })
     // ignore log errors
 
+  // eBayの呼び出し回数を記録する(利用状況の表示に使う)
+  await flushEbayCallCounts(db, user.id)
   return NextResponse.json({
     ok: true, total: results.length, succeeded, failed,
     skipped_no_rate: skippedNoRate, guarded, skipped_unknown_seller: skippedUnknownSeller,

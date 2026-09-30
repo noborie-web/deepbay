@@ -1,6 +1,7 @@
 // Vercel Cron Job — Hobbyプラン向けに毎日0時UTC（9時台JST）に1回起動
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
+import { flushEbayCallCounts } from '@/lib/ebay-call-counter'
 import { endItem, reviseInventoryStatusBatch, addFixedPriceItem } from '@/lib/ebay-actions'
 import { resolveInventoryAccessToken, resolveSellerAccountAccessToken } from '@/lib/inventory-auth'
 import { listInventorySellerAccounts, sellerAccountLabel, type InventorySellerAccount } from '@/lib/inventory-seller-accounts'
@@ -557,6 +558,8 @@ export async function GET(req: NextRequest) {
     // ignore log errors
     }
 
+    // eBayの呼び出し回数を記録する(利用状況の表示に使う)
+    await flushEbayCallCounts(db, userId)
     results.push(userResult)
   }
 
