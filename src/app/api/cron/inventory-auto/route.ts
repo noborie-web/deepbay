@@ -184,13 +184,19 @@ export async function GET(req: NextRequest) {
 
     // eBay同期を先に実行し、失敗時は古い在庫情報で後続操作を行わない
     // 在庫管理の対象セラー(接続済み)。1件もなければ従来どおり単一セラー扱い。
-    const syncTargets: Array<InventorySellerAccount | null> = accounts.filter(a => tokens.has(a.id))
-    if (syncTargets.length === 0) syncTargets.push(null)
+    // ユーザー要望(2026-09-30): CSV運用のみのセラーは、eBay APIを使う処理
+    // (同期・取り下げ・価格改定)の対象から外す。仕入先チェックは引き続き行う。
+    const csvOnlySellerIds = new Set(accounts.filter(a => a.inventory_mode === 'csv').map(a => a.id))
+    if (csvOnlySellerIds.size > 0) userResult.csv_only_sellers = accounts.filter(a => a.inventory_mode === 'csv').map(a => a.seller_id)
+    const syncTargets: Array<InventorySellerAccount | null> = accounts.filter(a => tokens.has(a.id) && a.inventory_mode !== 'csv')
+    if (syncTargets.length === 0 && accounts.length === 0) syncTargets.push(null)
     const tokenFor = (account: InventorySellerAccount | null): string =>
       account ? (tokens.get(account.id) as string) : accessToken
     // 出品行のセラーに対応するトークン。セラーが分からない行は、対象セラーが
     // 1件のときだけそのトークンで扱い、複数運用しているときは触らない。
     const resolveListingToken = (sellerAccountId: string | null): string | null => {
+      // CSV運用のセラーの出品は、APIで操作しない(CSV出力で反映する)
+      if (sellerAccountId && csvOnlySellerIds.has(sellerAccountId)) return null
       if (sellerAccountId) return tokens.get(sellerAccountId) ?? null
       return syncTargets.length === 1 ? tokenFor(syncTargets[0]) : null
     }

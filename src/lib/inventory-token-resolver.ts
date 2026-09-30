@@ -33,7 +33,10 @@ export async function createInventoryTokenResolver(
     }
   }
 
-  const connected = accounts.filter(account => tokens.has(account.id))
+  // ユーザー要望(2026-09-30): CSV運用のみのセラーは、eBay APIを使う処理の
+  // 対象から外す(取り下げ・価格改定はCSVで反映する)
+  const csvOnly = new Set(accounts.filter(a => a.inventory_mode === 'csv').map(a => a.id))
+  const connected = accounts.filter(account => tokens.has(account.id) && !csvOnly.has(account.id))
   let defaultToken: string | null = connected.length > 0 ? tokens.get(connected[0].id)! : null
   if (defaultToken === null) {
     // 出品アカウント経由の接続が1件も無い場合だけ、従来の単一トークンで動かす
@@ -45,6 +48,7 @@ export async function createInventoryTokenResolver(
     authErrors,
     defaultToken,
     tokenFor(sellerAccountId) {
+      if (sellerAccountId && csvOnly.has(sellerAccountId)) return null
       if (sellerAccountId) return tokens.get(sellerAccountId) ?? null
       return connected.length <= 1 ? defaultToken : null
     },
