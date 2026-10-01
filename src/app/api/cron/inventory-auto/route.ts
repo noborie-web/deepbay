@@ -22,7 +22,14 @@ export const maxDuration = 300
 
 // 価格改定(eBayへのRevise)に使う時間の上限。同期(約60秒)+仕入先チェック
 // (最大120秒)+取り下げの後に残る時間の範囲に収める。
-const REVISE_PRICE_TIME_BUDGET_MS = 60_000
+const REVISE_PRICE_TIME_BUDGET_MS = 45_000
+
+// 本番で確認した不具合(2026-10-01): 在庫が695→895件に増えたことで同期が長引き、
+// 実行時間の上限(300秒)に達して仕入先チェック・価格改定が実行されず、記録も
+// 残らなかった。各工程の合計を上限より十分手前(約210秒)に収める。
+const SYNC_FETCH_BUDGET_MS = 80_000
+const SYNC_DISCOVERY_BUDGET_MS = 15_000
+const SUPPLIER_CHECK_BUDGET_MS = 60_000
 
 // セラーごとにまとめる(トークンがセラー単位のため、1リクエストに混ぜられない)
 function groupEntriesBySeller<T extends { sellerAccountId?: string | null }>(
@@ -108,7 +115,7 @@ export async function GET(req: NextRequest) {
         // 一巡するのに3日かかるため、時間予算(150秒)の範囲で最大500件まで
         // 未チェックが古い順に確認する。
         const supplierCheckResult = await checkSupplierListings(db, userId, 500, {
-          timeBudgetMs: 80_000,
+          timeBudgetMs: SUPPLIER_CHECK_BUDGET_MS,
           priceChangeFilter: normalizePriceChangeFilter(settings),
           delistOnTitleChange: settings.delist_on_title_change ?? true,
         })
@@ -218,7 +225,7 @@ export async function GET(req: NextRequest) {
           .not('product_id', 'is', null)
         listingCounts.push(count ?? 0)
       }
-      const budgets = allocateSyncBudgets(listingCounts, { maxItems: 800, fetchMs: 110_000 })
+      const budgets = allocateSyncBudgets(listingCounts, { maxItems: 800, fetchMs: SYNC_FETCH_BUDGET_MS })
       const share = syncTargets.length
       const syncResults: Record<string, unknown>[] = []
       try {
@@ -238,7 +245,7 @@ export async function GET(req: NextRequest) {
           const syncResult = await syncKnownInventoryListings(db, userId, tokenFor(account), {
             fetchTotalTimeoutMs: budgets[index].fetchTotalTimeoutMs,
             // 新規出品の発見はどのセラーでも必要なので、ここは均等に分ける
-            discoveryTimeBudgetMs: Math.floor(30_000 / share),
+            discoveryTimeBudgetMs: Math.floor(SYNC_DISCOVERY_BUDGET_MS / share),
             getItemConcurrency: 8,
             maxItemsPerRun: budgets[index].maxItemsPerRun,
             cursorItemId: account ? account.inventory_sync_cursor_item_id : (settings.sync_cursor_item_id ?? null),
@@ -267,6 +274,8 @@ export async function GET(req: NextRequest) {
             processed: syncResult.processed, remaining: syncResult.nextCursorItemId ? syncResult.total - syncResult.processed : 0,
           }
           syncResults.push({ ...summary, total: syncResult.total, matched: syncResult.matched })
+          // 途中で打ち切られても利用状況が残るよう、セラーごとに記録する
+          await flushEbayCallCounts(db, userId)
           await db.from('inventory_runs').insert({
             user_id: userId,
             run_type: 'sync',
@@ -311,6 +320,8 @@ export async function GET(req: NextRequest) {
         continue
       }
     }
+
+    await flushEbayCallCounts(db, userId)
 
     // eBay同期後に仕入れ元を確認し、売り切れ・削除をquantity=0へ反映する。
     // この直後の既存取り下げ処理が同じcron実行内で対象を検出する。
