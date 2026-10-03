@@ -39,7 +39,7 @@ function requestOptions() {
 // 出力700トークン)は中程度にする。
 export const TITLE_CONCURRENCY = Number(process.env.OPENAI_TITLE_CONCURRENCY ?? 24)
 export const BRAND_CONCURRENCY = Number(process.env.OPENAI_BRAND_CONCURRENCY ?? 24)
-export const DESCRIPTION_CONCURRENCY = Number(process.env.OPENAI_DESCRIPTION_CONCURRENCY ?? 12)
+export const DESCRIPTION_CONCURRENCY = Number(process.env.OPENAI_DESCRIPTION_CONCURRENCY ?? 20)
 
 export interface AiBatchOptions {
   concurrency?: number
