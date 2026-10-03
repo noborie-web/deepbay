@@ -1,4 +1,5 @@
 import OpenAI from 'openai'
+import { mapWithConcurrency } from '@/lib/async-pool'
 
 // ユーザーへの説明: 「最高品質翻訳」は以前 gpt-5-nano(4.1-mini より小さい
 // モデル)に対応しており名前と実態が合っていなかったため、gpt-5-mini に変更。
@@ -22,6 +23,32 @@ function completionParams(model: string, maxTokens: number, temperature: number)
     : { model, max_tokens: maxTokens, temperature }
 }
 
+// 本番で確認した不具合(2026-10-03): メルカリの抽出が90%(ページ取得完了)の
+// あと、AI処理の途中で実行時間の上限(300秒)に達して強制終了され、商品が
+// 0件になった。AI呼び出しには上限時間が無く(OpenAI SDKの既定は10分)、
+// 1件のハングが抽出全体を巻き添えにしていた。1件あたりの上限を決め、
+// 遅い1件は諦めて元の文章のまま進める。
+const CALL_TIMEOUT_MS = Number(process.env.OPENAI_CALL_TIMEOUT_MS ?? 20_000)
+const CALL_MAX_RETRIES = Number(process.env.OPENAI_CALL_MAX_RETRIES ?? 1)
+
+function requestOptions() {
+  return { timeout: CALL_TIMEOUT_MS, maxRetries: CALL_MAX_RETRIES }
+}
+
+// 並列度。タイトル・ブランドは短い応答なので高めに、説明文(入力4000字/
+// 出力700トークン)は中程度にする。
+export const TITLE_CONCURRENCY = Number(process.env.OPENAI_TITLE_CONCURRENCY ?? 24)
+export const BRAND_CONCURRENCY = Number(process.env.OPENAI_BRAND_CONCURRENCY ?? 24)
+export const DESCRIPTION_CONCURRENCY = Number(process.env.OPENAI_DESCRIPTION_CONCURRENCY ?? 20)
+
+export interface AiBatchOptions {
+  concurrency?: number
+  // 残り時間が無くなったらAI処理を打ち切る。trueを返した時点以降の要素は
+  // API呼び出しをせず、元の文章のまま(ブランドは未設定)で返す。
+  // 「失敗」ではないので商品は除外しない。
+  giveUp?: () => boolean
+}
+
 export async function translateTitle(title: string, engine: string): Promise<string> {
   const model = MODEL_MAP[engine] ?? MODEL_MAP.high
   const openai = getClient()
@@ -34,7 +61,7 @@ export async function translateTitle(title: string, engine: string): Promise<str
       },
       { role: 'user', content: title },
     ],
-  })
+  }, requestOptions())
   return response.choices[0]?.message?.content?.trim() ?? title
 }
 
@@ -73,7 +100,7 @@ export async function translateDescription(description: string, engine: string):
       { role: 'system', content: DESCRIPTION_SYSTEM_PROMPT },
       { role: 'user', content: text.slice(0, 4000) },
     ],
-  })
+  }, requestOptions())
   return response.choices[0]?.message?.content?.trim() || text
 }
 
@@ -86,23 +113,22 @@ export interface DescriptionTranslationResult {
 export async function translateDescriptionsWithFailures(
   descriptions: string[],
   engine: string,
+  options: AiBatchOptions = {},
 ): Promise<DescriptionTranslationResult[]> {
   if (descriptions.length === 0) return []
-  const results: DescriptionTranslationResult[] = []
-  const chunkSize = 5
-  for (let i = 0; i < descriptions.length; i += chunkSize) {
-    const chunk = descriptions.slice(i, i + chunkSize)
-    const translated = await Promise.all(chunk.map(async (d): Promise<DescriptionTranslationResult> => {
+  return mapWithConcurrency(
+    descriptions,
+    options.concurrency ?? DESCRIPTION_CONCURRENCY,
+    async (d): Promise<DescriptionTranslationResult> => {
+      if (options.giveUp?.()) return { description: d, failed: false }
       try {
         return { description: await translateDescription(d, engine), failed: false }
       } catch (e) {
         console.error('Description translation failed for one item:', e)
         return { description: d, failed: true }
       }
-    }))
-    results.push(...translated)
-  }
-  return results
+    },
+  )
 }
 
 // ユーザー要望: ブランド設定(eBayの Brand 項目)。タイトル・説明からメーカー/
@@ -120,7 +146,7 @@ export async function extractBrand(title: string, description: string, engine: s
       { role: 'user', content: `Title: ${title}
 Description: ${description.slice(0, 1500)}` },
     ],
-  })
+  }, requestOptions())
   const brand = response.choices[0]?.message?.content?.trim() ?? ''
   if (!brand || /^none$/i.test(brand) || brand.length > 65) return null
   return brand
@@ -129,23 +155,18 @@ Description: ${description.slice(0, 1500)}` },
 export async function extractBrandsSafely(
   items: Array<{ title: string; description: string }>,
   engine: string,
+  options: AiBatchOptions = {},
 ): Promise<Array<string | null>> {
   if (items.length === 0) return []
-  const results: Array<string | null> = []
-  const chunkSize = 10
-  for (let i = 0; i < items.length; i += chunkSize) {
-    const chunk = items.slice(i, i + chunkSize)
-    const brands = await Promise.all(chunk.map(async (item) => {
-      try {
-        return await extractBrand(item.title, item.description, engine)
-      } catch (e) {
-        console.error('Brand extraction failed for one item:', e)
-        return null
-      }
-    }))
-    results.push(...brands)
-  }
-  return results
+  return mapWithConcurrency(items, options.concurrency ?? BRAND_CONCURRENCY, async (item) => {
+    if (options.giveUp?.()) return null
+    try {
+      return await extractBrand(item.title, item.description, engine)
+    } catch (e) {
+      console.error('Brand extraction failed for one item:', e)
+      return null
+    }
+  })
 }
 
 export async function translateTitles(
@@ -153,15 +174,7 @@ export async function translateTitles(
   engine: string,
 ): Promise<string[]> {
   if (titles.length === 0) return []
-  // 10件ずつ並列処理
-  const results: string[] = []
-  const chunkSize = 10
-  for (let i = 0; i < titles.length; i += chunkSize) {
-    const chunk = titles.slice(i, i + chunkSize)
-    const translated = await Promise.all(chunk.map((t) => translateTitle(t, engine)))
-    results.push(...translated)
-  }
-  return results
+  return mapWithConcurrency(titles, TITLE_CONCURRENCY, (t) => translateTitle(t, engine))
 }
 
 export interface TitleTranslationResult {
@@ -178,13 +191,17 @@ export interface TitleTranslationResult {
 export async function translateTitlesWithFailures(
   titles: string[],
   engine: string,
+  options: AiBatchOptions = {},
 ): Promise<TitleTranslationResult[]> {
   if (titles.length === 0) return []
-  const results: TitleTranslationResult[] = []
-  const chunkSize = 10
-  for (let i = 0; i < titles.length; i += chunkSize) {
-    const chunk = titles.slice(i, i + chunkSize)
-    const translated = await Promise.all(chunk.map(async (t): Promise<TitleTranslationResult> => {
+  return mapWithConcurrency(
+    titles,
+    options.concurrency ?? TITLE_CONCURRENCY,
+    async (t): Promise<TitleTranslationResult> => {
+      // 時間切れで翻訳を諦めた商品は failed にしない(=除外しない)。
+      // 元の日本語タイトルのまま下書きとして残し、ユーザーが判断できる
+      // ようにする。
+      if (options.giveUp?.()) return { title: t, failed: false }
       try {
         const title = await translateTitle(t, engine)
         return { title, failed: false }
@@ -192,10 +209,8 @@ export async function translateTitlesWithFailures(
         console.error('Title translation failed for one item:', e)
         return { title: t, failed: true }
       }
-    }))
-    results.push(...translated)
-  }
-  return results
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +267,7 @@ export async function generateDescription(info: DescriptionSourceInfo, engine: s
       { role: 'system', content: GENERATE_DESCRIPTION_SYSTEM_PROMPT },
       { role: 'user', content: describeSource(info) },
     ],
-  })
+  }, requestOptions())
   return response.choices[0]?.message?.content?.trim() ?? ''
 }
 
@@ -262,13 +277,14 @@ export interface GeneratedDescriptionResult { description: string | null; failed
 export async function generateDescriptionsSafely(
   items: DescriptionSourceInfo[],
   engine: string,
+  options: AiBatchOptions = {},
 ): Promise<GeneratedDescriptionResult[]> {
   if (items.length === 0) return []
-  const results: GeneratedDescriptionResult[] = []
-  const chunkSize = 5
-  for (let i = 0; i < items.length; i += chunkSize) {
-    const chunk = items.slice(i, i + chunkSize)
-    results.push(...await Promise.all(chunk.map(async (item): Promise<GeneratedDescriptionResult> => {
+  return mapWithConcurrency(
+    items,
+    options.concurrency ?? DESCRIPTION_CONCURRENCY,
+    async (item): Promise<GeneratedDescriptionResult> => {
+      if (options.giveUp?.()) return { description: null, failed: true }
       try {
         const description = await generateDescription(item, engine)
         return description ? { description, failed: false } : { description: null, failed: true }
@@ -276,9 +292,8 @@ export async function generateDescriptionsSafely(
         console.error('Description generation failed for one item:', e)
         return { description: null, failed: true }
       }
-    })))
-  }
-  return results
+    },
+  )
 }
 
 export function normalizeAiDescriptionMode(value: unknown): AiDescriptionMode {

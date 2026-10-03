@@ -73,6 +73,8 @@ describe('POST /api/extract regression after runScrape extraction', () => {
       'https://jp.mercari.com/search?keyword=guitar',
       'bulk-1',
       { service: true },
+      // 実行時間の上限より手前の期限を渡し、AI処理を切り上げて保存できるようにする
+      expect.objectContaining({ deadlineAt: expect.any(Number) }),
     )
   })
 

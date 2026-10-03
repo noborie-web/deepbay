@@ -46,6 +46,20 @@ export type ExtractionRunResult =
   | { status: 'excluded' }
   | { status: 'failed'; errorMessage: string }
 
+export interface RunScrapeOptions {
+  // この時刻(epoch ms)までに必ず完了させる。実行環境の上限(Vercel Hobbyは
+  // 300秒)で強制終了されると catch も走らず、商品0件のまま「処理中」で
+  // 残ってしまうため、呼び出し側が上限より手前の時刻を渡す。
+  deadlineAt?: number
+}
+
+// 重複チェック・商品のinsert・完了記録のために残しておく時間。
+// AI処理はこの分を残して打ち切る。
+const FINALIZE_RESERVE_MS = 25_000
+// ページ取得(スクレイピング)に使える割合。これを超えたら残りのAI処理を
+// 諦めてでも、取得済みの商品を保存して完了させる。
+const SCRAPE_BUDGET_RATE = 0.6
+
 export async function runScrape(
   userId: string,
   extractionId: string,
@@ -53,7 +67,34 @@ export async function runScrape(
   bulkEditSettingId: string | null,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
+  options: RunScrapeOptions = {},
 ): Promise<ExtractionRunResult> {
+  const startedAt = Date.now()
+  const deadlineAt = options.deadlineAt ?? null
+  // AI処理を打ち切る時刻。期限が渡されていなければ打ち切らない(従来動作)。
+  const aiDeadlineAt = deadlineAt === null ? null : deadlineAt - FINALIZE_RESERVE_MS
+  // 時間切れでAI処理を省略した段数(ユーザーに知らせるため記録する)
+  let aiTimeLimited = false
+  const giveUpAi = (): boolean => {
+    if (aiDeadlineAt === null) return false
+    if (Date.now() < aiDeadlineAt) return false
+    aiTimeLimited = true
+    return true
+  }
+  const aiBatchOptions = { giveUp: giveUpAi }
+  // ページ取得だけで時間を使い切らないようにする(メルカリShops商品は
+  // 1件ごとにヘッドレスブラウザを起動するため特に遅い)。
+  const scrapeDeadlineAt = deadlineAt === null
+    ? null
+    : startedAt + Math.max(30_000, (deadlineAt - startedAt) * SCRAPE_BUDGET_RATE)
+
+  // AI処理の段ごとに進捗を進める。90%で止まったまま何分も動かないと
+  // 「固まった」と見えるため。
+  const setProgress = async (pct: number): Promise<void> => {
+    const { error } = await supabase.from('extractions').update({ progress: pct }).eq('id', extractionId)
+    if (error) console.warn('[extract] progress update failed:', error.message)
+  }
+
   try {
     const limit = 600
 
@@ -116,6 +157,7 @@ export async function runScrape(
       fetchSellerInfo: sellerUrls.length > 0,
       // ユーザー要望: ヤフオク検索時にYahoo!フリマも合わせて取得する(抽出設定でON/OFF)
       includeYahooFlea: extractionSettings?.yahoo_auction_include_flea ?? true,
+      shouldStop: scrapeDeadlineAt === null ? undefined : () => Date.now() >= scrapeDeadlineAt,
       onPage: async (fetched, total) => {
         const pct = Math.min(Math.round((fetched / total) * 90), 90)
         await supabase
@@ -372,9 +414,38 @@ export async function runScrape(
     const titleEnabled: boolean = extractionSettings?.title_enabled ?? true
     const originalTitles = bulkPriceRangeFilteredList.map((s: { title: string }) => s.title)
     let translationResults: { title: string; failed: boolean }[] = originalTitles.map((t: string) => ({ title: t, failed: false }))
+    const descriptionEngine: string = extractionSettings?.description_engine ?? 'high'
+    const descriptionEnabled: boolean = extractionSettings?.description_enabled ?? true
+    const brandEngine: string = extractionSettings?.brand_engine ?? 'high'
+    const brandEnabled: boolean = extractionSettings?.brand_enabled ?? true
+
+    // ユーザー要望: 商品説明を英訳し、メルカリ特有・国内向けの文章(ゆうパック/
+    // ヤマト等の国内配送、匿名配送、専用、即購入OK、個人名 など)をAIで削除する。
+    // 抽出設定の「商品詳細設定」(description_engine / description_enabled)に従う。
+    // 翻訳に失敗した商品は除外せず、元の説明文のまま登録する。
+    //
+    // 説明文の翻訳はタイトル翻訳・ブランド抽出と依存関係が無いので、同時に
+    // 走らせる(本番で確認した不具合: 600件規模の抽出でAI処理が直列に積み
+    // 上がり、実行時間の上限300秒を超えていた)。タイトル翻訳に失敗した商品の
+    // 分も翻訳してしまうが、失敗はごく少数なので無駄は小さい。
+    const preAiDescriptions: string[] = bulkPriceRangeFilteredList.map(
+      (s: { description: string }) => s.description ?? '',
+    )
+    const descriptionTranslationPromise: Promise<string[]> = (async () => {
+      if (!descriptionEnabled || !process.env.OPENAI_API_KEY) return [...preAiDescriptions]
+      try {
+        return (await translateDescriptionsWithFailures(preAiDescriptions, descriptionEngine, aiBatchOptions))
+          .map((r) => r.description)
+      } catch (e) {
+        console.error('Description translation failed entirely, using original descriptions:', e)
+        return [...preAiDescriptions]
+      }
+    })()
+
     if (titleEnabled && process.env.OPENAI_API_KEY) {
       try {
-        translationResults = await translateTitlesWithFailures(originalTitles, titleEngine)
+        await setProgress(91)
+        translationResults = await translateTitlesWithFailures(originalTitles, titleEngine, aiBatchOptions)
       } catch (e) {
         // 商品単位のtry/catchでも捕捉できないほどの全体エラー(APIキー
         // 不正等)の場合のみ、既存互換で全件を元タイトルにフォールバック
@@ -383,47 +454,37 @@ export async function runScrape(
         translationResults = originalTitles.map((t: string) => ({ title: t, failed: false }))
       }
     }
+    const keepIndexes: boolean[] = translationResults.map((r) => !r.failed)
     const translationFilteredList = bulkPriceRangeFilteredList.filter(
-      (_: unknown, idx: number) => !translationResults[idx].failed,
+      (_: unknown, idx: number) => keepIndexes[idx],
     )
     const translatedTitles = translationResults.filter((r) => !r.failed).map((r) => r.title)
     const translatedTitleFailedExcluded = bulkPriceRangeFilteredList.length - translationFilteredList.length
-
-    // ユーザー要望: 商品説明を英訳し、メルカリ特有・国内向けの文章(ゆうパック/
-    // ヤマト等の国内配送、匿名配送、専用、即購入OK、個人名 など)をAIで削除する。
-    // 抽出設定の「商品詳細設定」(description_engine / description_enabled)に従う。
-    // 翻訳に失敗した商品は除外せず、元の説明文のまま登録する。
-    const descriptionEngine: string = extractionSettings?.description_engine ?? 'high'
-    const descriptionEnabled: boolean = extractionSettings?.description_enabled ?? true
-    const originalDescriptions = translationFilteredList.map((s: { description: string }) => s.description ?? '')
-    let translatedDescriptions: string[] = [...originalDescriptions]
-    if (descriptionEnabled && process.env.OPENAI_API_KEY) {
-      try {
-        translatedDescriptions = (await translateDescriptionsWithFailures(originalDescriptions, descriptionEngine))
-          .map((r) => r.description)
-      } catch (e) {
-        console.error('Description translation failed entirely, using original descriptions:', e)
-      }
-    }
+    const originalDescriptions = preAiDescriptions.filter((_: string, idx: number) => keepIndexes[idx])
 
     // ユーザー要望: ブランド設定(brand_engine / brand_enabled)。タイトル・説明から
     // メーカー/レーベル名を抽出して eBay の Brand 項目に使う(不明なら未設定)。
-    const brandEngine: string = extractionSettings?.brand_engine ?? 'high'
-    const brandEnabled: boolean = extractionSettings?.brand_enabled ?? true
+    // (翻訳後タイトルと「元の」説明文を使うので、説明文の翻訳完了を待つ必要はない)
     let extractedBrands: Array<string | null> = translationFilteredList.map(() => null)
     if (brandEnabled && process.env.OPENAI_API_KEY) {
       try {
+        await setProgress(93)
         extractedBrands = await extractBrandsSafely(
           translationFilteredList.map((s: { title: string; description: string }, idx: number) => ({
             title: translatedTitles[idx] ?? s.title,
             description: originalDescriptions[idx],
           })),
           brandEngine,
+          aiBatchOptions,
         )
       } catch (e) {
         console.error('Brand extraction failed entirely:', e)
       }
     }
+
+    await setProgress(95)
+    const translatedDescriptions: string[] = (await descriptionTranslationPromise)
+      .filter((_: string, idx: number) => keepIndexes[idx])
 
     // ユーザー要望: 説明文をAIで生成する。'missing' は仕入先から説明文が取れなかった
     // 商品だけ(Yahoo!フリマは商品ページの取得制限で説明文だけ遅れる)、'all' は
@@ -451,6 +512,7 @@ export async function runScrape(
           || leakedIndexes.has(idx))
       if (targetIndexes.length > 0) {
         try {
+          await setProgress(97)
           const generated = await generateDescriptionsSafely(
             targetIndexes.map((idx: number) => {
               const s = translationFilteredList[idx] as { title: string; condition: string | null; category: string | null; rawData?: Record<string, unknown> | null }
@@ -465,6 +527,7 @@ export async function runScrape(
               }
             }),
             descriptionEngine,
+            aiBatchOptions,
           )
           generated.forEach((g, i) => {
             if (g.description) {
@@ -486,6 +549,8 @@ export async function runScrape(
     const existingSourceUrls = new Set<string>()
     const existingOriginalTitles = new Set<string>()
     const existingEbayTitles = new Set<string>()
+
+    await setProgress(98)
 
     if (excludeActive || excludeTitle || excludeTranslated) {
       const selectCols = [
@@ -617,6 +682,9 @@ export async function runScrape(
       title_duplicate_excluded: titleDuplicateExcluded,
       translated_duplicate_excluded: translatedDuplicateExcluded,
       completed_count: deduped.length,
+      // 時間切れで一部商品のAI処理(タイトル翻訳・説明文・ブランド)を
+      // 省略した場合に立つ。商品は破棄せず下書きとして保存する。
+      ai_time_limited: aiTimeLimited,
     }
 
     await Promise.all([

@@ -177,6 +177,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
       completed_count: 1,
+      ai_time_limited: false,
     })
   })
 
@@ -221,6 +222,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
       completed_count: 1,
+      ai_time_limited: false,
     })
   })
 
@@ -275,6 +277,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
       completed_count: 1,
+      ai_time_limited: false,
     })
   })
 
@@ -338,6 +341,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
       completed_count: 1,
+      ai_time_limited: false,
     })
   })
 
@@ -353,6 +357,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     expect(completedUpdate?.exclusion_summary).toMatchObject({
       individual_danger_seller_excluded: 0,
       completed_count: 1,
+      ai_time_limited: false,
     })
   })
 
@@ -469,6 +474,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       stale_excluded: 0,
       price_range_excluded: 0,
       completed_count: 1,
+      ai_time_limited: false,
     })
   })
 
@@ -497,6 +503,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     expect(completedUpdate?.exclusion_summary).toMatchObject({
       translated_title_failed_excluded: 1,
       completed_count: 1,
+      ai_time_limited: false,
     })
   })
 
@@ -515,6 +522,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     expect(completedUpdate?.exclusion_summary).toMatchObject({
       translated_title_failed_excluded: 0,
       completed_count: 1,
+      ai_time_limited: false,
     })
   })
 
@@ -553,6 +561,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       title_duplicate_excluded: 1,
       translated_duplicate_excluded: 0,
       completed_count: 1,
+      ai_time_limited: false,
     })
   })
 
@@ -588,6 +597,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       title_duplicate_excluded: 0,
       translated_duplicate_excluded: 0,
       completed_count: 1,
+      ai_time_limited: false,
     })
   })
 
@@ -653,6 +663,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
         individual_danger_seller_excluded: 0,
         bulk_edit_danger_seller_excluded: 1,
         completed_count: 0,
+        ai_time_limited: false,
       })
     })
 
@@ -671,6 +682,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       expect(completedUpdate?.exclusion_summary).toMatchObject({
         bulk_edit_danger_seller_excluded: 0,
         completed_count: 1,
+        ai_time_limited: false,
       })
     })
 
@@ -720,6 +732,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
         individual_danger_seller_excluded: 1,
         bulk_edit_danger_seller_excluded: 0,
         completed_count: 0,
+        ai_time_limited: false,
       })
     })
 
@@ -741,6 +754,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
         price_range_excluded: 1,
         bulk_edit_price_range_excluded: 1,
         completed_count: 1,
+        ai_time_limited: false,
       })
     })
 

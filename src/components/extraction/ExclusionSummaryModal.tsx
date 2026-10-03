@@ -7,12 +7,16 @@ interface Props {
   onClose: () => void
 }
 
+// ai_time_limited だけは件数ではなく真偽値なので、一覧の行ではなく注意書き
+// として表示する。
+type NumericSummaryKey = Exclude<keyof ExtractionExclusionSummary, 'ai_time_limited'>
+
 // 既存ツール(公式)の「抽出結果確認」に相当する除外詳細モーダル。
 // 抽出パイプラインで実際に実行されている除外を表示する。評価数・発送
 // 日数・最終更新月・価格範囲は、公式と同様に「グローバル抽出設定による
 // 除外(無印)」と「一括編集設定プロファイルによる追加除外
 // (「(一括編集)」接頭辞)」の2段階で集計する。
-const ROWS: { key: keyof ExtractionExclusionSummary; label: string }[] = [
+const ROWS: { key: NumericSummaryKey; label: string }[] = [
   { key: 'detail_fetch_count', label: '詳細取得件数' },
   { key: 'sold_out_excluded', label: '売り切れ除外' },
   { key: 'no_image_excluded', label: '画像が1枚もない除外' },
@@ -50,6 +54,12 @@ export default function ExclusionSummaryModal({ summary, onClose }: Props) {
           <h2 className="font-bold text-gray-900">除外詳細</h2>
         </div>
         <div className="overflow-y-auto flex-1 px-5 py-4 space-y-3 text-sm">
+          {summary.ai_time_limited && (
+            <p className="rounded bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+              実行時間の上限が近づいたため、一部の商品はAI処理(タイトル翻訳・説明文・ブランド)を省略して保存しました。
+              商品は下書きとして残っているので、件数を減らして再抽出するか、下書きを個別に編集してください。
+            </p>
+          )}
           {ROWS.map(({ key, label }) => (
             <div key={key} className="flex items-center justify-between">
               <span className="text-gray-700">{label}</span>
