@@ -8,6 +8,9 @@ import type { Extraction, Profile } from '@/types/database'
 
 export const maxDuration = 300
 
+// 実行時間の上限(300秒)より手前で打ち切り、「処理中」のまま残さない
+const EXTRACTION_DEADLINE_MS = 270_000
+
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
 
@@ -93,7 +96,32 @@ export async function POST(req: NextRequest) {
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.SUPABASE_SERVICE_ROLE_KEY!,
     )
-    await runScrape(userId, extractionId, url, bulkEditSettingId || null, bg)
+    // 本番で確認した不具合(2026-10-03): 抽出が90%のまま1時間以上「処理中」で
+    // 止まり、商品も0件だった。実行時間の上限(300秒)で強制終了されると
+    // catchも走らないため、失敗として記録されず画面が回り続ける。
+    // 上限より手前で自分から打ち切り、理由を残す。
+    let finished = false
+    const timeout = setTimeout(() => {
+      if (finished) return
+      void bg
+        .from('extractions')
+        .update({
+          status: 'failed',
+          progress: 0,
+          error_message: '抽出が時間内に完了しませんでした（実行時間の上限）。抽出件数を減らすか、条件を絞って再実行してください。',
+        })
+        .eq('id', extractionId)
+        .eq('status', 'processing')
+        .then(({ error }) => {
+          if (error) console.warn('[extract] failed to mark timeout:', error.message)
+        })
+    }, EXTRACTION_DEADLINE_MS)
+    try {
+      await runScrape(userId, extractionId, url, bulkEditSettingId || null, bg)
+    } finally {
+      finished = true
+      clearTimeout(timeout)
+    }
   })
 
   return NextResponse.json({ extractionId }, { status: 200 })
