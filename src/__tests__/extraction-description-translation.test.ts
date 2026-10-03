@@ -101,10 +101,11 @@ describe('extraction description translation / brand extraction', () => {
 
     await runScrape('user-1', 'extraction-1', 'https://jp.mercari.com/search', null, db)
 
-    expect(mocks.translateDescriptionsWithFailures).toHaveBeenCalledWith([scrapedProduct.description], 'best')
+    expect(mocks.translateDescriptionsWithFailures).toHaveBeenCalledWith([scrapedProduct.description], 'best', expect.anything())
     expect(mocks.extractBrandsSafely).toHaveBeenCalledWith(
       [{ title: scrapedProduct.title, description: scrapedProduct.description }],
       'normal',
+      expect.anything(),
     )
     expect(insertedProducts[0].ebay_description).toBe('Korean drama OST "The King\'s Face", Korean edition. Brand new, factory sealed.')
     expect(insertedProducts[0].ebay_description).not.toContain('ゆうパック')
@@ -150,7 +151,7 @@ describe('extraction description translation / brand extraction', () => {
 
     expect(mocks.generateDescriptionsSafely).toHaveBeenCalledWith([
       { title: noDescription.title, condition: '目立った傷や汚れなし', category: 'ソフト', brand: 'Nintendo', hashtags: ['ファミコン'], originalDescription: '' },
-    ], 'high')
+    ], 'high', expect.anything())
     expect(insertedProducts[0].ebay_description).toBe('Translated description')
     expect(insertedProducts[0].ai_description_generated_at).toBeNull()
     expect(insertedProducts[1].ebay_description).toBe('Generated English description')

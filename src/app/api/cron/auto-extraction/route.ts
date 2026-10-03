@@ -8,6 +8,9 @@ import type { Product } from '@/types/database'
 
 export const maxDuration = 300
 
+// 実行時間の上限より手前で抽出を切り上げ、取得できた分を保存して完了させる。
+const CRON_DEADLINE_MS = 270_000
+
 interface AutoExtractionSchedule {
   id: string
   user_id: string
@@ -123,6 +126,7 @@ async function executeSchedule(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: any,
   schedule: AutoExtractionSchedule,
+  deadlineAt?: number,
 ): Promise<CronResult> {
   // 月間リセット期限(plan_reset_at)が過ぎていれば抽出回数を0に戻す
   // (extract/route.ts と同様、専用cronを追加せず抽出実行時に遅延実行する)。
@@ -183,6 +187,9 @@ async function executeSchedule(
     schedule.source_url,
     schedule.bulk_edit_setting_id,
     db,
+    // 自動抽出も実行時間の上限(300秒)で強制終了されると商品0件の「処理中」が
+    // 残る。手前で切り上げて、取得できた分を保存して完了させる。
+    { deadlineAt },
   )
 
   if (runResult.status === 'failed') {
@@ -240,9 +247,11 @@ export async function GET(req: NextRequest) {
   }
 
   const results: CronResult[] = []
+  // 実行時間の上限(300秒)の手前で各抽出を切り上げるための期限。
+  const cronDeadlineAt = Date.now() + CRON_DEADLINE_MS
   for (const schedule of (schedules ?? []) as AutoExtractionSchedule[]) {
     try {
-      results.push(await executeSchedule(db, schedule))
+      results.push(await executeSchedule(db, schedule, cronDeadlineAt))
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       await recordFinishedRun(db, schedule, 'failed', { errorMessage: reason }).catch(() => undefined)

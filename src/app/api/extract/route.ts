@@ -117,7 +117,11 @@ export async function POST(req: NextRequest) {
         })
     }, EXTRACTION_DEADLINE_MS)
     try {
-      await runScrape(userId, extractionId, url, bulkEditSettingId || null, bg)
+      // 上限時間の手前で、AI処理を切り上げて「取得できた分を保存して完了」
+      // させるための期限。setTimeoutの打ち切り(失敗記録)はあくまで保険。
+      await runScrape(userId, extractionId, url, bulkEditSettingId || null, bg, {
+        deadlineAt: Date.now() + EXTRACTION_DEADLINE_MS,
+      })
     } finally {
       finished = true
       clearTimeout(timeout)

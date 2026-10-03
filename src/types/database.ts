@@ -104,6 +104,9 @@ export interface ExtractionExclusionSummary {
   title_duplicate_excluded: number
   translated_duplicate_excluded: number
   completed_count: number
+  // 実行時間の上限が近づいたため、一部商品のAI処理(タイトル翻訳・説明文・
+  // ブランド)を省略して保存した場合に true。古い抽出には存在しない。
+  ai_time_limited?: boolean
 }
 
 export interface Extraction {

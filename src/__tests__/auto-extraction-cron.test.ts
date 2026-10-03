@@ -201,6 +201,7 @@ describe('GET /api/cron/auto-extraction', () => {
       todaySchedule.source_url,
       'bulk-1',
       db,
+      expect.objectContaining({ deadlineAt: expect.any(Number) }),
     )
     // ユーザー要望: 抽出回数残高のリセット。plan_reset_atが過ぎていれば
     // 抽出回数を0に戻すRPCを、スケジュール実行時にも呼び出すようにした。

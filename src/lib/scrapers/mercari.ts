@@ -368,6 +368,8 @@ export class MercariScraper {
     while (allProducts.length < limit) {
       pageCount += 1
       if (pageCount > maxPages) break
+      // 実行時間の上限が近いときは、取得済みのページで打ち切る。
+      if (pageCount > 1 && options.shouldStop?.()) break
 
       const dpop = await generateDPoP(SEARCH_URL, 'POST', dpopCtx)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -516,6 +518,9 @@ export class MercariScraper {
     const shopResults = new Map<string, ScrapedProduct>()
     for (const product of shopProducts) {
       if (!product.sourceItemId) continue
+      // Shops商品は1件ごとにヘッドレスブラウザを起動するため特に遅い。
+      // 時間切れが近ければ残りは検索結果の情報のまま使う。
+      if (options.shouldStop?.()) break
       const browser = await launchHeadlessBrowser()
       try {
         const detail = await fetchShopProductDetail(browser, product.sourceItemId)
@@ -540,6 +545,7 @@ export class MercariScraper {
     const enriched: ScrapedProduct[] = []
     const concurrency = 8
     for (let index = 0; index < normalProducts.length; index += concurrency) {
+      if (index > 0 && options.shouldStop?.()) break
       const chunk = normalProducts.slice(index, index + concurrency)
       const results = await Promise.all(chunk.map(async (product) => {
         if (!product.sourceItemId) return product
