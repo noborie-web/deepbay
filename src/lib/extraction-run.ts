@@ -114,6 +114,28 @@ export async function runScrape(
         : Promise.resolve({ data: [] }),
     ])
 
+    // 重複判定を出品セラーごとに行うため、この抽出の出品セラーを取得する。
+    const { data: extractionRow } = await supabase
+      .from('extractions')
+      .select('seller_account_id')
+      .eq('id', extractionId)
+      .single()
+    const sellerAccountId: string | null = extractionRow?.seller_account_id ?? null
+
+    // 「最初に接続したセラー」かどうか(在庫管理の ownsUnassignedProducts と
+    // 同じ規約)。出品セラーが設定されていない抽出は従来どおり全商品と比較する。
+    let ownsUnassignedProducts = sellerAccountId === null
+    if (sellerAccountId !== null) {
+      const { data: sellerRows } = await supabase
+        .from('seller_accounts')
+        .select('id, ebay_connected_at')
+        .eq('user_id', userId)
+      const firstConnected = ((sellerRows ?? []) as Array<{ id: string; ebay_connected_at: string | null }>)
+        .filter((row) => !!row.ebay_connected_at)
+        .sort((a, b) => String(a.ebay_connected_at).localeCompare(String(b.ebay_connected_at)))[0]
+      ownsUnassignedProducts = firstConnected?.id === sellerAccountId
+    }
+
     // ユーザー要望: 一括編集設定「全体」のON/OFFを切り替えられるように
     // したい(個々の除外項目とは別のマスタースイッチ)。無効化された
     // プロファイルが選択されていても、選択されていない場合と同じ挙動
@@ -559,19 +581,44 @@ export async function runScrape(
         excludeTranslated ? 'ebay_title' : '',
       ].filter(Boolean).join(',')
 
-      const { data: existingProducts } = await supabase
+      // ユーザー指摘(2026-10-04): miyabi-24(US)で取得したあと、同じURLを
+      // akebono-32(UK/AU)で取得すると全件が「タイトル重複除外」になった。
+      // 同じ商品をUSとUK/AUの別アカウントに出品するのは正常な運用なので、
+      // 重複判定は出品セラーごとに行う(他セラーの商品とは比較しない)。
+      // 出品セラー未設定の抽出どうしは、従来どおり互いに比較する。
+      const existingQuery = supabase
         .from('products')
-        .select(selectCols)
+        .select(`${selectCols},extractions!inner(seller_account_id)`)
         .eq('user_id', userId)
+      const { data: existingProducts, error: existingError } = await (
+        sellerAccountId
+          ? existingQuery.eq('extractions.seller_account_id', sellerAccountId)
+          : existingQuery.is('extractions.seller_account_id', null)
+      )
+      // 取得に失敗すると「重複なし」として全件通ってしまうため、黙って
+      // 握りつぶさずログに残す。
+      if (existingError) console.warn('[extract] duplicate check query failed:', existingError.message)
 
-      if (existingProducts) {
-        for (const p of existingProducts) {
-          if (excludeActive && p.listing_status === 'listed' && p.source_url) {
-            existingSourceUrls.add(p.source_url)
-          }
-          if (excludeTitle && p.original_title) existingOriginalTitles.add(p.original_title)
-          if (excludeTranslated && p.ebay_title) existingEbayTitles.add(p.ebay_title)
+      // 抽出元が残っていない商品(extraction_idがnull。CSV取り込みや抽出削除後の
+      // 商品)は、どのセラーのものか記録が無い。在庫管理と同じ規約で
+      // 「最初に接続したセラー」のものとして扱う。
+      let unassignedProducts: Array<Record<string, unknown>> | null = null
+      if (ownsUnassignedProducts) {
+        const { data, error } = await supabase
+          .from('products')
+          .select(selectCols)
+          .eq('user_id', userId)
+          .is('extraction_id', null)
+        if (error) console.warn('[extract] duplicate check query (unassigned) failed:', error.message)
+        unassignedProducts = data ?? null
+      }
+
+      for (const p of [...(existingProducts ?? []), ...(unassignedProducts ?? [])]) {
+        if (excludeActive && p.listing_status === 'listed' && p.source_url) {
+          existingSourceUrls.add(p.source_url as string)
         }
+        if (excludeTitle && p.original_title) existingOriginalTitles.add(p.original_title as string)
+        if (excludeTranslated && p.ebay_title) existingEbayTitles.add(p.ebay_title as string)
       }
     }
 

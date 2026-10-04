@@ -57,6 +57,7 @@ function makeDatabase(setting: Record<string, unknown> | null = null) {
       const query = {
         select() { return query },
         eq() { return query },
+        is() { return query },
         single() { return Promise.resolve(resultFor(table)) },
         update(payload: Record<string, unknown>) {
           updatePayload = payload

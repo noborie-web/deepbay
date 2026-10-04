@@ -119,6 +119,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
         const query = {
           select() { return query },
           eq() { return query },
+          is() { return query },
           single() { return Promise.resolve(resultFor(table)) },
           update(payload: Record<string, unknown>) {
             updatePayload = payload
