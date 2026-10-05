@@ -57,6 +57,32 @@ export const CONDITION_GRADES = [
   'やや傷や汚れあり', '傷や汚れあり', '全体的に状態が悪い',
 ] as const
 
+// 設定UI用。どちらの由来の値かが分かるように2グループに分けて表示する。
+// (判定は ebay_condition を優先し、無ければ original_condition を使う)
+export const CONDITION_GRADE_GROUPS: { label: string; note: string; grades: string[] }[] = [
+  {
+    label: '仕入先サイトの状態',
+    note: 'メルカリ等から取得したそのままの値',
+    grades: ['新品、未使用', '未使用に近い', '目立った傷や汚れなし', 'やや傷や汚れあり', '傷や汚れあり', '全体的に状態が悪い'],
+  },
+  {
+    label: 'アプリで選べる状態',
+    note: '商品編集画面で変更した場合はこちらが優先される',
+    grades: ['新品', '新品同様', '良い', '普通', '中古', 'ジャンク'],
+  },
+]
+
+// ConditionIDのおおまかな区分。設定UIで色分けして、新品系と中古系を
+// 取り違えていないか一目で分かるようにする。
+export type ConditionTone = 'new' | 'likeNew' | 'used' | 'poor'
+
+export function conditionTone(conditionId: string): ConditionTone {
+  if (['1000', '1500', '1750'].includes(conditionId)) return 'new'
+  if (['2000', '2500', '2750'].includes(conditionId)) return 'likeNew'
+  if (['3000', '4000', '5000'].includes(conditionId)) return 'used'
+  return 'poor'
+}
+
 // eBayのConditionID一覧(公式のCondition ID値)。カテゴリによって使える
 // 値が異なるため、どれを使うかはカテゴリーごとに設定できるようにする。
 export const EBAY_CONDITION_OPTIONS: { id: string; label: string }[] = [
