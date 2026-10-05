@@ -5,12 +5,37 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { EBAY_CATEGORIES } from '@/data/ebay-categories'
 import {
-  CONDITION_GRADES,
+  CONDITION_GRADE_GROUPS,
   EBAY_CONDITION_OPTIONS,
   MEDIA_CONDITION_MAP,
   STANDARD_CONDITION_MAP,
+  conditionTone,
 } from '@/lib/listing-export'
+import type { ConditionTone } from '@/lib/listing-export'
 import type { ListingCategory } from '@/types/database'
+
+// ConditionIDの区分ごとの色。新品系を中古系と取り違えていないかを
+// 目で確認できるようにする。
+const TONE_SELECT: Record<ConditionTone, string> = {
+  new: 'border-emerald-300 bg-emerald-50 text-emerald-900',
+  likeNew: 'border-sky-300 bg-sky-50 text-sky-900',
+  used: 'border-amber-300 bg-amber-50 text-amber-900',
+  poor: 'border-rose-300 bg-rose-50 text-rose-900',
+}
+
+const TONE_SWATCH: Record<ConditionTone, string> = {
+  new: 'border-emerald-300 bg-emerald-100',
+  likeNew: 'border-sky-300 bg-sky-100',
+  used: 'border-amber-300 bg-amber-100',
+  poor: 'border-rose-300 bg-rose-100',
+}
+
+const CONDITION_TONE_LEGEND: { tone: ConditionTone; label: string }[] = [
+  { tone: 'new', label: '新品 (1000・1500・1750)' },
+  { tone: 'likeNew', label: '未使用に近い・整備済 (2000・2500・2750)' },
+  { tone: 'used', label: '中古 (3000・4000・5000)' },
+  { tone: 'poor', label: '可・ジャンク (6000・7000)' },
+]
 
 interface EbayCategory { id: string; name: string; level?: number; is_leaf?: boolean }
 
@@ -475,20 +500,53 @@ export default function CategoriesPage() {
                       )}
                     </div>
 
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                      {CONDITION_GRADES.map((grade) => (
-                        <label key={grade} className="flex items-center gap-2 text-xs">
-                          <span className="w-32 shrink-0 text-gray-600">{grade}</span>
-                          <select
-                            value={draftMap[grade] ?? ''}
-                            onChange={(e) => setDraftMap((prev) => ({ ...prev, [grade]: e.target.value }))}
-                            className="flex-1 border rounded px-2 py-1 bg-white"
-                          >
-                            {EBAY_CONDITION_OPTIONS.map((opt) => (
-                              <option key={opt.id} value={opt.id}>{opt.label}</option>
-                            ))}
-                          </select>
-                        </label>
+                    {/* ユーザー要望(2026-10-05): 1行に2組並べていたため文字が
+                        重なって読めなかった。「左=仕入先の状態 / 右=eBayの
+                        ConditionID」の対応が一目で分かるように1列に並べ、
+                        ConditionIDの区分を色分けする。 */}
+                    <div className="flex items-center justify-between pb-1.5 text-[11px] font-medium text-gray-500">
+                      <span>仕入先・アプリ上の商品状態</span>
+                      <span>eBayのConditionID</span>
+                    </div>
+
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 pb-2.5 text-[11px] text-gray-500">
+                      {CONDITION_TONE_LEGEND.map(({ tone, label }) => (
+                        <span key={tone} className="flex items-center gap-1">
+                          <span className={`inline-block h-2.5 w-2.5 rounded-sm border ${TONE_SWATCH[tone]}`} />
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="space-y-3">
+                      {CONDITION_GRADE_GROUPS.map((group) => (
+                        <div key={group.label} className="rounded border bg-white">
+                          <div className="border-b px-3 py-1.5">
+                            <span className="text-xs font-medium text-gray-700">{group.label}</span>
+                            <span className="pl-2 text-[11px] text-gray-400">{group.note}</span>
+                          </div>
+                          <div className="divide-y">
+                            {group.grades.map((grade) => {
+                              const selected = draftMap[grade] ?? ''
+                              const tone = selected ? conditionTone(selected) : null
+                              return (
+                                <label key={grade} className="flex items-center gap-2 px-3 py-1.5 text-xs">
+                                  <span className="w-40 shrink-0 text-gray-700">{grade}</span>
+                                  <span aria-hidden className="shrink-0 text-gray-300">→</span>
+                                  <select
+                                    value={selected}
+                                    onChange={(e) => setDraftMap((prev) => ({ ...prev, [grade]: e.target.value }))}
+                                    className={`min-w-0 flex-1 rounded border px-2 py-1 ${tone ? TONE_SELECT[tone] : 'border-gray-300 bg-white'}`}
+                                  >
+                                    {EBAY_CONDITION_OPTIONS.map((opt) => (
+                                      <option key={opt.id} value={opt.id}>{opt.label}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                              )
+                            })}
+                          </div>
+                        </div>
                       ))}
                     </div>
 
