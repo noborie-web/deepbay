@@ -7,6 +7,8 @@ import TitleEditModal, { applyOp } from './TitleEditModal'
 import type { TitleEditOp, TitleEditScope } from './TitleEditModal'
 import PriceEditModal from './PriceEditModal'
 import ConditionEditModal from './ConditionEditModal'
+import type { ConditionEditValue } from './ConditionEditModal'
+import { EBAY_CONDITION_OPTIONS } from '@/lib/listing-export'
 import BrandEditModal from './BrandEditModal'
 import type { BrandEditScope } from './BrandEditModal'
 import DescriptionEditModal, { applyDescriptionOp, DESCRIPTION_MAX_LENGTH } from './DescriptionEditModal'
@@ -445,9 +447,15 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   }
 
   // ---- 一括商品状態編集 ----
-  function applyConditionEdit(condition: string, scope: 'page' | 'all') {
+  // 商品状態での指定とConditionIDの直接指定のどちらか一方を適用する。
+  // 商品状態を指定したときは、残っているConditionIDの直接指定を解除して
+  // 自動判定に戻す(どちらが効いているか分からなくなるのを防ぐ)。
+  function applyConditionEdit(value: ConditionEditValue, scope: 'page' | 'all') {
     const targets = scope === 'page' ? pagedProducts : products
-    targets.forEach((p) => updateEdit(p.id, 'ebay_condition', condition))
+    targets.forEach((p) => {
+      if (value.condition !== null) updateEdit(p.id, 'ebay_condition', value.condition)
+      updateEdit(p.id, 'ebay_condition_id', value.conditionId)
+    })
   }
 
   // ---- 一括保存 (Bulk API) ----
@@ -512,6 +520,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         // null = 明示的クリア; 保存ボタンは不正価格がある間は無効なので、ここに届くのは null か正の有限数のみ
         if (fields.ebay_price !== undefined) out.ebay_price = fields.ebay_price
         if (fields.ebay_condition !== undefined) out.ebay_condition = fields.ebay_condition
+        // null = ConditionIDの直接指定を解除して商品状態からの自動判定に戻す
+        if (fields.ebay_condition_id !== undefined) out.ebay_condition_id = fields.ebay_condition_id
         if (fields.purchase_price_jpy !== undefined) out.purchase_price_jpy = fields.purchase_price_jpy
         // 実データで確認した不具合: 一括価格編集で為替レートを編集内容に入れて
         // いたが、保存リクエストに含めておらず常にnullのままだった(出品時の
@@ -683,6 +693,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   })
   const getCondition = (p: Product) =>
     (edits[p.id]?.ebay_condition as string | undefined) ?? p.ebay_condition ?? '中古'
+  const getConditionId = (p: Product): string => {
+    const edited = edits[p.id]?.ebay_condition_id
+    if (edited !== undefined) return (edited as string | null) ?? ''
+    return p.ebay_condition_id ?? ''
+  }
   // purchase_price_jpy が優先; なければ original_price を表示専用に使用
   const getPurchaseJpy = (p: Product): number | null => {
     const fromEdit = edits[p.id]?.purchase_price_jpy
@@ -1662,6 +1677,21 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                             >
                               {['新品', '新品同様', '良い', '普通', '中古', 'ジャンク'].map((c) => (
                                 <option key={c}>{c}</option>
+                              ))}
+                            </select>
+                          </div>
+                          {/* ユーザー要望(2026-10-05): ConditionIDを直接指定できるようにする。
+                              未指定(自動)のときは商品状態とカテゴリ設定から判定する。 */}
+                          <div>
+                            <label className="text-xs text-gray-500 block mb-0.5">ConditionID</label>
+                            <select
+                              value={getConditionId(product)}
+                              onChange={(e) => updateEdit(product.id, 'ebay_condition_id', e.target.value || null)}
+                              className="w-full border rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300"
+                            >
+                              <option value="">自動（商品状態から判定）</option>
+                              {EBAY_CONDITION_OPTIONS.map((opt) => (
+                                <option key={opt.id} value={opt.id}>{opt.label}</option>
                               ))}
                             </select>
                           </div>

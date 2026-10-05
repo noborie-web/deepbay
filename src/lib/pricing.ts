@@ -168,6 +168,14 @@ export function isSafePriceUsd(price: number): boolean {
 
 export const ALLOWED_CONDITIONS = new Set(['新品', '新品同様', '良い', '普通', '中古', 'ジャンク'])
 
+// eBayのConditionID。商品編集画面で直接指定できるようにしたため、
+// サーバー側でも値を検証する。listing-export の EBAY_CONDITION_OPTIONS と
+// 一致していることはテストで担保する(ここから参照すると、クライアント側の
+// 価格計算に出力系モジュールを巻き込んでしまうため)。
+export const ALLOWED_CONDITION_IDS = new Set([
+  '1000', '1500', '1750', '2000', '2500', '2750', '3000', '4000', '5000', '6000', '7000',
+])
+
 export const PRODUCT_WRITE_WHITELIST = new Set([
   'ebay_title',
   'ebay_brand',
@@ -176,6 +184,7 @@ export const PRODUCT_WRITE_WHITELIST = new Set([
   'ebay_item_specifics',
   'ebay_price',
   'ebay_condition',
+  'ebay_condition_id',
   'purchase_price_jpy',
   'pricing_jpy_per_usd',
   // ebay_category_id は後続フェーズで追加
@@ -219,6 +228,12 @@ export function validateProductFields(fields: Record<string, unknown>): string |
     const c = fields.ebay_condition
     if (typeof c !== 'string' || !ALLOWED_CONDITIONS.has(c)) {
       return `ebay_condition が不正です。許可値: ${[...ALLOWED_CONDITIONS].join(', ')}`
+    }
+  }
+  if ('ebay_condition_id' in fields) {
+    const id = fields.ebay_condition_id
+    if (id !== null && (typeof id !== 'string' || !ALLOWED_CONDITION_IDS.has(id))) {
+      return `ebay_condition_id が不正です。null または次のいずれかにしてください: ${[...ALLOWED_CONDITION_IDS].join(', ')}`
     }
   }
   if ('purchase_price_jpy' in fields) {
