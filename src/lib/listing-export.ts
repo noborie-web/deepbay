@@ -318,6 +318,10 @@ export function conditionIdForProduct(
   categoryId?: string | null,
   conditionMap?: Record<string, string> | null,
 ): string {
+  // ユーザー要望(2026-10-05): 商品ごとにConditionIDを直接指定できるように
+  // した。指定があれば商品状態・カテゴリ別マッピングより優先する。
+  if (product.ebay_condition_id) return product.ebay_condition_id
+
   const condition = product.ebay_condition ?? product.original_condition ?? ''
 
   const configured = conditionMap?.[condition]

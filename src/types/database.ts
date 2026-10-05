@@ -155,6 +155,10 @@ export interface Product {
   ebay_images: string[]
   ebay_item_specifics: Record<string, string[]>
   ebay_condition: string | null
+  // ユーザー要望(2026-10-05): 商品編集画面でConditionIDを直接指定する。
+  // 設定されていれば商品状態やカテゴリ別マッピングより優先される。
+  // null なら従来どおり商品状態から自動判定する。
+  ebay_condition_id?: string | null
   ebay_category_id: string | null
   listing_status: ListingStatus
   ebay_item_id?: string | null
