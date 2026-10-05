@@ -36,6 +36,10 @@ export interface ListingExportOptions extends ListingPolicies {
 const CONDITION_ID_MAP: Record<string, string> = {
   '新品': '1000',
   '新品、未使用': '1000',
+  // Yahoo!フリマは新品を「未使用」(メルカリの「新品、未使用」とは別の文字列)
+  // として返す。未登録だと既定の3000(Used)に落ち、新品が中古として出品され、
+  // CD等のカテゴリではアップロード自体が失敗していた。
+  '未使用': '1000',
   '新品同様': '1500',
   '未使用に近い': '1500',
   '良い': '2500',
@@ -53,7 +57,7 @@ const CONDITION_ID_MAP: Record<string, string> = {
 // 後半6つはメルカリ等のスクレイパーがoriginal_conditionに入れる状態。
 export const CONDITION_GRADES = [
   '新品', '新品同様', '良い', '普通', '中古', 'ジャンク',
-  '新品、未使用', '未使用に近い', '目立った傷や汚れなし',
+  '新品、未使用', '未使用', '未使用に近い', '目立った傷や汚れなし',
   'やや傷や汚れあり', '傷や汚れあり', '全体的に状態が悪い',
 ] as const
 
@@ -63,7 +67,7 @@ export const CONDITION_GRADE_GROUPS: { label: string; note: string; grades: stri
   {
     label: '仕入先サイトの状態',
     note: 'メルカリ等から取得したそのままの値',
-    grades: ['新品、未使用', '未使用に近い', '目立った傷や汚れなし', 'やや傷や汚れあり', '傷や汚れあり', '全体的に状態が悪い'],
+    grades: ['新品、未使用', '未使用', '未使用に近い', '目立った傷や汚れなし', 'やや傷や汚れあり', '傷や汚れあり', '全体的に状態が悪い'],
   },
   {
     label: 'アプリで選べる状態',
@@ -106,6 +110,7 @@ export const EBAY_CONDITION_OPTIONS: { id: string; label: string }[] = [
 export const MEDIA_CONDITION_MAP: Record<string, string> = {
   '新品': '2750',
   '新品同様': '2750',
+  '未使用': '2750',
   '良い': '4000',
   '普通': '5000',
   '中古': '5000',
@@ -289,6 +294,25 @@ export function getDirectListingIssues(product: Product, fallbackCategoryId: str
 // 受け付けない(実データ確認: CD=176984 は3000を拒否)。そのため
 // 出品カテゴリー管理画面でカテゴリごとに設定したマッピング
 // (listing_categories.condition_map)があればそれを最優先で使う。
+// 仕入先サイトによっては商品状態がページの自由文(ヤフオク・ラクマ・
+// デジマート等)なので、対応表に無い値はこれからも出てくる。既定の
+// 3000(Used)に黙って落とすと「新品が中古で出品される」「CD等では
+// アップロードが失敗する」のどちらかになるため、気づけるように記録する。
+// 同じ値で何度も出さないよう1プロセス1回にする。
+const warnedUnknownConditions = new Set<string>()
+
+export function warnUnknownCondition(condition: string): boolean {
+  if (!condition || condition in CONDITION_ID_MAP) return false
+  if (!warnedUnknownConditions.has(condition)) {
+    warnedUnknownConditions.add(condition)
+    console.warn(
+      `[listing] 未知の商品状態「${condition}」を既定の 3000 (Used) として出品します。`
+      + 'カテゴリによっては 3000 が拒否されます。出品カテゴリー管理でこの状態の割り当てを設定してください。',
+    )
+  }
+  return true
+}
+
 export function conditionIdForProduct(
   product: Product,
   categoryId?: string | null,
@@ -298,6 +322,8 @@ export function conditionIdForProduct(
 
   const configured = conditionMap?.[condition]
   if (configured) return configured
+
+  warnUnknownCondition(condition)
 
   // カテゴリー別設定が無い場合の従来動作。添付テンプレートの
   // Video Games（139973）では中古品が5000として定義される。
