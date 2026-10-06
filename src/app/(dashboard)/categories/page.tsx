@@ -52,6 +52,9 @@ export default function CategoriesPage() {
   const [successMsg, setSuccessMsg] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftMap, setDraftMap] = useState<Record<string, string>>({})
+  // 変換表に無い商品状態(空・仕入先の想定外の文字列)のときに使うConditionID。
+  // '' は未設定で、従来どおり 3000 (Used) になる。
+  const [draftDefaultId, setDraftDefaultId] = useState<string>('')
   const [savingMap, setSavingMap] = useState(false)
 
   const [supabase] = useState(createClient)
@@ -255,6 +258,7 @@ export default function CategoriesPage() {
   function openConditionEditor(cat: ListingCategory) {
     setEditingId(cat.id)
     setDraftMap({ ...STANDARD_CONDITION_MAP, ...(cat.condition_map ?? {}) })
+    setDraftDefaultId(cat.default_condition_id ?? '')
   }
 
   async function saveConditionMap(id: string) {
@@ -262,7 +266,7 @@ export default function CategoriesPage() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { error: err } = await (supabase as any)
       .from('listing_categories')
-      .update({ condition_map: draftMap })
+      .update({ condition_map: draftMap, default_condition_id: draftDefaultId || null })
       .eq('id', id)
     setSavingMap(false)
     if (err) {
@@ -278,7 +282,7 @@ export default function CategoriesPage() {
   async function clearConditionMap(id: string) {
     if (!confirm('このカテゴリの設定を解除して標準マッピングに戻しますか？')) return
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (supabase as any).from('listing_categories').update({ condition_map: null }).eq('id', id)
+    await (supabase as any).from('listing_categories').update({ condition_map: null, default_condition_id: null }).eq('id', id)
     setEditingId(null)
     fetchCategories()
   }
@@ -479,13 +483,13 @@ export default function CategoriesPage() {
 
                     <div className="flex flex-wrap gap-2 pb-3">
                       <button
-                        onClick={() => setDraftMap({ ...MEDIA_CONDITION_MAP })}
+                        onClick={() => { setDraftMap({ ...MEDIA_CONDITION_MAP }); setDraftDefaultId('5000') }}
                         className="text-xs border rounded px-2.5 py-1 bg-white hover:bg-gray-100"
                       >
                         メディア系プリセット（CD・DVD・ゲーム）
                       </button>
                       <button
-                        onClick={() => setDraftMap({ ...STANDARD_CONDITION_MAP })}
+                        onClick={() => { setDraftMap({ ...STANDARD_CONDITION_MAP }); setDraftDefaultId('') }}
                         className="text-xs border rounded px-2.5 py-1 bg-white hover:bg-gray-100"
                       >
                         標準プリセット
@@ -548,6 +552,30 @@ export default function CategoriesPage() {
                           </div>
                         </div>
                       ))}
+                    </div>
+
+                    {/* ユーザー要望(2026-10-06): 商品状態が空、または仕入先が
+                        想定外の文字列を返した商品は変換表にキーが無く、既定の
+                        3000 (Used) に落ちてCD等では出品が失敗する。カテゴリごとに
+                        その場合のConditionIDを決められるようにする。 */}
+                    <div className="mt-3 rounded border bg-white px-3 py-2">
+                      <label className="flex items-center gap-2 text-xs">
+                        <span className="w-40 shrink-0 text-gray-700">上記以外・状態が空の場合</span>
+                        <span aria-hidden className="shrink-0 text-gray-300">→</span>
+                        <select
+                          value={draftDefaultId}
+                          onChange={(e) => setDraftDefaultId(e.target.value)}
+                          className={`min-w-0 flex-1 rounded border px-2 py-1 ${draftDefaultId ? TONE_SELECT[conditionTone(draftDefaultId)] : 'border-gray-300 bg-white'}`}
+                        >
+                          <option value="">指定なし（3000 / Used になります）</option>
+                          {EBAY_CONDITION_OPTIONS.map((opt) => (
+                            <option key={opt.id} value={opt.id}>{opt.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <p className="pt-1.5 text-[11px] text-gray-400">
+                        仕入先から商品状態を取得できなかった商品や、ヤフオク等の自由文の状態が入っている商品に使われます。
+                      </p>
                     </div>
 
                     <div className="flex justify-end gap-2 pt-3">

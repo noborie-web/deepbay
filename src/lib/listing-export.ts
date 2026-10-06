@@ -14,6 +14,8 @@ export interface ListingExportOptions extends ListingPolicies {
   // 出品カテゴリー管理画面で設定した、商品状態→ConditionIDの対応。
   // 未設定(null/undefined)なら従来の標準マッピングを使う。
   conditionMap?: Record<string, string> | null
+  // 変換表に無い商品状態のときに使うConditionID(カテゴリ設定)
+  defaultConditionId?: string | null
   // 抽出設定「HTML設定」でアクティブにしたテンプレート。あれば説明文HTMLを
   // このテンプレートで組み立てる(無ければ既定の Description/Shipping 構成)。
   htmlTemplate?: string | null
@@ -317,6 +319,11 @@ export function conditionIdForProduct(
   product: Product,
   categoryId?: string | null,
   conditionMap?: Record<string, string> | null,
+  // ユーザー要望(2026-10-06): 商品状態が空(仕入先から取れなかった)だったり、
+  // 仕入先サイトが想定外の文字列を返したりすると、変換表にキーが無いので
+  // 既定の3000(Used)に落ちる。CD等3000を受け付けないカテゴリでは
+  // アップロードが失敗するため、カテゴリごとの既定値を使えるようにする。
+  defaultConditionId?: string | null,
 ): string {
   // ユーザー要望(2026-10-05): 商品ごとにConditionIDを直接指定できるように
   // した。指定があれば商品状態・カテゴリ別マッピングより優先する。
@@ -337,7 +344,7 @@ export function conditionIdForProduct(
   ) {
     return '5000'
   }
-  return CONDITION_ID_MAP[condition] ?? '3000'
+  return CONDITION_ID_MAP[condition] ?? defaultConditionId ?? '3000'
 }
 
 // ユーザー要望: Item Specifics列(C:列)は、以前は全カテゴリ共通の固定
@@ -384,7 +391,7 @@ export function generateListingCsv(
       'Add',
       productCustomLabel(product),
       Number.isFinite(price) && price > 0 ? price.toFixed(2) : '',
-      conditionIdForProduct(product, category, options.conditionMap),
+      conditionIdForProduct(product, category, options.conditionMap, options.defaultConditionId),
       (product.ebay_title ?? product.original_title).slice(0, 80),
       listingCsvDescription(product, options.htmlTemplate),
       brand,
@@ -517,7 +524,7 @@ export function generateSpecificsCsv(
       'Add',
       productCustomLabel(product),
       Number.isFinite(price) && price > 0 ? price.toFixed(2) : '',
-      conditionIdForProduct(product, category, options.conditionMap),
+      conditionIdForProduct(product, category, options.conditionMap, options.defaultConditionId),
       (product.ebay_title ?? product.original_title).slice(0, 80),
       listingDescription(product, options.htmlTemplate),
       brand,

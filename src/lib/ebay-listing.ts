@@ -16,6 +16,7 @@ export interface DirectListingOptions extends ListingPolicies {
   // 出品カテゴリー管理画面で設定した、商品状態→ConditionIDの対応。
   // 未設定なら従来の標準マッピングを使う。
   conditionMap?: Record<string, string> | null
+  defaultConditionId?: string | null
   // 抽出設定「HTML設定」でアクティブにしたテンプレート(あれば説明文に適用)
   htmlTemplate?: string | null
 }
@@ -84,7 +85,7 @@ export function buildAddFixedPriceItemXml(
     xmlElements('Country', 'JP'),
     xmlElements('Currency', 'USD'),
     xmlElements('Description', listingDescription(product, options.htmlTemplate)),
-    xmlElements('ConditionID', conditionIdForProduct(product, categoryId, options.conditionMap)),
+    xmlElements('ConditionID', conditionIdForProduct(product, categoryId, options.conditionMap, options.defaultConditionId)),
     `<PrimaryCategory>${xmlElements('CategoryID', categoryId)}</PrimaryCategory>`,
     xmlElements('ListingDuration', 'GTC'),
     xmlElements('ListingType', 'FixedPriceItem'),
