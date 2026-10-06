@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
 
   const { data: extractionData } = await supabase
     .from('extractions')
-    .select('seller_account_id, category:listing_categories(ebay_category_id, condition_map)')
+    .select('seller_account_id, category:listing_categories(ebay_category_id, condition_map, default_condition_id)')
     .eq('id', extractionId)
     .eq('user_id', user.id)
     .single()
@@ -59,7 +59,7 @@ export async function GET(req: NextRequest) {
     : { data: null }
   const extraction = extractionData as unknown as {
     seller_account_id: string | null
-    category: { ebay_category_id: string | null; condition_map: Record<string, string> | null } | null
+    category: { ebay_category_id: string | null; condition_map: Record<string, string> | null; default_condition_id: string | null } | null
   } | null
   const registeredSeller = sellerData as unknown as { id: string; seller_id: string } | null
   const seller = registeredSeller ?? (
@@ -92,6 +92,7 @@ export async function GET(req: NextRequest) {
   // フォールバックする。
   const categoryId = extraction.category?.ebay_category_id ?? null
   const conditionMap = extraction.category?.condition_map ?? null
+  const defaultConditionId = extraction.category?.default_condition_id ?? null
   // 抽出設定「HTML設定」でアクティブにしたテンプレート(あれば説明文に適用)
   const htmlTemplate = await loadActiveHtmlTemplate(supabase, user.id)
   const admin = createServiceClient(
@@ -129,6 +130,7 @@ export async function GET(req: NextRequest) {
     const csvForSite = generateSpecificsCsv(products as Product[], {
       categoryId,
       conditionMap,
+      defaultConditionId,
       htmlTemplate,
       sellerId: seller.seller_id,
       paymentProfileName: paymentProfile,

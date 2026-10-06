@@ -41,6 +41,9 @@ export interface ListingCategory {
   // カテゴリごとに有効な値が異なるため、カテゴリー単位で設定する。
   // nullの場合は従来の標準マッピングを使う。
   condition_map: Record<string, string> | null
+  // ユーザー要望(2026-10-06): 商品状態が空、または変換表に無い文字列だった
+  // ときに使うConditionID。null なら従来どおり 3000 (Used)。
+  default_condition_id?: string | null
 }
 
 export interface BulkEditSetting {
