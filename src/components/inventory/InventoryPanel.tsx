@@ -204,7 +204,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
 
   // 暗号化復元
   const [dbkId, setDbkId] = useState('')
-  const [lookupResult, setLookupResult] = useState<{ found: boolean; source_url: string | null; title?: string } | null>(null)
+  const [lookupResult, setLookupResult] = useState<{ found: boolean; source_url: string | null; title?: string; reason?: string; ended_reason?: string; ebay_item_id?: string } | null>(null)
   const [lookedUpDbkId, setLookedUpDbkId] = useState('')
   const [looking, setLooking] = useState(false)
 
@@ -1157,11 +1157,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       {/* ==================== 暗号化復元 ==================== */}
       {tab === '暗号化復元' && (
         <div className="p-6">
-          <p className="text-sm text-gray-600 mb-4">Kakehashiで抽出時に発行される管理番号 DBK-ID をもとに、元の仕入れ先URLへ復元します。</p>
+          <p className="text-sm text-gray-600 mb-4">Kakehashiで抽出時に発行される管理番号 DBK-ID、または eBay の商品番号（Item number）をもとに、元の仕入れ先URLへ復元します。売却済み・取り下げ済みの出品も検索できます。</p>
           <div className="flex gap-2 max-w-lg">
             <input type="text" value={dbkId} onChange={e => setDbkId(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleLookup()}
-              placeholder="DBK-IDを入力してください（例: kakehashi_...）"
+              placeholder="DBK-ID または eBay商品番号（例: kakehashi_... / 377535920770）"
               className="flex-1 border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
             <button onClick={handleLookup} disabled={looking || !dbkId.trim()}
               className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50">
@@ -1181,6 +1181,13 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                     <span className="text-gray-500">商品名: </span>
                     {lookupResult.title || '（タイトルなし）'}
                   </p>
+                  {lookupResult.ended_reason && (
+                    <p className="text-gray-800">
+                      <span className="text-gray-500">出品の状態: </span>
+                      {lookupResult.ended_reason === 'sold' ? '売却済み' : lookupResult.ended_reason === 'delisted' ? '取り下げ済み' : '終了済み'}
+                      {lookupResult.ebay_item_id ? `（eBay商品番号: ${lookupResult.ebay_item_id}）` : ''}
+                    </p>
+                  )}
                   <p className="text-gray-800">
                     <span className="text-gray-500">商品url: </span>
                     {lookupResult.source_url
@@ -1188,7 +1195,28 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                       : 'URLが登録されていません。'}
                   </p>
                 </div>
-              ) : <p className="text-gray-500">該当する商品が見つかりませんでした。</p>}
+              ) : (
+                /* ユーザー報告(2026-10-08): 「見つかりませんでした」だけでは、
+                   DBK-IDの形式が違うのか、商品が削除済みなのかが分からない。 */
+                <div className="space-y-1.5 text-gray-600">
+                  {lookupResult.reason === 'product_missing' ? (
+                    <>
+                      <p>DBK-IDは読み取れましたが、該当する商品がKakehashiにありません。</p>
+                      <p className="text-xs text-gray-500">
+                        商品が削除されたか、この出品がKakehashiで記録を始める前のものである可能性があります。
+                        eBayの商品番号（Item number）でも検索できます。
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p>該当する商品が見つかりませんでした。</p>
+                      <p className="text-xs text-gray-500">
+                        DBK-ID（kakehashi_で始まる管理番号）か、eBayの商品番号（Item number）を貼り付けてください。
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
           </div>
         </div>
       )}

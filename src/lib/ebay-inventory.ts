@@ -416,9 +416,29 @@ export interface KnownListingFetchResult {
   items: InventoryListingInput[]
   // 終了済み・売却済み・存在しない出品(在庫一覧から除外する)
   endedItemIds: string[]
+  // ユーザー報告(2026-10-08): 売却済みの商品が1件も記録されていなかった。
+  // 終了を検知したときに ListingStatus と QuantitySold を捨てていたため、
+  // 売却/取り下げの判定が「前回同期時点の古い在庫数」に頼っていた。
+  // 1個だけの出品が売れた場合、最後の記録は在庫1・売却0なので、必ず
+  // 「取り下げ」と誤判定される。終了時点の実際の値を持ち帰る。
+  endedListings: EndedListingInfo[]
 }
 
-export function parseGetItemResponse(xml: string, itemId: string): InventoryListingInput | 'ended' | 'not_found' {
+export interface EndedListingInfo {
+  ebayItemId: string
+  // eBayが返した終了時の売却数(取得できなかった場合はnull)
+  quantitySold: number | null
+  listingStatus: string | null
+  endTime: string | null
+}
+
+export type GetItemParseResult = InventoryListingInput | EndedListingInfo | 'not_found'
+
+export function isEndedListingInfo(value: GetItemParseResult): value is EndedListingInfo {
+  return value !== 'not_found' && 'listingStatus' in value && !('title' in value)
+}
+
+export function parseGetItemResponse(xml: string, itemId: string): GetItemParseResult {
   const getTag = (src: string, tag: string): string => {
     const m = src.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'))
     return m ? m[1].trim() : ''
@@ -446,7 +466,15 @@ export function parseGetItemResponse(xml: string, itemId: string): InventoryList
   const pictureDetails = itemBlock.match(/<PictureDetails>[\s\S]*?<\/PictureDetails>/i)?.[0] ?? ''
 
   const listingStatus = getTag(sellingStatus, 'ListingStatus')
-  if (listingStatus && listingStatus !== 'Active') return 'ended'
+  if (listingStatus && listingStatus !== 'Active') {
+    const endedSold = parseFloat(getTag(sellingStatus, 'QuantitySold'))
+    return {
+      ebayItemId: getTag(itemBlock, 'ItemID') || itemId,
+      quantitySold: isFinite(endedSold) ? Math.round(endedSold) : null,
+      listingStatus,
+      endTime: getTag(listingDetails, 'EndTime') || null,
+    }
+  }
 
   const currencyOf = (src: string, tag: string): string => {
     const m = src.match(new RegExp(`<${tag}[^>]*currencyID="([^"]+)"`, 'i'))
@@ -486,7 +514,7 @@ async function fetchItemById(
   itemId: string,
   timeoutMs: number,
   totalSignal?: AbortSignal,
-): Promise<InventoryListingInput | 'ended' | 'not_found'> {
+): Promise<GetItemParseResult> {
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <ItemID>${itemId}</ItemID>
@@ -548,7 +576,8 @@ export async function fetchListingsByItemIds(
   const uniqueIds = Array.from(new Set(itemIds.map((id) => id.trim()).filter(Boolean)))
   const items: InventoryListingInput[] = []
   const endedItemIds: string[] = []
-  if (uniqueIds.length === 0) return { items, endedItemIds }
+  const endedListings: EndedListingInfo[] = []
+  if (uniqueIds.length === 0) return { items, endedItemIds, endedListings }
 
   const itemTimeoutMs = options.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS
   const totalTimeoutMs = options.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS
@@ -583,7 +612,7 @@ export async function fetchListingsByItemIds(
     if (options.signal?.aborted) abortForCaller()
     let next = 0
     // 結果の順序を照会順に揃えるため、indexで受ける
-    const results: Array<InventoryListingInput | 'ended' | 'not_found'> = []
+    const results: Array<GetItemParseResult> = []
     await Promise.all(Array.from({ length: Math.min(concurrency, uniqueIds.length) }, async () => {
       while (next < uniqueIds.length) {
         const index = next++
@@ -592,10 +621,17 @@ export async function fetchListingsByItemIds(
     }))
     uniqueIds.forEach((id, index) => {
       const result = results[index]
-      if (result === 'ended' || result === 'not_found') endedItemIds.push(id)
+      if (result === 'not_found') {
+        endedItemIds.push(id)
+        // 存在しないIDは終了理由が分からない
+        endedListings.push({ ebayItemId: id, quantitySold: null, listingStatus: null, endTime: null })
+      } else if (isEndedListingInfo(result)) {
+        endedItemIds.push(id)
+        endedListings.push(result)
+      }
       else if (result) items.push(result)
     })
-    return { items, endedItemIds }
+    return { items, endedItemIds, endedListings }
   } catch (error) {
     if (!totalController.signal.aborted) totalController.abort(error)
     throw error
