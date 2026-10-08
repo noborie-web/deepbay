@@ -20,6 +20,16 @@ function admin() {
 
 // eBayのAll active listingsレポートは件数が多いと数十MBになるため、
 // 余裕を持って50MBまで受け付ける。
+// 本番で発生した事故(2026-10-08): 1,935件のCSVを取り込んだとき、商品の照会を
+// .in(...) に全UUIDをまとめて渡していたため PostgREST がURL長すぎで400を返し、
+// そのエラーを無視していたので「全件が商品に紐付かない」と誤判定した。
+// API同期側(inventory-sync.ts)には2026-09-24に同じ修正が入っている。
+const LOOKUP_CHUNK_SIZE = 100
+
+function chunked<T>(items: T[], size = LOOKUP_CHUNK_SIZE): T[][] {
+  return Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size))
+}
+
 const MAX_CSV_BYTES = 50 * 1024 * 1024 // 50 MB
 
 export async function POST(req: NextRequest) {
@@ -112,33 +122,47 @@ export async function POST(req: NextRequest) {
   ))
   const ebayItemIds = Array.from(new Set(listings.map((l) => l.ebayItemId).filter(Boolean)))
 
+  // 照会に失敗したまま進むと「全件が商品に紐付かない」と誤判定して
+  // 在庫管理を壊すので、失敗したら中断する。
+  const lookupFailed = async (message: string) => {
+    await db.from('inventory_runs').update({
+      status: 'failed', error_message: `商品の照会に失敗しました: ${message}`,
+      items_total: listings.length, items_matched: 0, finished_at: now,
+    }).eq('id', runId)
+    return NextResponse.json({
+      error: `商品の照会に失敗したため取り込みを中止しました（既存の在庫管理は変更していません）: ${message}`,
+    }, { status: 500 })
+  }
+
   const productLookup = new Map<string, string>()
-  if (productIds.length > 0) {
-    const { data: directProducts } = await db
+  for (const chunk of chunked(productIds)) {
+    const { data: directProducts, error } = await db
       .from('products')
       .select('id, ebay_item_id')
       .eq('user_id', user.id)
-      .in('id', productIds)
+      .in('id', chunk)
+    if (error) return lookupFailed(error.message)
     for (const p of directProducts ?? []) productLookup.set(p.id, p.id)
   }
-  if (ebayItemIds.length > 0) {
-    const { data: ebayProducts } = await db
+  for (const chunk of chunked(ebayItemIds)) {
+    const { data: ebayProducts, error } = await db
       .from('products')
       .select('id, ebay_item_id')
       .eq('user_id', user.id)
-      .in('ebay_item_id', ebayItemIds)
+      .in('ebay_item_id', chunk)
+    if (error) return lookupFailed(error.message)
     for (const p of ebayProducts ?? []) {
       if (p.ebay_item_id) productLookup.set(`ebay:${p.ebay_item_id}`, p.id)
     }
   }
   const sourceProductLookup = new Map<string, Set<string>>()
-  if (sourceLookupKeys.length > 0) {
-    const { data: matchedProducts } = await db
+  for (const chunk of chunked(sourceLookupKeys)) {
+    const { data: matchedProducts, error } = await db
       .from('products')
       .select('id, source_item_id')
       .eq('user_id', user.id)
-      .in('source_item_id', sourceLookupKeys)
-
+      .in('source_item_id', chunk)
+    if (error) return lookupFailed(error.message)
     for (const p of matchedProducts ?? []) {
       if (!p.source_item_id) continue
       const productIdsForSource = sourceProductLookup.get(p.source_item_id) ?? new Set<string>()
@@ -188,18 +212,23 @@ export async function POST(req: NextRequest) {
   // 商品レコードが失われているKakehashi出品(仕入先URLが無く在庫チェック不可)
   const unmanaged = rows.length - matched
 
-  // 1件も取り込めないCSVで既存の在庫管理を消さない。列名が違う・別の
-  // レポートを選んだ等の取り違えは、ここで止めて中身を保持する。
-  if (rows.length === 0) {
+  // 1件も商品に紐付かないCSVで既存の在庫管理を置き換えない。
+  // 本番の事故(2026-10-08): 「保存行が0件」だけを条件にしていたため、
+  // 商品照会が壊れて全件が未紐付けになったときにガードをすり抜け、
+  // 紐付き904件を未紐付け1,935件で上書きしてしまった。
+  // 正常なCSVで1件も紐付かないことはまず無いので、取り違えとして扱う。
+  if (rows.length === 0 || matched === 0) {
     await db.from('inventory_runs').update({
       status: 'failed',
       error_message: 'CSVの出品とKakehashiの商品が1件も一致しませんでした（既存の在庫管理は変更していません）',
       items_total: listings.length,
       items_matched: 0,
+      result_summary: { unmanaged },
       finished_at: now,
     }).eq('id', runId)
     return NextResponse.json({
-      error: `CSVから${listings.length}件を読み取りましたが、Kakehashiの出品が1件も見つかりませんでした。`
+      error: `CSVから${listings.length}件を読み取りましたが、Kakehashiの商品に紐付く出品が1件もありませんでした`
+        + `${unmanaged > 0 ? `（Kakehashiのラベルが付いた出品は${unmanaged}件ありました）` : ''}。`
         + 'CSVの「Custom label (SKU)」列が正しく出力されているかご確認ください。'
         + '既存の在庫管理は変更していません。',
     }, { status: 422 })
