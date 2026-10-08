@@ -109,3 +109,94 @@ describe('CSV取込: 商品レコードが失われたKakehashi出品', () => {
     expect(completed).toMatchObject({ items_total: 3, items_matched: 1, result_summary: { unmanaged: 1 } })
   })
 })
+
+// 本番で発生した事故(2026-10-08): 列名が読めず0件マッチだったCSVの取込で、
+// 先に既存スナップショットを削除していたため miyabi-24 の895件が消えた
+// (「対象 1935件 / 更新 0件」)。削除は入れ替える中身が確定してから行う。
+describe('CSV取込: 1件も一致しない場合', () => {
+  const NO_MATCH_CSV = [
+    'Item number,Custom label (SKU),Title,Current price,Available quantity,Sold quantity',
+    '999,other-tool-sku-1,Someone else item,10.00,1,0',
+    '998,other-tool-sku-2,Another item,20.00,1,0',
+  ].join('\n')
+
+  function noMatchRequest() {
+    const form = new FormData()
+    form.set('file', new File([NO_MATCH_CSV], 'active.csv', { type: 'text/csv' }))
+    return new NextRequest('http://localhost/api/inventory/upload?sellerAccountId=seller-a&siteId=US', {
+      method: 'POST', body: form,
+    })
+  }
+
+  function makeDbTracking(captured: {
+    rows: Record<string, unknown>[]
+    runUpdates: Record<string, unknown>[]
+    deleted: boolean
+  }) {
+    return {
+      from(table: string) {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq']) chain[m] = () => chain
+          chain.maybeSingle = async () => ({ data: { id: 'seller-a' }, error: null })
+          return chain
+        }
+        if (table === 'inventory_runs') {
+          const chain: Record<string, unknown> = {}
+          chain.insert = () => chain
+          chain.select = () => chain
+          chain.single = async () => ({ data: { id: 'run-1' }, error: null })
+          chain.update = (payload: Record<string, unknown>) => {
+            captured.runUpdates.push(payload)
+            return { eq: async () => ({ error: null }) }
+          }
+          return chain
+        }
+        if (table === 'products') {
+          const chain: Record<string, unknown> = {}
+          chain.select = () => chain
+          chain.eq = () => chain
+          chain.in = async () => ({ data: [], error: null })
+          chain.update = () => ({ eq: () => ({ in: async () => ({ error: null }) }) })
+          return chain
+        }
+        const chain: Record<string, unknown> = {}
+        chain.delete = () => { captured.deleted = true; return chain }
+        chain.eq = () => chain
+        chain.upsert = async (rows: Record<string, unknown>[]) => { captured.rows.push(...rows); return { error: null } }
+        chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+        return chain
+      },
+    }
+  }
+
+  beforeEach(() => {
+    mocks.getUser.mockReset().mockResolvedValue({ data: { user: { id: 'user-1' } } })
+    mocks.createServiceClient.mockReset()
+  })
+
+  it('既存の在庫管理を削除せず、エラーで中断する', async () => {
+    const captured = { rows: [] as Record<string, unknown>[], runUpdates: [] as Record<string, unknown>[], deleted: false }
+    mocks.createServiceClient.mockReturnValue(makeDbTracking(captured))
+
+    const res = await POST(noMatchRequest())
+    const json = await res.json()
+
+    expect(res.status).toBe(422)
+    expect(captured.deleted).toBe(false)
+    expect(captured.rows).toHaveLength(0)
+    expect(json.error).toContain('既存の在庫管理は変更していません')
+  })
+
+  it('稼働状況に失敗として記録する', async () => {
+    const captured = { rows: [] as Record<string, unknown>[], runUpdates: [] as Record<string, unknown>[], deleted: false }
+    mocks.createServiceClient.mockReturnValue(makeDbTracking(captured))
+
+    await POST(noMatchRequest())
+
+    expect(captured.runUpdates.find(update => update.status === 'failed')).toMatchObject({
+      items_total: 2,
+      items_matched: 0,
+    })
+  })
+})

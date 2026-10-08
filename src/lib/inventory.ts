@@ -68,6 +68,20 @@ export function extractProductIdFromCustomLabel(customLabel: string | null): str
 }
 
 // CSV column name aliases (eBay File Exchange header names)
+// 本番で発生した事故(2026-10-08): Seller HubのCSVを取り込んだら1,935件中
+// 0件マッチになり、既存の在庫管理が消えた。列名の照合が「trimして完全一致・
+// 大文字小文字も区別」だったため、"Custom Label (SKU)" や先頭のBOM付き
+// ("\uFEFFItem number") など、少しの表記違いで列を見失っていた。
+// 比較用に、BOM・空白・記号を落として小文字化した形で引き当てる。
+function normalizeHeader(header: string): string {
+  return header
+    .replace(/^\uFEFF/, '')
+    .toLowerCase()
+    .replace(/[()[\]_\-.]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 const COLUMN_ALIASES: Record<string, string> = {
   'Item number': 'ebayItemId',
   'ItemID': 'ebayItemId',
@@ -91,6 +105,11 @@ const COLUMN_ALIASES: Record<string, string> = {
   'End date': 'endTime',
   'EndTime': 'endTime',
 }
+
+// 表記ゆれを吸収した対応表(例: "custom label sku" → customLabel)
+const NORMALIZED_COLUMN_ALIASES: Record<string, string> = Object.fromEntries(
+  Object.entries(COLUMN_ALIASES).map(([header, key]) => [normalizeHeader(header), key]),
+)
 
 /**
  * Parse a single CSV line respecting double-quote escaping.
@@ -144,7 +163,7 @@ export function parseEbayActiveListingsCsv(csv: string): InventoryListingInput[]
   if (lines.length < 2) return []
 
   const rawHeaders = parseCsvLine(lines[0])
-  const headers = rawHeaders.map((h) => COLUMN_ALIASES[h.trim()] ?? h.trim())
+  const headers = rawHeaders.map((h) => NORMALIZED_COLUMN_ALIASES[normalizeHeader(h)] ?? h.trim())
 
   const results: InventoryListingInput[] = []
 

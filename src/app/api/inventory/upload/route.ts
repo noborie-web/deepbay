@@ -87,19 +87,9 @@ export async function POST(req: NextRequest) {
     if (!seller) return NextResponse.json({ error: '出品アカウントが見つかりません' }, { status: 404 })
   }
 
-  // An active report is a complete snapshot. Remove the previous snapshot
-  // before inserting this upload so the displayed count is the latest count,
-  // rather than the cumulative total of all uploads.
-  // セラー(とサイト)を指定した場合は、その範囲だけを置き換える。
-  let clearQuery = db
-    .from('inventory_active_listings')
-    .delete()
-    .eq('user_id', user.id)
-  if (sellerAccountId) {
-    clearQuery = clearQuery.eq('seller_account_id', sellerAccountId).eq('site_id', site.siteId)
-  }
-  const { error: clearError } = await clearQuery
-  if (clearError) return NextResponse.json({ error: `既存の在庫スナップショットを更新できません: ${clearError.message}` }, { status: 500 })
+  // 本番で発生した事故(2026-10-08): 列名が読めず0件マッチだったCSVの取込で、
+  // 先に既存スナップショットを削除していたため miyabi-24 の895件が消えた
+  // (「対象 1935件 / 更新 0件」)。削除は、入れ替える中身が確定してから行う。
 
   // Create audit run
   const { data: run, error: runError } = await db
@@ -197,6 +187,41 @@ export async function POST(req: NextRequest) {
   const matched = rows.filter((row) => row.product_id !== null).length
   // 商品レコードが失われているKakehashi出品(仕入先URLが無く在庫チェック不可)
   const unmanaged = rows.length - matched
+
+  // 1件も取り込めないCSVで既存の在庫管理を消さない。列名が違う・別の
+  // レポートを選んだ等の取り違えは、ここで止めて中身を保持する。
+  if (rows.length === 0) {
+    await db.from('inventory_runs').update({
+      status: 'failed',
+      error_message: 'CSVの出品とKakehashiの商品が1件も一致しませんでした（既存の在庫管理は変更していません）',
+      items_total: listings.length,
+      items_matched: 0,
+      finished_at: now,
+    }).eq('id', runId)
+    return NextResponse.json({
+      error: `CSVから${listings.length}件を読み取りましたが、Kakehashiの出品が1件も見つかりませんでした。`
+        + 'CSVの「Custom label (SKU)」列が正しく出力されているかご確認ください。'
+        + '既存の在庫管理は変更していません。',
+    }, { status: 422 })
+  }
+
+  // ここまで来て初めて、入れ替える範囲を削除する。
+  // セラー(とサイト)を指定した場合は、その範囲だけを置き換える。
+  let clearQuery = db
+    .from('inventory_active_listings')
+    .delete()
+    .eq('user_id', user.id)
+  if (sellerAccountId) {
+    clearQuery = clearQuery.eq('seller_account_id', sellerAccountId).eq('site_id', site.siteId)
+  }
+  const { error: clearError } = await clearQuery
+  if (clearError) {
+    await db.from('inventory_runs').update({
+      status: 'failed', error_message: clearError.message, finished_at: now,
+      items_total: listings.length, items_matched: matched,
+    }).eq('id', runId)
+    return NextResponse.json({ error: `既存の在庫スナップショットを更新できません: ${clearError.message}` }, { status: 500 })
+  }
 
   const CHUNK = 100
   for (let i = 0; i < rows.length; i += CHUNK) {
