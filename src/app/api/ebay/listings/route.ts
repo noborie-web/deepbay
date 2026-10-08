@@ -7,7 +7,7 @@ import {
 } from '@/lib/ebay'
 import { publishFixedPriceItem } from '@/lib/ebay-listing'
 import { loadActiveHtmlTemplate } from '@/lib/html-template'
-import { getDirectListingIssues } from '@/lib/listing-export'
+import { getDirectListingIssues, productCustomLabel } from '@/lib/listing-export'
 import type { Product } from '@/types/database'
 
 const MAX_PRODUCTS_PER_REQUEST = 20
@@ -212,6 +212,39 @@ export async function POST(request: NextRequest) {
           .eq('listing_status', 'listing')
         if (updateError) {
           throw new Error(`eBay出品済みですが保存に失敗しました（Item ID: ${result.itemId}）`)
+        }
+
+        // ユーザー要望(2026-10-08): 「Kakehashiで出品したものだけ管理したい。
+        // 1万件はいらない」。これまでは出品時に在庫管理へ登録せず、あとの同期で
+        // eBayアカウント全体(実測10,072件)を走査して自分の出品を探し直していた。
+        // 走査は時間切れで完走せず(bulk_complete: false)、見つからなかった出品は
+        // 在庫管理に載らないまま=仕入先チェックも自動取り下げも効かない状態だった。
+        // eBayがItemIDを返した時点で登録し、探索に頼らないようにする。
+        const { error: inventoryError } = await admin
+          .from('inventory_active_listings')
+          .upsert({
+            user_id: user.id,
+            seller_account_id: seller.id,
+            ebay_item_id: result.itemId,
+            custom_label: productCustomLabel(product),
+            product_id: product.id,
+            title: product.ebay_title,
+            current_price: product.ebay_price,
+            quantity: 1,
+            quantity_sold: 0,
+            listing_status: 'Active',
+            start_time: listedAt,
+            // APIでの出品は現状US固定(ebay-listing.ts: SITEID 0 / Currency USD)。
+            // UK/AUはCSV出品なので、取り込み時にサイトが設定される。
+            site_id: 'US',
+            currency: 'USD',
+            fetched_at: listedAt,
+            updated_at: listedAt,
+          }, { onConflict: 'user_id,ebay_item_id' })
+        // 在庫管理への登録に失敗しても出品自体は成立しているので、出品を
+        // 失敗扱いにはしない(次回の同期で拾われる)
+        if (inventoryError) {
+          console.warn(`[listings] inventory registration failed for ${result.itemId}:`, inventoryError.message)
         }
         return {
           ok: true as const,
