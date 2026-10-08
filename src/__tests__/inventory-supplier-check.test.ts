@@ -102,6 +102,7 @@ function makeDatabase(options: {
         eq(column: string, value: unknown) { state.filters.push([column, value]); return query },
         not(column: string, operator: string, value: unknown) { state.filters.push([column, operator, value]); return query },
         gt(column: string, value: unknown) { state.filters.push([column, 'gt', value]); return query },
+        or(expr: string) { state.filters.push([expr, 'or', null]); return query },
         in(column: string, value: unknown) { state.filters.push([column, 'in', value]); return query },
         order(column: string, orderOptions: Record<string, unknown>) {
           state.order = { column, options: orderOptions }
@@ -335,7 +336,11 @@ describe('checkSupplierListings', () => {
     })
   })
 
-  it('queries only matched positive-quantity listings in oldest-check order with the batch limit', async () => {
+  // 本番で確認した不具合(2026-10-08): 在庫数が不明(null)の出品84件が、1件も
+  // 仕入先チェックされていなかった。PostgreSQLでは null > 0 が真にならないため
+  // .gt('quantity', 0) が「在庫数を取得できなかった出品」まで除外していた。
+  // eBayには生きている出品なので、仕入先が売り切れても取り下げられない。
+  it('在庫数が1以上か不明の出品を、チェックが古い順にバッチ件数まで取得する', async () => {
     const { db, calls } = makeDatabase({ listings: [], products: [] })
 
     await checkSupplierListings(db as never, 'user-1', 25)
@@ -344,8 +349,10 @@ describe('checkSupplierListings', () => {
     expect(listingQuery.filters).toEqual(expect.arrayContaining([
       ['user_id', 'user-1'],
       ['product_id', 'is', null],
-      ['quantity', 'gt', 0],
+      ['quantity.gt.0,quantity.is.null', 'or', null],
     ]))
+    // 在庫数0(取り下げ済み)まで拾ってしまわないこと
+    expect(listingQuery.filters).not.toContainEqual(['quantity', 'gt', 0])
     expect(listingQuery.order).toEqual({
       column: 'supplier_checked_at',
       options: { ascending: true, nullsFirst: true },
