@@ -20,6 +20,9 @@ interface Settings {
   price_change_direction: 'any' | 'up' | 'down'; price_change_threshold_rate: number
   revise_price_schedule: 'every' | 'morning'
   delist_on_title_change: boolean
+  // 仕入先を確認できないまま一定時間が過ぎた出品を取り下げ対象にする
+  delist_on_unverified: boolean
+  unverified_delist_hours: number
   flea_check_last_at: string | null
   supplier_quick_check_last_at: string | null
   auto_delist: boolean; auto_revise_price: boolean; auto_stack: boolean
@@ -228,7 +231,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [settings, setSettings] = useState<Settings>({
     has_token: initialHasToken, sync_enabled: false, ebay_auto_sync: false,
     days_until_delist: 29, delist_by_age_enabled: true, delist_on_sold_out: false, daily_run_count: 1, ebay_token_expires_at: null,
-    price_change_direction: 'any', price_change_threshold_rate: 1, revise_price_schedule: 'every', delist_on_title_change: true, flea_check_last_at: null, supplier_quick_check_last_at: null,
+    price_change_direction: 'any', price_change_threshold_rate: 1, revise_price_schedule: 'every', delist_on_title_change: true, delist_on_unverified: true, unverified_delist_hours: 24, flea_check_last_at: null, supplier_quick_check_last_at: null,
     auto_delist: false, auto_revise_price: false, auto_stack: false,
     schedule_time: '09:00',
     payment_profile_name: '', return_profile_name: '', shipping_profile_name: '',
@@ -1379,7 +1382,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                         {listing.supplier_diff?.includes('reserved') && (
                           <span className="ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700" title={`仕入先の最新タイトル: ${listing.supplier_title ?? ''}`}>仕入先が専用(取り置き)</span>
                         )}
-                        {listing.supplier_diff?.includes('price') && (
+                        {/* 仕入値の急落(30%超)。別商品への差し替えの疑いがあるため価格追従を止めている */}
+                        {listing.supplier_diff?.includes('price_collapsed') && (
+                          <span className="ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700" title={`仕入先の最新価格: ¥${listing.supplier_price_jpy?.toLocaleString() ?? ''}（急落のため価格追従を停止しています）`}>仕入値が急落</span>
+                        )}
+                        {listing.supplier_diff?.includes('price') && !listing.supplier_diff?.includes('price_collapsed') && (
                           <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title={`仕入先の最新価格: ¥${listing.supplier_price_jpy?.toLocaleString() ?? ''}`}>仕入先価格変更</span>
                         )}
                       </p>
@@ -2059,6 +2066,33 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               <Toggle checked={settings.delist_on_title_change}
                 onChange={v => saveSetting({ delist_on_title_change: v })} />
               <span className="text-sm text-gray-600">{settings.delist_on_title_change ? 'タイトルが変わったら取り下げる' : '取り下げない（差分の記録のみ）'}</span>
+            </div>
+          </div>
+          <hr />
+          <div>
+            {/* ユーザー要望(2026-10-08): 在庫切れを厳格にチェックしたい。
+                429やネットワーク障害で仕入先を確認できない状態が続くと、
+                在庫が無いまま出品され続けて売れてしまう。 */}
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">仕入先を確認できない出品</h3>
+            <p className="text-xs text-gray-500 mb-2">
+              仕入先サイトのアクセス制限（429）や通信エラーで在庫を確認できない状態が続いた商品を、取り下げ対象（在庫0）にします。
+              在庫が無いまま売れてしまうのを防ぐための設定です。「確認を試みた回数」ではなく「実際に在庫を確認できてからの経過時間」で判定します。
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Toggle checked={settings.delist_on_unverified}
+                onChange={v => saveSetting({ delist_on_unverified: v })} />
+              <span className="text-sm text-gray-600">{settings.delist_on_unverified ? '一定時間確認できなければ取り下げる' : '取り下げない（確認できるまで出品を続ける）'}</span>
+              {settings.delist_on_unverified && (
+                <label className="flex items-center gap-1.5 text-sm text-gray-600">
+                  <input type="number" min={1} max={720}
+                    value={settings.unverified_delist_hours}
+                    onChange={e => setSettings(prev => ({ ...prev, unverified_delist_hours: Number(e.target.value) }))}
+                    onBlur={() => saveSetting({ unverified_delist_hours: settings.unverified_delist_hours })}
+                    disabled={savingSettings}
+                    className="w-20 border rounded px-2 py-1 text-sm text-center disabled:bg-gray-100" />
+                  時間
+                </label>
+              )}
             </div>
           </div>
           <hr />

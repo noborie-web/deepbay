@@ -12,6 +12,10 @@ interface SupplierListingRow {
   id: string
   product_id: string
   ebay_item_id: string
+  // 実際に仕入先の在庫を確認できた日時(確認を試みただけの supplier_checked_at とは別)
+  supplier_verified_at?: string | null
+  supplier_checked_at?: string | null
+  fetched_at?: string | null
 }
 
 // ユーザー要望: 公式ツールのように価格追従・差分検知の「結果」を実行ごとに
@@ -134,11 +138,18 @@ export interface SupplierCheckResult {
   guarded: number
   // 仕入先のタイトルが変わったため取り下げ対象(在庫0)にした件数
   title_changed_delisted: number
+  // 一定時間、仕入先を確認できなかったため取り下げ対象にした件数
+  unverified_delisted: number
+  // 仕入値が急落(30%超)したため価格追従を止めた件数(取り下げはしない)
+  price_collapsed: number
   // 1商品ごとの結果(実行履歴のCSV出力用)
   items: SupplierCheckItemDetail[]
 }
 
-export type SupplierDiffKind = 'title' | 'price' | 'reserved' | 'title_replaced'
+// ユーザー要望(2026-10-08): 仕入値の急落(30%超)は別商品への差し替えの疑いが
+// あるが、取り下げはタイトルが変わった場合だけにする。急落は価格追従を止める
+// だけなので、画面で気づけるよう差分の種類として記録する。
+export type SupplierDiffKind = 'title' | 'price' | 'reserved' | 'title_replaced' | 'price_collapsed'
 
 // ユーザー要望: メルカリでは購入者に取り置きするためタイトルを
 // 「〇〇様専用」に変更する出品者がいる。この場合は他の人は買えないので
@@ -232,6 +243,11 @@ export interface SupplierCheckOptions {
   // ユーザー要望: 仕入先のタイトルが変わったら別商品に差し替えられた可能性が
   // 高いので、売り切れと同じく取り下げ対象(在庫0)にする。
   delistOnTitleChange?: boolean
+  // ユーザー要望(2026-10-08): 在庫切れを厳格にチェックしたい。429やネット
+  // ワーク障害で仕入先を確認できない状態が続くと、在庫が無いまま出品され
+  // 続けてしまう。一定時間確認できていない出品は取り下げ対象(在庫0)にする。
+  delistOnUnverified?: boolean
+  unverifiedDelistHours?: number
 }
 
 export async function checkSupplierListings(
@@ -256,6 +272,8 @@ export async function checkSupplierListings(
     rate_limited: 0,
     guarded: 0,
     title_changed_delisted: 0,
+    unverified_delisted: 0,
+    price_collapsed: 0,
     items: [],
   }
 
@@ -264,7 +282,7 @@ export async function checkSupplierListings(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let listingQuery: any = db
     .from('inventory_active_listings')
-    .select(needsProductJoin ? 'id, product_id, ebay_item_id, products!inner(source_site)' : 'id, product_id, ebay_item_id')
+    .select(needsProductJoin ? 'id, product_id, ebay_item_id, supplier_verified_at, supplier_checked_at, fetched_at, products!inner(source_site)' : 'id, product_id, ebay_item_id, supplier_verified_at, supplier_checked_at, fetched_at')
     .eq('user_id', userId)
     .not('product_id', 'is', null)
     // 本番で確認した不具合(2026-10-08): 在庫数が不明(null)の出品84件が、
@@ -377,6 +395,9 @@ export async function checkSupplierListings(
   }
 
   const titleChangeDelist = options.delistOnTitleChange ?? false
+  // 仕入先を確認できないまま一定時間が過ぎた出品の自動取り下げ(既定24時間)
+  const delistOnUnverified = options.delistOnUnverified ?? false
+  const unverifiedDelistMs = Math.max(1, options.unverifiedDelistHours ?? 24) * 60 * 60 * 1000
   let fleaChecked = 0
   for (const listing of targets) {
     if (options.timeBudgetMs !== undefined && Date.now() - startedAt > options.timeBudgetMs) {
@@ -524,6 +545,9 @@ export async function checkSupplierListings(
             if (recalculated !== null && purchaseCollapsed) {
               console.warn(`[supplier-check] guarded (purchase collapsed): ${listing.ebay_item_id} ${oldPurchasePriceJpy} -> ${purchasePriceJpy}`)
               result.guarded += 1
+              result.price_collapsed += 1
+              // 取り下げはタイトルが変わった場合だけ。急落は画面で気づけるよう印を付ける
+              if (supplierDiff && !supplierDiff.includes('price_collapsed')) supplierDiff.push('price_collapsed')
               recalculated = null
               newPurchasePriceJpy = undefined
             }
@@ -562,8 +586,28 @@ export async function checkSupplierListings(
       }
     }
 
+    // ユーザー要望(2026-10-08): 在庫切れを厳格にチェックしたい。
+    // 仕入先を確認できないまま一定時間が過ぎた出品は、在庫が無いまま売れて
+    // しまうのを防ぐため取り下げ対象(在庫0)にする。
+    // 「確認を試みた日時(supplier_checked_at)」ではなく「実際に確認できた
+    // 日時(supplier_verified_at)」を基準にする。
+    if (outcome === 'skipped' && delistOnUnverified) {
+      const lastVerified = listing.supplier_verified_at ?? listing.supplier_checked_at ?? listing.fetched_at
+      if (lastVerified) {
+        const elapsedMs = Date.now() - new Date(lastVerified).getTime()
+        if (Number.isFinite(elapsedMs) && elapsedMs >= unverifiedDelistMs) {
+          console.warn(`[supplier-check] unverified too long: ${listing.ebay_item_id} since ${lastVerified}`)
+          outcome = 'unavailable'
+          quantity = 0
+          result.unverified_delisted += 1
+          skipCheckedAtUpdate = false
+        }
+      }
+    }
+
     const update: {
       supplier_checked_at: string
+      supplier_verified_at?: string
       quantity?: number
       supplier_title?: string | null
       supplier_price_jpy?: number | null
@@ -572,6 +616,9 @@ export async function checkSupplierListings(
     } = {
       supplier_checked_at: checkedAt,
     }
+    // 仕入先の状態を実際に確認できた回だけ記録する(429・5xx・ネットワーク
+    // エラーで中身を見られなかった回は更新しない)
+    if (outcome === 'available' || outcome === 'unavailable') update.supplier_verified_at = checkedAt
     if (skipCheckedAtUpdate) {
       // 429で確認できなかった: 何も更新せず次回に回す(結果には skipped として数える)
       result.skipped += 1

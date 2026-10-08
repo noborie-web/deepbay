@@ -221,8 +221,12 @@ export interface InventoryActiveListing {
   pricing_jpy_per_currency?: number | null
   supplier_title?: string | null
   supplier_price_jpy?: number | null
-  supplier_diff?: Array<'title' | 'price' | 'reserved'> | null
+  // 'title_replaced' = 別商品への差し替えとみられるタイトル変更(取り下げ対象)
+  // 'price_collapsed' = 仕入値が30%超急落(価格追従を停止。取り下げはしない)
+  supplier_diff?: Array<'title' | 'price' | 'reserved' | 'title_replaced' | 'price_collapsed'> | null
   supplier_diff_detected_at?: string | null
+  // 実際に仕入先の在庫を確認できた日時(確認を試みただけの supplier_checked_at とは別)
+  supplier_verified_at?: string | null
   // 一覧API(/api/inventory/listings)が付加する表示用の値(DB列ではない)
   purchase_price_jpy?: number | null
   profit_usd?: number | null
