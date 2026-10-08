@@ -37,7 +37,7 @@ export async function runQuickSupplierCheck(
 ): Promise<QuickCheckUserResult[]> {
   const { data: allSettings } = await db
     .from('inventory_settings')
-    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, auto_delist, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, delist_on_title_change')
+    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, auto_delist, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, delist_on_title_change, delist_on_unverified, unverified_delist_hours')
     .eq('sync_enabled', true)
 
   const results: QuickCheckUserResult[] = []
@@ -52,6 +52,10 @@ export async function runQuickSupplierCheck(
         sourceSite: options.sourceSite,
         excludeSourceSites: options.excludeSourceSites,
         delistOnTitleChange: settings.delist_on_title_change ?? true,
+          // ユーザー要望(2026-10-08): 仕入先を確認できないまま一定時間が過ぎた
+          // 出品は、在庫が無いまま売れてしまうのを防ぐため取り下げ対象にする。
+          delistOnUnverified: settings.delist_on_unverified ?? true,
+          unverifiedDelistHours: settings.unverified_delist_hours ?? 24,
       })
       userResult.check = {
         total: check.total, available: check.available, unavailable: check.unavailable,

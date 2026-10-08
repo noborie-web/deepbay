@@ -68,7 +68,7 @@ export async function GET(req: NextRequest) {
 
   let settingsQuery = db
     .from('inventory_settings')
-    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, delist_on_title_change, sync_cursor_item_id, payment_profile_name, return_profile_name, shipping_profile_name, daily_run_count, revise_price_schedule')
+    .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, delist_on_title_change, delist_on_unverified, unverified_delist_hours, sync_cursor_item_id, payment_profile_name, return_profile_name, shipping_profile_name, daily_run_count, revise_price_schedule')
     .eq('sync_enabled', true)
   if (onlyUserId) settingsQuery = settingsQuery.eq('user_id', onlyUserId)
   const { data: allSettings } = await settingsQuery
@@ -118,6 +118,10 @@ export async function GET(req: NextRequest) {
           timeBudgetMs: SUPPLIER_CHECK_BUDGET_MS,
           priceChangeFilter: normalizePriceChangeFilter(settings),
           delistOnTitleChange: settings.delist_on_title_change ?? true,
+          // ユーザー要望(2026-10-08): 仕入先を確認できないまま一定時間が過ぎた
+          // 出品は、在庫が無いまま売れてしまうのを防ぐため取り下げ対象にする。
+          delistOnUnverified: settings.delist_on_unverified ?? true,
+          unverifiedDelistHours: settings.unverified_delist_hours ?? 24,
         })
         userResult.supplier_check = supplierCheckResult
         // ユーザー要望: 「仕入れ価格の高騰に確実に対応」。この結果を
