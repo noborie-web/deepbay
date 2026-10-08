@@ -159,6 +159,10 @@ export async function POST(req: NextRequest) {
 
   // ユーザー要望: 他ツールで在庫管理中の出品を混在させないため、
   // Kakehashiの商品に紐付く出品だけを保存する(API同期と同じ方針)。
+  // ユーザー報告(2026-10-08): 商品レコードが失われたKakehashi出品
+  // (CustomLabelは kakehashi_<UUID>)も、ここで捨てられていた。捨てると
+  // 在庫管理に載らず、存在にも気づけない。API同期側(#265)と同じく、
+  // Kakehashiが発行したラベルがある出品は商品が無くても保存する。
   const rows = listings.flatMap((l) => {
     const directProductId = extractProductIdFromCustomLabel(l.customLabel)
     const sourceProductIds = extractSourceLookupKeys(l.customLabel)
@@ -168,7 +172,10 @@ export async function POST(req: NextRequest) {
       productLookup.get(`ebay:${l.ebayItemId}`),
       sourceProductIds,
     )
-    if (!productId) return []
+    // directProductId は kakehashi_<UUID> / deepbay_<UUID> 形式のときだけ
+    // 値が入る(他ツールの任意のSKUでは null)。商品が見つからなくても、
+    // Kakehashiが出品した印があるなら保存する。
+    if (!productId && directProductId === null) return []
 
     return [{
       ...(sellerAccountId ? { seller_account_id: sellerAccountId, site_id: site.siteId, currency: site.currency } : {}),
@@ -187,7 +194,9 @@ export async function POST(req: NextRequest) {
       updated_at: now,
     }]
   })
-  const matched = rows.length
+  const matched = rows.filter((row) => row.product_id !== null).length
+  // 商品レコードが失われているKakehashi出品(仕入先URLが無く在庫チェック不可)
+  const unmanaged = rows.length - matched
 
   const CHUNK = 100
   for (let i = 0; i < rows.length; i += CHUNK) {
@@ -203,19 +212,23 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  await applyListingStateToProducts(db, user.id, rows.map(row => ({
-    product_id: row.product_id,
-    ebay_item_id: row.ebay_item_id,
-    quantity: row.quantity,
-    quantity_sold: row.quantity_sold,
-  })))
+  // 商品レコードが無い出品は、反映先の商品が存在しないので対象外
+  await applyListingStateToProducts(db, user.id, rows
+    .filter((row): row is typeof row & { product_id: string } => row.product_id !== null)
+    .map(row => ({
+      product_id: row.product_id,
+      ebay_item_id: row.ebay_item_id,
+      quantity: row.quantity,
+      quantity_sold: row.quantity_sold,
+    })))
 
   await db.from('inventory_runs').update({
     status: 'completed',
     items_total: listings.length,
     items_matched: matched,
+    result_summary: { unmanaged },
     finished_at: now,
   }).eq('id', runId)
 
-  return NextResponse.json({ ok: true, total: listings.length, matched })
+  return NextResponse.json({ ok: true, total: listings.length, matched, unmanaged })
 }

@@ -910,7 +910,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       const res = await fetch(`/api/inventory/upload${uploadParams.toString() ? `?${uploadParams}` : ''}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: uploadInfo.path }) })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Upload failed')
-      showMsg('success', `アップロード完了: ${json.total}件取得、${json.matched}件マッチ`)
+      // 商品レコードが失われたKakehashi出品は在庫チェックができないので、件数を明示する
+      showMsg('success', `アップロード完了: ${json.total}件取得、${json.matched}件マッチ`
+        + (json.unmanaged ? `、${json.unmanaged}件は商品データなし（在庫チェック不可）` : ''))
       setRunsLoaded(false)
     } catch (e) { showMsg('error', e instanceof Error ? e.message : 'アップロード失敗') }
     finally { setUploading(false); setUploadStatus(null); if (fileRef.current) fileRef.current.value = '' }
