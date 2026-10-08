@@ -200,3 +200,177 @@ describe('CSV取込: 1件も一致しない場合', () => {
     })
   })
 })
+
+// 本番で発生した事故(2026-10-08): 1,935件のCSVを取り込んだとき、商品の照会に
+// 全UUIDを一度に .in(...) で渡していたため PostgREST がURL長すぎで400を返し、
+// そのエラーを無視していたので「全件が商品に紐付かない」と誤判定した。
+// その結果、紐付き904件が未紐付け1,935件で上書きされた。
+describe('CSV取込: 商品照会の分割とエラー処理', () => {
+  const MANY = Array.from({ length: 250 }, (_, i) => {
+    const hex = i.toString(16).padStart(8, '0')
+    const uuid = `${hex}-0000-4000-8000-000000000000`
+    return { uuid, line: `${1000 + i},kakehashi_${uuid.replace(/-/g, '_')},Item ${i},10.00,1,0` }
+  })
+  const MANY_CSV = [
+    'Item number,Custom label (SKU),Title,Current price,Available quantity,Sold quantity',
+    ...MANY.map((m) => m.line),
+  ].join('\n')
+
+  function manyRequest() {
+    const form = new FormData()
+    form.set('file', new File([MANY_CSV], 'active.csv', { type: 'text/csv' }))
+    return new NextRequest('http://localhost/api/inventory/upload?sellerAccountId=seller-a&siteId=US', {
+      method: 'POST', body: form,
+    })
+  }
+
+  function makeDb(options: { idChunkSizes: number[]; failLookup?: boolean; deleted: { value: boolean }; rows: Record<string, unknown>[]; runUpdates: Record<string, unknown>[] }) {
+    return {
+      from(table: string) {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq']) chain[m] = () => chain
+          chain.maybeSingle = async () => ({ data: { id: 'seller-a' }, error: null })
+          return chain
+        }
+        if (table === 'inventory_runs') {
+          const chain: Record<string, unknown> = {}
+          chain.insert = () => chain
+          chain.select = () => chain
+          chain.single = async () => ({ data: { id: 'run-1' }, error: null })
+          chain.update = (payload: Record<string, unknown>) => {
+            options.runUpdates.push(payload)
+            return { eq: async () => ({ error: null }) }
+          }
+          return chain
+        }
+        if (table === 'products') {
+          const chain: Record<string, unknown> = {}
+          chain.select = () => chain
+          chain.eq = () => chain
+          chain.in = async (column: string, values: string[]) => {
+            if (options.failLookup) return { data: null, error: { message: 'Bad Request' } }
+            if (column === 'id') {
+              options.idChunkSizes.push(values.length)
+              return { data: values.map((id) => ({ id })), error: null }
+            }
+            return { data: [], error: null }
+          }
+          chain.update = () => ({ eq: () => ({ in: async () => ({ error: null }) }) })
+          return chain
+        }
+        const chain: Record<string, unknown> = {}
+        chain.delete = () => { options.deleted.value = true; return chain }
+        chain.eq = () => chain
+        chain.upsert = async (rows: Record<string, unknown>[]) => { options.rows.push(...rows); return { error: null } }
+        chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+        return chain
+      },
+    }
+  }
+
+  beforeEach(() => {
+    mocks.getUser.mockReset().mockResolvedValue({ data: { user: { id: 'user-1' } } })
+    mocks.createServiceClient.mockReset()
+  })
+
+  it('商品の照会を100件ずつに分割する（URLが長すぎて400になるのを防ぐ）', async () => {
+    const options = { idChunkSizes: [] as number[], deleted: { value: false }, rows: [] as Record<string, unknown>[], runUpdates: [] as Record<string, unknown>[] }
+    mocks.createServiceClient.mockReturnValue(makeDb(options))
+
+    const res = await POST(manyRequest())
+    expect(res.status).toBe(200)
+
+    expect(options.idChunkSizes).toEqual([100, 100, 50])
+    expect(options.rows).toHaveLength(250)
+  })
+
+  it('照会が失敗したら、既存の在庫管理を消さずに中断する', async () => {
+    const options = { idChunkSizes: [] as number[], failLookup: true, deleted: { value: false }, rows: [] as Record<string, unknown>[], runUpdates: [] as Record<string, unknown>[] }
+    mocks.createServiceClient.mockReturnValue(makeDb(options))
+
+    const res = await POST(manyRequest())
+    const json = await res.json()
+
+    expect(res.status).toBe(500)
+    expect(options.deleted.value).toBe(false)
+    expect(options.rows).toHaveLength(0)
+    expect(json.error).toContain('既存の在庫管理は変更していません')
+  })
+})
+
+// 本番の事故の核心(2026-10-08): ガードが「保存行が0件」だけを条件にしていたため、
+// 商品照会が壊れて全件が未紐付けになったとき(保存行は1,935件)にすり抜け、
+// 紐付き904件を未紐付け1,935件で上書きしてしまった。
+describe('CSV取込: 1件も商品に紐付かない場合', () => {
+  const ORPHANS_CSV = [
+    'Item number,Custom label (SKU),Title,Current price,Available quantity,Sold quantity',
+    `111,kakehashi_${KNOWN_PRODUCT.replace(/-/g, '_')},Item A,10.00,1,0`,
+    `222,kakehashi_${LOST_PRODUCT.replace(/-/g, '_')},Item B,20.00,1,0`,
+  ].join('\n')
+
+  function orphansRequest() {
+    const form = new FormData()
+    form.set('file', new File([ORPHANS_CSV], 'active.csv', { type: 'text/csv' }))
+    return new NextRequest('http://localhost/api/inventory/upload?sellerAccountId=seller-a&siteId=US', {
+      method: 'POST', body: form,
+    })
+  }
+
+  function makeDbNoProducts(captured: { deleted: boolean; rows: Record<string, unknown>[]; runUpdates: Record<string, unknown>[] }) {
+    return {
+      from(table: string) {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq']) chain[m] = () => chain
+          chain.maybeSingle = async () => ({ data: { id: 'seller-a' }, error: null })
+          return chain
+        }
+        if (table === 'inventory_runs') {
+          const chain: Record<string, unknown> = {}
+          chain.insert = () => chain
+          chain.select = () => chain
+          chain.single = async () => ({ data: { id: 'run-1' }, error: null })
+          chain.update = (payload: Record<string, unknown>) => {
+            captured.runUpdates.push(payload)
+            return { eq: async () => ({ error: null }) }
+          }
+          return chain
+        }
+        if (table === 'products') {
+          const chain: Record<string, unknown> = {}
+          chain.select = () => chain
+          chain.eq = () => chain
+          // 1件も商品が見つからない状態
+          chain.in = async () => ({ data: [], error: null })
+          chain.update = () => ({ eq: () => ({ in: async () => ({ error: null }) }) })
+          return chain
+        }
+        const chain: Record<string, unknown> = {}
+        chain.delete = () => { captured.deleted = true; return chain }
+        chain.eq = () => chain
+        chain.upsert = async (rows: Record<string, unknown>[]) => { captured.rows.push(...rows); return { error: null } }
+        chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+        return chain
+      },
+    }
+  }
+
+  beforeEach(() => {
+    mocks.getUser.mockReset().mockResolvedValue({ data: { user: { id: 'user-1' } } })
+    mocks.createServiceClient.mockReset()
+  })
+
+  it('Kakehashiのラベルが付いていても、商品に1件も紐付かなければ置き換えない', async () => {
+    const captured = { deleted: false, rows: [] as Record<string, unknown>[], runUpdates: [] as Record<string, unknown>[] }
+    mocks.createServiceClient.mockReturnValue(makeDbNoProducts(captured))
+
+    const res = await POST(orphansRequest())
+    const json = await res.json()
+
+    expect(res.status).toBe(422)
+    expect(captured.deleted).toBe(false)
+    expect(captured.rows).toHaveLength(0)
+    expect(json.error).toContain('Kakehashiのラベルが付いた出品は2件ありました')
+  })
+})
