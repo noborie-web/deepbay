@@ -74,9 +74,14 @@ describe('parseGetItemResponse', () => {
     expect(result).toMatchObject({ quantity: 0, quantitySold: 1 })
   })
 
-  it('終了済み(Completed/Ended)の出品は ended として返す', () => {
-    expect(parseGetItemResponse(getItemXml({ itemId: 'x', status: 'Completed' }), 'x')).toBe('ended')
-    expect(parseGetItemResponse(getItemXml({ itemId: 'x', status: 'Ended' }), 'x')).toBe('ended')
+  // ユーザー報告(2026-10-08): 売却済みの商品が1件も記録されていなかった。
+  // 終了を検知した時点で売却数を捨てていたため、売却/取り下げの判定が
+  // 「前回同期時点の古い在庫数」に頼っていた。終了時の実際の値を返す。
+  it('終了済み(Completed/Ended)の出品は、売却数とともに終了情報を返す', () => {
+    const completed = parseGetItemResponse(getItemXml({ itemId: 'x', status: 'Completed' }), 'x')
+    const ended = parseGetItemResponse(getItemXml({ itemId: 'x', status: 'Ended' }), 'x')
+    expect(completed !== 'not_found' && 'listingStatus' in completed && completed.listingStatus).toBe('Completed')
+    expect(ended !== 'not_found' && 'listingStatus' in ended && ended.listingStatus).toBe('Ended')
   })
 
   it('存在しない/参照できないItemIDのエラーは not_found として返し、例外にしない', () => {
@@ -121,7 +126,7 @@ describe('fetchListingsByItemIds', () => {
     const fetchMock = vi.fn()
     globalThis.fetch = fetchMock as unknown as typeof fetch
     const result = await fetchListingsByItemIds({ accessToken: 'token' }, [])
-    expect(result).toEqual({ items: [], endedItemIds: [] })
+    expect(result).toEqual({ items: [], endedItemIds: [], endedListings: [] })
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })

@@ -4,6 +4,9 @@ import { NextRequest } from 'next/server'
 let mockUser: { id: string } | null = { id: 'user-1' }
 let mockLookupData: Record<string, unknown> | null = null
 let mockLookupError: { message: string } | null = null
+// ユーザー報告(2026-10-08): 売れた商品は出品終了時に対応表が消えるため
+// 復元できなかった。終了した出品の履歴も検索するようになった。
+let mockEndedRows: Array<Record<string, unknown>> = []
 const mockEq = vi.fn()
 const mockMaybeSingle = vi.fn()
 
@@ -17,11 +20,22 @@ vi.mock('@/lib/supabase/server', () => ({
 
 vi.mock('@supabase/supabase-js', () => ({
   createClient: vi.fn(() => ({
-    from: vi.fn(() => ({
-      select: vi.fn().mockReturnThis(),
-      eq: mockEq.mockReturnThis(),
-      maybeSingle: mockMaybeSingle,
-    })),
+    from: vi.fn((table: string) => {
+      // 終了履歴の検索は maybeSingle ではなく limit + await で取得する
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const builder: any = {
+        select: () => builder,
+        eq: (...args: unknown[]) => { mockEq(...args); return builder },
+        limit: () => builder,
+        maybeSingle: mockMaybeSingle,
+        then: (resolve: (value: unknown) => unknown) => resolve(
+          table === 'inventory_ended_listings'
+            ? { data: mockEndedRows, error: null }
+            : { data: mockLookupData, error: mockLookupError },
+        ),
+      }
+      return builder
+    }),
   })),
 }))
 
@@ -30,6 +44,7 @@ describe('GET /api/inventory/lookup', () => {
     mockUser = { id: 'user-1' }
     mockLookupData = null
     mockLookupError = null
+    mockEndedRows = []
     mockEq.mockClear()
     mockMaybeSingle.mockReset().mockImplementation(async () => ({
       data: mockLookupData,
@@ -66,7 +81,7 @@ describe('GET /api/inventory/lookup', () => {
     const json = await res.json()
 
     expect(res.status).toBe(200)
-    expect(json).toEqual({ found: false, source_url: null })
+    expect(json).toEqual({ found: false, source_url: null, reason: 'unrecognized_code' })
     expect(mockEq).toHaveBeenCalledWith('user_id', 'user-1')
     expect(mockEq).toHaveBeenCalledWith('source_item_id', 'missing-code')
   })
@@ -151,7 +166,7 @@ describe('GET /api/inventory/lookup', () => {
     const json = await res.json()
 
     expect(res.status).toBe(200)
-    expect(json).toEqual({ found: false, source_url: null })
+    expect(json).toEqual({ found: false, source_url: null, reason: 'product_missing' })
     expect(mockEq).toHaveBeenCalledWith('id', '00000000-0000-0000-0000-000000000000')
     expect(mockEq).toHaveBeenCalledWith('source_item_id', 'deepbay_00000000_0000_0000_0000_000000000000')
   })
@@ -164,5 +179,47 @@ describe('GET /api/inventory/lookup', () => {
 
     expect(res.status).toBe(500)
     expect(json).toEqual({ error: 'database unavailable' })
+  })
+
+  // ユーザー報告(2026-10-08): 実際に売れた商品のDBK-IDを貼り付けたが
+  // 「該当する商品が見つかりませんでした」になった。出品終了時に対応表を
+  // 削除していたため、売却後は記録が残らなかった。終了履歴から復元する。
+  it('売却済みの出品でも、終了履歴から仕入先URLを復元する', async () => {
+    mockEndedRows = [{
+      product_id: null,
+      source_url: 'https://jp.mercari.com/item/m999',
+      title: '売れた商品',
+      custom_label: 'kakehashi_9ef13534_4516_4002_ae6e_defdf80b4d54',
+      ebay_item_id: '377535920770',
+      ended_reason: 'sold',
+      ended_at: '2026-10-01T00:00:00.000Z',
+    }]
+    const { GET } = await import('@/app/api/inventory/lookup/route')
+    const res = await GET(request('kakehashi_9ef13534_4516_4002_ae6e_defdf80b4d54'))
+    const json = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(json.found).toBe(true)
+    expect(json.source_url).toBe('https://jp.mercari.com/item/m999')
+    expect(json.ended_reason).toBe('sold')
+    expect(json.ebay_item_id).toBe('377535920770')
+  })
+
+  it('eBayの商品番号(数字のみ)でも検索できる', async () => {
+    mockEndedRows = [{
+      product_id: null,
+      source_url: 'https://jp.mercari.com/item/m999',
+      title: '売れた商品',
+      custom_label: 'kakehashi_9ef13534_4516_4002_ae6e_defdf80b4d54',
+      ebay_item_id: '377535920770',
+      ended_reason: 'sold',
+      ended_at: '2026-10-01T00:00:00.000Z',
+    }]
+    const { GET } = await import('@/app/api/inventory/lookup/route')
+    const res = await GET(request('377535920770'))
+    const json = await res.json()
+
+    expect(json.found).toBe(true)
+    expect(mockEq).toHaveBeenCalledWith('ebay_item_id', '377535920770')
   })
 })

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { EbayCallLimitError, fetchActiveListingsBatch, fetchAllActiveListings, fetchListingsByItemIds, scanSellerListByStartTime, SELLER_LIST_MAX_RANGE_MS } from './ebay-inventory'
+import type { EndedListingInfo } from './ebay-inventory'
 import {
   extractProductIdFromCustomLabel,
   extractSourceLookupKeys,
@@ -269,10 +270,30 @@ export async function applyListingStateToProducts(
 
 // 終了した出品に紐付く商品は、売り切れ(残数0で販売数あり)なら「売却済み」、
 // それ以外(取り下げ・期限切れ)は「取下げ」にする。
+// ユーザー報告(2026-10-08): 売却済み(sold)の商品が1件も記録されていなかった
+// (出品中720件・取り下げ311件に対して sold は0件)。終了した出品の売却判定を
+// 「前回同期時点の在庫数・売却数」で行っていたことが原因で、1個だけの出品が
+// 売れた場合の最後の記録は在庫1・売却0のため、必ず「取り下げ」と誤判定される。
+// eBayが終了時に返す実際の売却数(endInfo)があればそれを優先する。
+export function resolveEndedReason(
+  endInfo: { quantitySold: number | null; listingStatus: string | null } | undefined,
+  snapshot: { quantity: number | null; quantity_sold: number | null },
+): 'sold' | 'delisted' | 'unknown' {
+  if (endInfo) {
+    if ((endInfo.quantitySold ?? 0) > 0) return 'sold'
+    // 売却数が取れている(0件と分かっている)なら取り下げ扱い
+    if (endInfo.quantitySold !== null) return 'delisted'
+  }
+  // eBayから終了理由を取れなかった場合だけ、古い記録での判定に戻す
+  if ((snapshot.quantity ?? 0) <= 0 && (snapshot.quantity_sold ?? 0) > 0) return 'sold'
+  return endInfo ? 'unknown' : 'delisted'
+}
+
 async function markProductsForEndedListings(
   db: SupabaseClient,
   userId: string,
   itemIds: string[],
+  endInfoById?: Map<string, EndedListingInfo>,
 ): Promise<void> {
   const now = new Date().toISOString()
   const soldIds: string[] = []
@@ -280,14 +301,16 @@ async function markProductsForEndedListings(
   for (const itemChunk of chunked(itemIds)) {
     const { data, error } = await db
       .from('inventory_active_listings')
-      .select('product_id, quantity, quantity_sold')
+      .select('product_id, quantity, quantity_sold, ebay_item_id')
       .eq('user_id', userId)
       .in('ebay_item_id', itemChunk)
       .not('product_id', 'is', null)
     if (error) throw new Error(`Ended listing lookup failed: ${error.message}`)
     for (const row of data ?? []) {
-      const sold = (row.quantity ?? 0) <= 0 && (row.quantity_sold ?? 0) > 0
-      ;(sold ? soldIds : delistedIds).push(row.product_id as string)
+      const reason = resolveEndedReason(endInfoById?.get(row.ebay_item_id as string), row)
+      if (reason === 'sold') soldIds.push(row.product_id as string)
+      // 理由が分からない場合は、出品中のままにせず取り下げ扱いにする(従来どおり)
+      else delistedIds.push(row.product_id as string)
     }
   }
   for (const chunk of chunked(soldIds)) {
@@ -799,16 +822,84 @@ async function discoverNewListings(
   }
 }
 
+// ユーザー報告(2026-10-08): 売れた商品のDBK-IDで暗号化復元ができなかった。
+// 出品が終了すると対応表(inventory_active_listings)の行を消していたため、
+// 売却後は「どのeBay出品がどの商品だったか」が一切残らない。
+// 消す前に履歴として残し、商品が後から削除されても辿れるよう、その時点の
+// 仕入先URLも複製しておく。
+async function recordEndedListingHistory(
+  db: SupabaseClient,
+  userId: string,
+  itemIds: string[],
+  endInfoById: Map<string, EndedListingInfo> | undefined,
+  sellerAccountId?: string | null,
+): Promise<void> {
+  let query = db
+    .from('inventory_active_listings')
+    .select('ebay_item_id, custom_label, product_id, title, site_id, currency, current_price, quantity, quantity_sold, seller_account_id')
+    .eq('user_id', userId)
+    .in('ebay_item_id', itemIds)
+  if (sellerAccountId) query = query.eq('seller_account_id', sellerAccountId)
+  const { data: rows, error } = await query
+  if (error) {
+    console.warn('[inventory] ended listing history lookup failed:', error.message)
+    return
+  }
+  if (!rows || rows.length === 0) return
+
+  const productIds = rows.map((row) => row.product_id as string | null).filter((id): id is string => !!id)
+  const sourceUrlById = new Map<string, string | null>()
+  if (productIds.length > 0) {
+    const { data: products } = await db
+      .from('products')
+      .select('id, source_url')
+      .eq('user_id', userId)
+      .in('id', productIds)
+    for (const product of products ?? []) sourceUrlById.set(product.id as string, (product.source_url as string | null) ?? null)
+  }
+
+  const now = new Date().toISOString()
+  const history = rows.map((row) => {
+    const endInfo = endInfoById?.get(row.ebay_item_id as string)
+    return {
+      user_id: userId,
+      seller_account_id: (row.seller_account_id as string | null) ?? sellerAccountId ?? null,
+      ebay_item_id: row.ebay_item_id as string,
+      custom_label: (row.custom_label as string | null) ?? null,
+      product_id: (row.product_id as string | null) ?? null,
+      title: (row.title as string | null) ?? null,
+      site_id: (row.site_id as string | null) ?? null,
+      currency: (row.currency as string | null) ?? null,
+      last_price: row.current_price ?? null,
+      quantity_sold: endInfo?.quantitySold ?? row.quantity_sold ?? null,
+      ended_reason: resolveEndedReason(endInfo, { quantity: row.quantity as number | null, quantity_sold: row.quantity_sold as number | null }),
+      source_url: row.product_id ? sourceUrlById.get(row.product_id as string) ?? null : null,
+      ended_at: endInfo?.endTime ?? now,
+    }
+  })
+
+  // 履歴の記録に失敗しても同期自体は続ける(在庫一覧の整合性の方が優先)
+  const { error: upsertError } = await db
+    .from('inventory_ended_listings')
+    .upsert(history, { onConflict: 'user_id,ebay_item_id' })
+  if (upsertError) console.warn('[inventory] ended listing history save failed:', upsertError.message)
+}
+
 async function removeEndedListings(
   db: SupabaseClient,
   userId: string,
   itemIds: string[],
   sellerAccountId?: string | null,
+  endedListings?: EndedListingInfo[],
 ): Promise<void> {
   if (itemIds.length === 0) return
+  const endInfoById = endedListings
+    ? new Map(endedListings.map((info) => [info.ebayItemId, info]))
+    : undefined
   for (let index = 0; index < itemIds.length; index += DB_CHUNK_SIZE) {
     const chunk = itemIds.slice(index, index + DB_CHUNK_SIZE)
-    await markProductsForEndedListings(db, userId, chunk)
+    await recordEndedListingHistory(db, userId, chunk, endInfoById, sellerAccountId)
+    await markProductsForEndedListings(db, userId, chunk, endInfoById)
     let query = db
       .from('inventory_active_listings')
       .delete()
@@ -844,7 +935,7 @@ export async function syncKnownInventoryListingBatch(
   const totalBatches = Math.max(1, Math.ceil(knownIds.length / batchSize))
   const start = (batchIndex - 1) * batchSize
 
-  let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
+  let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [], endedListings: [] }
   let callLimited = false
 
   // GetMyeBaySelling(1回200件)でまとめて取得できた場合は、1リクエストで
@@ -898,7 +989,7 @@ export async function syncKnownInventoryListingBatch(
     }
     const missingLimit = options.maxMissingChecksPerRun ?? DEFAULT_MISSING_CHECKS_PER_RUN
     const toCheck = canFetchItems ? missing.slice(0, Math.max(0, missingLimit)) : []
-    let checked: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
+    let checked: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [], endedListings: [] }
     if (toCheck.length > 0) {
       try {
         checked = await fetchListingsByItemIds(
@@ -911,7 +1002,7 @@ export async function syncKnownInventoryListingBatch(
         callLimited = true
       }
     }
-    fetched = { items: [...found, ...checked.items], endedItemIds: checked.endedItemIds }
+    fetched = { items: [...found, ...checked.items], endedItemIds: checked.endedItemIds, endedListings: checked.endedListings }
   } else if (!callLimited && canFetchItems) {
     try {
       fetched = await fetchListingsByItemIds(
@@ -926,7 +1017,7 @@ export async function syncKnownInventoryListingBatch(
     }
   }
   const stored = await storeInventoryListings(db, userId, fetched.items, options)
-  await removeEndedListings(db, userId, fetched.endedItemIds, options.sellerAccountId)
+  await removeEndedListings(db, userId, fetched.endedItemIds, options.sellerAccountId, fetched.endedListings)
   if (!callLimited) await purgeUnmanagedListings(db, userId, options.sellerAccountId)
 
   const processedItems = bulk ? knownIds.length : Math.min(knownIds.length, start + targetIds.length)
@@ -996,7 +1087,7 @@ export async function syncKnownInventoryListings(
   const remainingFetchMs = fetchBudgetMs ? fetchBudgetMs - (Date.now() - fetchStartedAt) : undefined
   const canFetchItems = remainingFetchMs === undefined || remainingFetchMs > 5_000
 
-  let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
+  let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [], endedListings: [] }
   if (bulk) {
     // 本番で確認した不具合(2026-09-28): 新しいセラー(akebono-32)は
     // GetSellerListの走査が毎回時間切れになり、UKに出品した127件をいつまでも
@@ -1022,7 +1113,7 @@ export async function syncKnownInventoryListings(
     // (件数は多くないのが通常。多い場合は上限までにして残りは次回へ)
     const missingLimit = options.maxMissingChecksPerRun ?? DEFAULT_MISSING_CHECKS_PER_RUN
     const toCheck = canFetchItems ? missing.slice(0, Math.max(0, missingLimit)) : []
-    let checked: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [] }
+    let checked: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [], endedListings: [] }
     if (toCheck.length > 0) {
       try {
         checked = await fetchListingsByItemIds(
@@ -1035,7 +1126,7 @@ export async function syncKnownInventoryListings(
         callLimited = true
       }
     }
-    fetched = { items: [...found, ...checked.items], endedItemIds: checked.endedItemIds }
+    fetched = { items: [...found, ...checked.items], endedItemIds: checked.endedItemIds, endedListings: checked.endedListings }
   } else if (!callLimited && canFetchItems) {
     try {
       fetched = await fetchListingsByItemIds(
@@ -1049,7 +1140,7 @@ export async function syncKnownInventoryListings(
     }
   }
   const stored = await storeInventoryListings(db, userId, fetched.items, options)
-  await removeEndedListings(db, userId, fetched.endedItemIds, options.sellerAccountId)
+  await removeEndedListings(db, userId, fetched.endedItemIds, options.sellerAccountId, fetched.endedListings)
   // 途中までしか照会していない回では、紐付かない出品の掃除は行わない
   // (未照会の出品を誤って消さないため)
   if (finishedAll && !callLimited) await purgeUnmanagedListings(db, userId, options.sellerAccountId)
