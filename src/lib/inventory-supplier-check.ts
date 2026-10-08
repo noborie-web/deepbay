@@ -267,7 +267,15 @@ export async function checkSupplierListings(
     .select(needsProductJoin ? 'id, product_id, ebay_item_id, products!inner(source_site)' : 'id, product_id, ebay_item_id')
     .eq('user_id', userId)
     .not('product_id', 'is', null)
-    .gt('quantity', 0)
+    // 本番で確認した不具合(2026-10-08): 在庫数が不明(null)の出品84件が、
+    // 1件も仕入先チェックされていなかった(在庫数1以上の715件は全件6時間
+    // 以内にチェック済み)。PostgreSQLでは null > 0 が真にならないため、
+    // .gt('quantity', 0) が「在庫数を取得できなかった出品」まで除外して
+    // いた。eBayには生きている出品なので、仕入先が売り切れても取り下げ
+    // られず、在庫が無いまま売れてしまう。
+    // 在庫数0(取り下げ済み)は従来どおり対象外、不明は「確認すべき」として
+    // 対象に含める。
+    .or('quantity.gt.0,quantity.is.null')
   if (options.sourceSite) listingQuery = listingQuery.eq('products.source_site', options.sourceSite)
   if (options.excludeSourceSites?.length) {
     listingQuery = listingQuery.not('products.source_site', 'in', `(${options.excludeSourceSites.join(',')})`)

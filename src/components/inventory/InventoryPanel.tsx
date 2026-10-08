@@ -1134,6 +1134,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     !stackingSearch || i.title?.includes(stackingSearch) || i.ebay_item_id.includes(stackingSearch)
   )
 
+  // 在庫数が取得できていない出品(同期の異常)。仕入先チェック自体は対象に含める。
+  const unknownQuantityCount = listings.filter((listing) => listing.quantity == null).length
+
   const tabs: Tab[] = ['暗号化復元', 'eBay商品一覧', '稼働状況', '設定', '積み上げ設定', '重複チェック']
 
   return (
@@ -1230,6 +1233,16 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               <p className="mt-1 text-xs text-gray-500">
                 eBayから取得した商品を表示しています。閲覧専用のため、出品内容は変更されません。
               </p>
+              {/* 本番で確認した不具合(2026-10-08): 在庫数が不明(null)の出品は
+                  仕入先チェックの対象から外れており、仕入先が売り切れても
+                  取り下げられないまま売れてしまっていた。対象には含めたが、
+                  在庫数が取れていないこと自体は同期の異常なので気づけるようにする。 */}
+              {unknownQuantityCount > 0 && (
+                <p className="mt-1.5 rounded bg-amber-50 border border-amber-200 px-2 py-1 text-xs text-amber-800">
+                  在庫数を取得できていない出品が{unknownQuantityCount}件あります（この一覧の中）。
+                  eBay同期をやり直すと解消することがあります。
+                </p>
+              )}
               {statusFilter !== 'total' && (
                 <p className="mt-1 text-xs text-blue-600">
                   絞り込み中: {statusFilter === 'draft' ? '下書き(eBay出品済みリストには該当がありません)' : statusFilter === 'listed' ? '出品中(在庫数1以上)' : statusFilter === 'sold' ? '売却済み(在庫数0・販売あり)' : '取下げ(在庫数0・販売なし)'}
@@ -1391,7 +1404,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                         </>
                       ) : '—'}
                     </td>
-                    <td className="px-3 py-2 text-right text-gray-700">{listing.quantity ?? '—'}</td>
+                    <td className={`px-3 py-2 text-right ${listing.quantity == null ? 'text-amber-700' : 'text-gray-700'}`}>
+                      {listing.quantity ?? <span title="eBayから在庫数を取得できていません">不明</span>}
+                    </td>
                     <td className="px-3 py-2 text-right text-gray-700">{listing.quantity_sold ?? '—'}</td>
                     <td className="px-3 py-2">
                       <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${listing.product_id ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
