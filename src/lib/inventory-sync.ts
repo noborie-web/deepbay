@@ -11,6 +11,9 @@ import {
 export interface InventorySyncResult {
   total: number
   matched: number
+  // Kakehashiで出品した印はあるが、商品レコードが失われている出品の件数。
+  // 仕入先URLが無いため在庫チェックができない(画面で可視化する)。
+  unmanaged: number
 }
 
 export interface InventorySyncOptions {
@@ -155,7 +158,18 @@ export async function storeInventoryListings(
       productLookup.get(`ebay:${listing.ebayItemId}`),
       sourceProductIds,
     )
-    if (!productId) return []
+    // ユーザー報告(2026-10-08): 売れた商品のDBK-IDで復元できない件を調べた
+    // ところ、同期のたびに miyabi-24 の350件(895件中)が「商品レコードが無い」
+    // ために黙って捨てられていた。捨てると在庫管理にも載らず、仕入先チェック
+    // も取り下げも行われないため、仕入先が売り切れても出品が残り続ける。
+    // Kakehashiが出品した印(CustomLabel)がある出品は、商品レコードが
+    // 失われていても保存して可視化する。他ツールの出品(印が無いもの)は
+    // 従来どおり保存しない。
+    // hasKakehashiLabel は「ラベルそのもの」も照合キーに含むため、他ツールの
+    // 任意のSKUでも true になる。ここは Kakehashi が発行した
+    // kakehashi_<商品UUID> / deepbay_<商品UUID> 形式だけを残す
+    // (eBayアカウントには他ツールの出品が約5,000件あり、混ぜない)。
+    if (!productId && extractProductIdFromCustomLabel(listing.customLabel) === null) return []
 
     // サイト・通貨はeBayから取得できたときだけ更新する(取得できない回に
     // 既定値のUS/USDで上書きしてUK/AU出品を取り違えないため)。
@@ -182,7 +196,9 @@ export async function storeInventoryListings(
       updated_at: now,
     }]
   })
-  const matched = rows.length
+  const matched = rows.filter(row => row.product_id !== null).length
+  // 商品レコードが失われているKakehashi出品(在庫チェックができない)
+  const unmanaged = rows.length - matched
 
   const chunks = Array.from(
     { length: Math.ceil(rows.length / DB_CHUNK_SIZE) },
@@ -209,14 +225,17 @@ export async function storeInventoryListings(
     }
   }))
 
-  await applyListingStateToProducts(db, userId, rows.map(row => ({
-    product_id: row.product_id,
-    ebay_item_id: row.ebay_item_id,
-    quantity: row.quantity,
-    quantity_sold: row.quantity_sold,
-  })))
+  // 商品レコードが無い出品は、反映先の商品が存在しないので対象外
+  await applyListingStateToProducts(db, userId, rows
+    .filter((row): row is typeof row & { product_id: string } => row.product_id !== null)
+    .map(row => ({
+      product_id: row.product_id,
+      ebay_item_id: row.ebay_item_id,
+      quantity: row.quantity,
+      quantity_sold: row.quantity_sold,
+    })))
 
-  return { total: uniqueListings.length, matched }
+  return { total: uniqueListings.length, matched, unmanaged }
 }
 
 export interface ProductListingStateInput {
@@ -414,11 +433,16 @@ export async function purgeUnmanagedListings(
   userId: string,
   sellerAccountId?: string | null,
 ): Promise<void> {
+  // ユーザー報告(2026-10-08): Kakehashiで出品したのに商品レコードが失われた
+  // 出品も、ここで「管理外」として消えていた。CustomLabelにKakehashiの印が
+  // ある行は残し、画面で気づけるようにする(他ツールの出品だけを取り除く)。
   let query = db
     .from('inventory_active_listings')
     .delete()
     .eq('user_id', userId)
     .is('product_id', null)
+    .not('custom_label', 'like', 'kakehashi\\_%')
+    .not('custom_label', 'like', 'deepbay\\_%')
   // 他セラーの出品を巻き込んで消さない
   if (sellerAccountId) query = query.eq('seller_account_id', sellerAccountId)
   const { error } = await query
@@ -534,6 +558,8 @@ export interface KnownInventorySyncBatchResult {
 export interface KnownInventorySyncResult {
   total: number
   matched: number
+  // Kakehashiの印はあるが商品レコードが失われている出品(在庫チェック不可)
+  unmanaged: number
   ended: number
   discovered: number
   discoveryTruncated: boolean
@@ -1148,6 +1174,7 @@ export async function syncKnownInventoryListings(
   return {
     total: knownIds.length,
     matched: stored.matched,
+    unmanaged: stored.unmanaged,
     ended: fetched.endedItemIds.length,
     discovered: discovery.discovered,
     discoveryTruncated: discovery.truncated,

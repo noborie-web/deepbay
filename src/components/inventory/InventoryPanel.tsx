@@ -1139,6 +1139,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
 
   // 在庫数が取得できていない出品(同期の異常)。仕入先チェック自体は対象に含める。
   const unknownQuantityCount = listings.filter((listing) => listing.quantity == null).length
+  // ユーザー報告(2026-10-08): Kakehashiで出品したのに商品レコードが失われた
+  // 出品が、同期のたびに黙って捨てられていた(miyabi-24で895件中350件)。
+  // 捨てると仕入先チェックも取り下げも行われず、売り切れても出品が残る。
+  // 保存するようにしたので、件数を画面に出して気づけるようにする。
+  const unmanagedCount = listings.filter((listing) => !listing.product_id).length
 
   const tabs: Tab[] = ['暗号化復元', 'eBay商品一覧', '稼働状況', '設定', '積み上げ設定', '重複チェック']
 
@@ -1240,6 +1245,13 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                   仕入先チェックの対象から外れており、仕入先が売り切れても
                   取り下げられないまま売れてしまっていた。対象には含めたが、
                   在庫数が取れていないこと自体は同期の異常なので気づけるようにする。 */}
+              {unmanagedCount > 0 && (
+                <p className="mt-1.5 rounded bg-red-50 border border-red-200 px-2 py-1 text-xs text-red-800">
+                  商品データが失われている出品が{unmanagedCount}件あります（この一覧の中・「未一致」と表示）。
+                  仕入先URLが分からないため、<strong>仕入先の売り切れチェックと自動取り下げができません</strong>。
+                  在庫切れのまま売れてしまう可能性があるので、不要なら手動で取り下げてください。
+                </p>
+              )}
               {unknownQuantityCount > 0 && (
                 <p className="mt-1.5 rounded bg-amber-50 border border-amber-200 px-2 py-1 text-xs text-amber-800">
                   在庫数を取得できていない出品が{unknownQuantityCount}件あります（この一覧の中）。
@@ -1416,8 +1428,8 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                     </td>
                     <td className="px-3 py-2 text-right text-gray-700">{listing.quantity_sold ?? '—'}</td>
                     <td className="px-3 py-2">
-                      <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${listing.product_id ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                        {listing.product_id ? '一致' : '未一致'}
+                      <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${listing.product_id ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                        {listing.product_id ? '一致' : '商品データなし'}
                       </span>
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-500">
