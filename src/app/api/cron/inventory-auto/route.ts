@@ -277,7 +277,7 @@ export async function GET(req: NextRequest) {
             bulk_error: syncResult.bulkError ?? null,
             processed: syncResult.processed, remaining: syncResult.nextCursorItemId ? syncResult.total - syncResult.processed : 0,
           }
-          syncResults.push({ ...summary, total: syncResult.total, matched: syncResult.matched })
+          syncResults.push({ ...summary, total: syncResult.total, matched: syncResult.matched, unmanaged: syncResult.unmanaged })
           // 途中で打ち切られても利用状況が残るよう、セラーごとに記録する
           await flushEbayCallCounts(db, userId)
           await db.from('inventory_runs').insert({

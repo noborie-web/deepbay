@@ -87,7 +87,9 @@ describe('InventoryPanel matching skip', () => {
 
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Kakehashi商品を選択' })).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: '選択した商品を順番に紐付け（0件）' })).toBeDisabled()
-    expect(screen.getByText('未一致')).toBeInTheDocument()
+    // ユーザー報告(2026-10-08): 商品レコードが失われた出品は在庫チェックが
+    // できないため、「未一致」から「商品データなし」に表記を変えた。
+    expect(screen.getByText('商品データなし')).toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 })

@@ -2,13 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { syncInventoryListingBatch, syncInventoryListings, syncKnownInventoryListings } from '@/lib/inventory-sync'
 
-const { mockFetchActiveListingsBatch, mockFetchAllActiveListings, mockFetchListingsByItemIds, mockScanSellerList, mockUpsert, mockDeleteIs } = vi.hoisted(() => ({
+const { mockFetchActiveListingsBatch, mockFetchAllActiveListings, mockFetchListingsByItemIds, mockScanSellerList, mockUpsert, mockDeleteIs, mockDeleteNot } = vi.hoisted(() => ({
   mockFetchActiveListingsBatch: vi.fn(),
   mockFetchAllActiveListings: vi.fn(),
   mockFetchListingsByItemIds: vi.fn(),
   mockScanSellerList: vi.fn(),
   mockUpsert: vi.fn(),
   mockDeleteIs: vi.fn(),
+  // ユーザー報告(2026-10-08): Kakehashiで出品したのに商品レコードが失われた
+  // 出品まで掃除で消えていたため、kakehashi_/deepbay_ ラベルの行は残すように
+  // した(.not('custom_label', 'like', ...) が2回続く)。
+  mockDeleteNot: vi.fn(),
 }))
 
 // inventory_active_listings のモック。同期の最後に「紐付かない出品の掃除」
@@ -16,7 +20,18 @@ const { mockFetchActiveListingsBatch, mockFetchAllActiveListings, mockFetchListi
 function listingTable() {
   return {
     upsert: mockUpsert,
-    delete: () => ({ eq: () => ({ is: mockDeleteIs }) }),
+    delete: () => ({
+      eq: () => ({
+        is: (...args: unknown[]) => {
+          mockDeleteIs(...args)
+          const notChain = {
+            not: (...notArgs: unknown[]) => { mockDeleteNot(...notArgs); return notChain },
+            then: (resolve: (value: unknown) => unknown) => Promise.resolve({ error: null }).then(resolve),
+          }
+          return notChain
+        },
+      }),
+    }),
   }
 }
 
@@ -74,6 +89,7 @@ describe('syncInventoryListings', () => {
     mockFetchAllActiveListings.mockReset()
     mockUpsert.mockReset().mockResolvedValue({ error: null })
     mockDeleteIs.mockReset().mockResolvedValue({ error: null })
+    mockDeleteNot.mockReset()
     mockProductUpdate.mockReset()
   })
 
@@ -113,7 +129,7 @@ describe('syncInventoryListings', () => {
 
     const result = await syncInventoryListings(db, 'user-1', 'access-token')
 
-    expect(result).toEqual({ total: 2, matched: 1 })
+    expect(result).toEqual({ total: 2, matched: 1, unmanaged: 0 })
     expect(mockFetchAllActiveListings).toHaveBeenCalledWith(
       { accessToken: 'access-token' },
       { signal: undefined },
@@ -153,7 +169,7 @@ describe('syncInventoryListings', () => {
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
-    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1 })
+    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1, unmanaged: 0 })
     expect(mockUpsert).toHaveBeenCalledWith([expect.objectContaining({ product_id: productId })], { onConflict: 'user_id,ebay_item_id' })
   })
 
@@ -176,7 +192,7 @@ describe('syncInventoryListings', () => {
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
-    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1 })
+    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1, unmanaged: 0 })
     expect(mockUpsert).toHaveBeenCalledWith([expect.objectContaining({ product_id: productId })], { onConflict: 'user_id,ebay_item_id' })
   })
 
@@ -203,7 +219,7 @@ describe('syncInventoryListings', () => {
       }),
     } as unknown as SupabaseClient
 
-    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1 })
+    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1, unmanaged: 0 })
     expect(mockUpsert).toHaveBeenCalledWith(
       [expect.objectContaining({ product_id: 'source-product' })],
       { onConflict: 'user_id,ebay_item_id' },
@@ -236,7 +252,7 @@ describe('syncInventoryListings', () => {
       }),
     } as unknown as SupabaseClient
 
-    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 0 })
+    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 0, unmanaged: 0 })
     // 紐付け先を一意に決められない出品はKakehashi管理外として保存しない
     expect(mockUpsert).not.toHaveBeenCalled()
   })
@@ -280,7 +296,7 @@ describe('syncInventoryListings', () => {
       { writeConcurrency: 4 },
     )
 
-    expect(result).toEqual({ total: 450, matched: 450 })
+    expect(result).toEqual({ total: 450, matched: 450, unmanaged: 0 })
     expect(mockUpsert).toHaveBeenCalledTimes(5)
     expect(maxActiveWrites).toBe(4)
   })
@@ -322,7 +338,7 @@ describe('syncInventoryListings', () => {
 
     const result = await syncInventoryListings(db, 'user-1', 'access-token')
 
-    expect(result).toEqual({ total: 205, matched: 0 })
+    expect(result).toEqual({ total: 205, matched: 0, unmanaged: 0 })
     // 本番で確認した不具合(2026-09-24): まとめて .in(...) するとURLが長すぎて
     // PostgREST が 400 Bad Request を返し、同期が失敗していた。ItemID照会も
     // source_item_id照会と同じく100件ずつに分割する。
@@ -355,7 +371,7 @@ describe('syncInventoryListings', () => {
 
     const result = await syncInventoryListings(db, 'user-1', 'access-token')
 
-    expect(result).toEqual({ total: 1, matched: 1 })
+    expect(result).toEqual({ total: 1, matched: 1, unmanaged: 0 })
     expect(mockUpsert).toHaveBeenCalledWith([
       expect.objectContaining({
         ebay_item_id: 'item-1',
@@ -402,6 +418,7 @@ describe('syncInventoryListings', () => {
     expect(result).toEqual({
       total: 1,
       matched: 1,
+      unmanaged: 0,
       nextPage: 9,
       totalPages: 12,
       lastFetchedPage: 8,
@@ -432,7 +449,8 @@ describe('syncKnownInventoryListings: 分割実行', () => {
           chain.eq = vi.fn(() => chain)
           chain.not = vi.fn(() => chain)
           chain.delete = vi.fn(() => chain)
-          chain.is = vi.fn(async () => ({ error: null }))
+          // 掃除は .is('product_id', null).not(...).not(...) と続くのでチェーンを返す
+          chain.is = vi.fn(() => chain)
           chain.in = vi.fn(() => chain)
           chain.upsert = vi.fn(async () => ({ error: null }))
           chain.then = (resolve: (v: unknown) => void) => resolve({ data: known.map(id => ({ ebay_item_id: id })), error: null })
@@ -478,6 +496,7 @@ describe('新規出品の発見（サイト別）', () => {
     mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: false, pagesFetched: 1, totalPages: 1 })
     mockUpsert.mockReset().mockResolvedValue({ error: null })
     mockDeleteIs.mockReset().mockResolvedValue({ error: null })
+    mockDeleteNot.mockReset()
   })
 
   it('セラーの出品サイトごとに GetSellerList を呼ぶ', async () => {
@@ -536,6 +555,7 @@ describe('eBayの呼び出し上限', () => {
     mockFetchListingsByItemIds.mockReset().mockRejectedValue(new EbayCallLimitError('上限に達しました'))
     mockUpsert.mockReset().mockResolvedValue({ error: null })
     mockDeleteIs.mockReset().mockResolvedValue({ error: null })
+    mockDeleteNot.mockReset()
 
     const db = {
       from: (table: string) => {
@@ -603,6 +623,7 @@ describe('既存出品の一括更新', () => {
     mockFetchActiveListingsBatch.mockReset()
     mockUpsert.mockReset().mockResolvedValue({ error: null })
     mockDeleteIs.mockReset().mockResolvedValue({ error: null })
+    mockDeleteNot.mockReset()
   })
 
   it('一覧に居た出品はGetItemを使わずに更新し、無かった分だけ個別確認する', async () => {

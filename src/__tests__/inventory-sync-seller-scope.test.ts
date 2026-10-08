@@ -27,6 +27,11 @@ function makeDb(captured: { upserts: Record<string, unknown>[]; deleteFilters: A
       const chain = {
         eq: (column: string, value: unknown) => { captured.deleteFilters.push([column, value]); return chain },
         is: (column: string, value: unknown) => { captured.deleteFilters.push([column, value]); return chain },
+        // Kakehashiの印がある出品は掃除で消さない(.not('custom_label','like',...) が続く)
+        not: (column: string, operator: string, value: unknown) => {
+          captured.deleteFilters.push([column, `${operator}:${value}`])
+          return chain
+        },
         then: (resolve: (v: unknown) => void) => resolve({ error: null }),
       }
       return chain
@@ -80,6 +85,9 @@ describe('在庫同期のセラー・サイト分離', () => {
     expect(captured.deleteFilters).toEqual([
       ['user_id', 'user-1'],
       ['product_id', null],
+      // Kakehashiが出品した印がある行は、商品レコードが失われていても残す
+      ['custom_label', 'like:kakehashi\\_%'],
+      ['custom_label', 'like:deepbay\\_%'],
       ['seller_account_id', 'seller-b'],
     ])
   })
