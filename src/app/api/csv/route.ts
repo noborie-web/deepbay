@@ -197,6 +197,23 @@ export async function GET(req: NextRequest) {
   })
   const csv = files[0].csv
 
+  // 本番で判明した問題(2026-10-09): CSV出品はeBayからItemIDが戻らないため
+  // products.ebay_item_id が null のままで、在庫管理にも載らない。そのため
+  // 商品削除の安全装置が素通りし、eBayに出品が生きている商品を削除できて
+  // しまっていた(626件が追跡不能になった)。出品CSVに出した時点で印を付け、
+  // 削除時に警告できるようにする。
+  const exportedAt = new Date().toISOString()
+  for (let index = 0; index < typedProducts.length; index += 100) {
+    const chunk = typedProducts.slice(index, index + 100).map((product) => product.id)
+    const { error: markError } = await admin
+      .from('products')
+      .update({ listing_csv_exported_at: exportedAt })
+      .eq('user_id', user.id)
+      .in('id', chunk)
+    // 印が付かなくてもCSVの出力自体は成功させる(次回の出力で付く)
+    if (markError) console.warn('[csv] failed to mark listing_csv_exported_at:', markError.message)
+  }
+
   // ユーザー要望: 出品CSVを出力した抽出に「出力済み」を表示する
   await admin
     .from('extractions')

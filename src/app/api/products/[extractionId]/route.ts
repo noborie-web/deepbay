@@ -104,7 +104,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ e
   if (!force) {
     const { data: products, error: productsError } = await admin
       .from('products')
-      .select('id, ebay_item_id, ebay_title, original_title')
+      .select('id, ebay_item_id, ebay_title, original_title, listing_csv_exported_at')
       .eq('id', productId)
       .eq('extraction_id', extractionId)
       .eq('user_id', user.id)
