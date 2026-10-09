@@ -59,7 +59,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   // 切り離す(extraction_id = null)だけにする。強制削除(force)は廃止。
   const { data: products, error: productsError } = await admin
     .from('products')
-    .select('id, ebay_item_id, ebay_title, original_title')
+    .select('id, ebay_item_id, ebay_title, original_title, listing_csv_exported_at')
     .eq('extraction_id', id)
     .eq('user_id', user.id)
   if (productsError) return NextResponse.json({ error: productsError.message }, { status: 500 })

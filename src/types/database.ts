@@ -162,6 +162,9 @@ export interface Product {
   // 設定されていれば商品状態やカテゴリ別マッピングより優先される。
   // null なら従来どおり商品状態から自動判定する。
   ebay_condition_id?: string | null
+  // 出品CSVに出力した日時。CSV出品はeBayからItemIDが戻らないため、
+  // 「出品した可能性がある」ことを示す唯一の手がかりになる(削除時の警告に使う)
+  listing_csv_exported_at?: string | null
   ebay_category_id: string | null
   listing_status: ListingStatus
   ebay_item_id?: string | null
