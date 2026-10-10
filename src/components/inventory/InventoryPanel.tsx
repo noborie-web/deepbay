@@ -1145,7 +1145,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // 出品が、同期のたびに黙って捨てられていた(miyabi-24で895件中350件)。
   // 捨てると仕入先チェックも取り下げも行われず、売り切れても出品が残る。
   // 保存するようにしたので、件数を画面に出して気づけるようにする。
-  const unmanagedCount = listings.filter((listing) => !listing.product_id).length
+  // ユーザー報告(2026-10-11): 「取り下げCSVを出力」ボタンが見つからない。
+  // 表示中のページ内だけを数えていたため、そのページに該当行が無いと警告ごと
+  // 出なかった。サーバーが返す全ページ合計(unmatchedTotal、同じく
+  // product_id is null の件数)を使う。
+  const unmanagedCount = unmatchedTotal
 
   const tabs: Tab[] = ['暗号化復元', 'eBay商品一覧', '稼働状況', '設定', '積み上げ設定', '重複チェック']
 
@@ -1250,7 +1254,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               {unmanagedCount > 0 && (
                 <div className="mt-1.5 rounded bg-red-50 border border-red-200 px-2 py-1.5 text-xs text-red-800">
                   <p>
-                    商品データが失われている出品が{unmanagedCount}件あります（この一覧の中・「商品データなし」と表示）。
+                    商品データが失われている出品が{unmanagedCount.toLocaleString()}件あります（全ページ合計。一覧では「商品データなし」と表示）。
                     仕入先URLが分からないため、<strong>仕入先の売り切れチェックと自動取り下げができません</strong>。
                     在庫切れのまま売れてしまう可能性があります。
                   </p>
@@ -1261,7 +1265,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                     disabled={exportingCsv !== null}
                     className="mt-1.5 rounded border border-red-400 bg-white px-2.5 py-1 text-xs text-red-700 hover:bg-red-100 disabled:opacity-40"
                   >
-                    {exportingCsv === 'end-unmanaged' ? 'CSV作成中...' : `この${unmanagedCount}件の取り下げCSVを出力（End）`}
+                    {exportingCsv === 'end-unmanaged' ? 'CSV作成中...' : `この${unmanagedCount.toLocaleString()}件の取り下げCSVを出力（End）`}
                   </button>
                 </div>
               )}
