@@ -683,11 +683,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // ユーザー要望(2026-09-27): APIの呼び出し上限に達したときでも運用できるよう、
   // 価格改定・取り下げをCSVで出力してeBay(File Exchange)にアップロードできる
   // ようにする。対象の決め方はAPI実行と同じ。
-  const [exportingCsv, setExportingCsv] = useState<'revise' | 'end' | null>(null)
+  const [exportingCsv, setExportingCsv] = useState<'revise' | 'end' | 'end-unmanaged' | null>(null)
   // ユーザー要望(2026-09-27): APIの呼び出し上限に達したときでも運用できるよう、
   // 価格改定・取り下げをCSVで出力してeBay(File Exchange)にアップロードできる
   // ようにする。対象の決め方はAPI実行と同じ。
-  const handleExportActionCsv = async (kind: 'revise' | 'end') => {
+  const handleExportActionCsv = async (kind: 'revise' | 'end' | 'end-unmanaged') => {
     setExportingCsv(kind)
     setMessage(null)
     try {
@@ -1248,11 +1248,22 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                   取り下げられないまま売れてしまっていた。対象には含めたが、
                   在庫数が取れていないこと自体は同期の異常なので気づけるようにする。 */}
               {unmanagedCount > 0 && (
-                <p className="mt-1.5 rounded bg-red-50 border border-red-200 px-2 py-1 text-xs text-red-800">
-                  商品データが失われている出品が{unmanagedCount}件あります（この一覧の中・「未一致」と表示）。
-                  仕入先URLが分からないため、<strong>仕入先の売り切れチェックと自動取り下げができません</strong>。
-                  在庫切れのまま売れてしまう可能性があるので、不要なら手動で取り下げてください。
-                </p>
+                <div className="mt-1.5 rounded bg-red-50 border border-red-200 px-2 py-1.5 text-xs text-red-800">
+                  <p>
+                    商品データが失われている出品が{unmanagedCount}件あります（この一覧の中・「商品データなし」と表示）。
+                    仕入先URLが分からないため、<strong>仕入先の売り切れチェックと自動取り下げができません</strong>。
+                    在庫切れのまま売れてしまう可能性があります。
+                  </p>
+                  {/* ユーザー判断(2026-10-09): この626件は取り下げる。通常の取り下げは
+                      「仕入先が売り切れ」が条件なので対象にならないため、専用の出力を用意する。 */}
+                  <button
+                    onClick={() => handleExportActionCsv('end-unmanaged')}
+                    disabled={exportingCsv !== null}
+                    className="mt-1.5 rounded border border-red-400 bg-white px-2.5 py-1 text-xs text-red-700 hover:bg-red-100 disabled:opacity-40"
+                  >
+                    {exportingCsv === 'end-unmanaged' ? 'CSV作成中...' : `この${unmanagedCount}件の取り下げCSVを出力（End）`}
+                  </button>
+                </div>
               )}
               {unknownQuantityCount > 0 && (
                 <p className="mt-1.5 rounded bg-amber-50 border border-amber-200 px-2 py-1 text-xs text-amber-800">

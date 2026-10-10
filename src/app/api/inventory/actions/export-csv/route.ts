@@ -20,8 +20,8 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const kind = req.nextUrl.searchParams.get('kind')
-  if (kind !== 'revise' && kind !== 'end') {
-    return NextResponse.json({ error: 'kind は revise か end で指定してください' }, { status: 400 })
+  if (kind !== 'revise' && kind !== 'end' && kind !== 'end-unmanaged') {
+    return NextResponse.json({ error: 'kind は revise / end / end-unmanaged で指定してください' }, { status: 400 })
   }
 
   const db = admin()
@@ -33,6 +33,30 @@ export async function GET(req: NextRequest) {
   const defaultSeller = (sellers ?? []).find(row => row.is_default)?.seller_id
     ?? (sellers ?? [])[0]?.seller_id
     ?? 'kakehashi'
+
+  // ユーザー判断(2026-10-09): 商品レコードが失われた出品(626件)は仕入先URLが
+  // 無く、売り切れを検知できないまま売れてしまうため取り下げる。
+  // 通常の取り下げは「仕入先が売り切れ(在庫0)」が条件なので対象にならない。
+  // 売り切れ判定を経由せず、商品データが無い出品そのものを対象にする。
+  if (kind === 'end-unmanaged') {
+    const { data: listings, error } = await db
+      .from('inventory_active_listings')
+      .select('ebay_item_id, site_id, seller_account_id')
+      .eq('user_id', user.id)
+      .is('product_id', null)
+      .is('delisted_at', null)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+    const files = buildEndCsvFiles(
+      (listings ?? []).map(l => ({
+        ebayItemId: l.ebay_item_id as string,
+        siteId: (l.site_id as string | null) ?? 'US',
+        sellerId: sellerNames.get(l.seller_account_id as string) ?? null,
+      })),
+      defaultSeller,
+    )
+    return NextResponse.json({ files, count: files.reduce((sum, f) => sum + f.rows, 0) })
+  }
 
   if (kind === 'end') {
     const { data: settings, error: settingsError } = await db
