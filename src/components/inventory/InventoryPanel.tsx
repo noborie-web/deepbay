@@ -189,6 +189,11 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const [inventoryListingCount, setInventoryListingCount] = useState(initialListingCount)
   const [ebayListingTotal, setEbayListingTotal] = useState(initialListingCount)
   const [unmatchedTotal, setUnmatchedTotal] = useState(0)
+  // ユーザー要望(2026-10-11): 「今後は必ず在庫管理できるようにしてください」。
+  // CSV出品はeBayがItemIDを返さないので出品時に在庫管理へ登録できない。
+  // 取り込みを忘れると管理外の出品が静かに増えるため(626件が漏れていた)、
+  // 「出品CSVに出したのに在庫管理に入っていない商品」を検知して知らせる。
+  const [csvListedPending, setCsvListedPending] = useState(0)
   const [ebayListingPage, setEbayListingPage] = useState(1)
   const [ebayListingTotalPages, setEbayListingTotalPages] = useState(Math.max(1, Math.ceil(initialListingCount / 50)))
   const [ebayListingSearch, setEbayListingSearch] = useState('')
@@ -510,6 +515,17 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     setDupLoaded(true)
   }, [dupLoaded])
 
+  const loadCsvListedStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/inventory/csv-listed-status', { cache: 'no-store' })
+      if (!res.ok) return
+      const json = await res.json() as { pending?: number }
+      setCsvListedPending(json.pending ?? 0)
+    } catch {
+      // 取得できなくても他の表示は続ける
+    }
+  }, [])
+
   const loadEbayListings = useCallback(async (pageNumber: number, searchValue: string, status: InventoryStatusFilter = 'total') => {
     // 「下書き」はeBayに出品済みのActiveリストという性質上、
     // このタブには該当が存在しないためAPIを呼ばず空表示にする。
@@ -643,7 +659,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   const handleTabChange = (t: Tab) => {
     setTab(t)
     if (t === 'eBay商品一覧') loadEbayListings(1, ebayAppliedSearch, statusFilter)
-    if (t === '稼働状況') { loadRuns(); loadActionSummary() }
+    if (t === '稼働状況') { loadRuns(); loadActionSummary(); loadCsvListedStatus() }
     if (t === '設定') loadSettings()
     if (t === '積み上げ設定') loadStacking()
     if (t === '重複チェック') loadDupConfigs()
@@ -911,6 +927,8 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Upload failed')
       // 商品レコードが失われたKakehashi出品は在庫チェックができないので、件数を明示する
+      // 取り込めば未登録は解消するので、件数を取り直す
+      void loadCsvListedStatus()
       showMsg('success', `アップロード完了: ${json.total}件取得、${json.matched}件マッチ`
         + (json.unmanaged ? `、${json.unmanaged}件は商品データなし（在庫チェック不可）` : ''))
       setRunsLoaded(false)
@@ -1632,6 +1650,21 @@ export default function InventoryPanel({ listings: initialListings, listingCount
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-2">データ取得</h3>
             <p className="text-xs text-gray-500 mb-3">Kakehashiで出品した商品の在庫数・価格・出品状態を最新にします。どちらか一方を実行すれば十分です（自動同期がONの場合は毎朝9時に①が自動実行されます）。</p>
+            {/* ユーザー要望(2026-10-11): CSV出品はeBayがItemIDを返さないため出品時に
+                在庫管理へ登録できない。取り込みを忘れると管理外の出品が静かに増える
+                (626件が漏れていた)ので、未取り込みを検知して知らせる。 */}
+            {csvListedPending > 0 && (
+              <div className="mb-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                <p className="font-medium">
+                  CSVで出品した{csvListedPending.toLocaleString()}件が、まだ在庫管理に入っていません。
+                </p>
+                <p className="mt-1">
+                  CSV出品ではeBayから商品番号が返らないため、Kakehashiは自動で登録できません。
+                  下の<strong>②「activeファイルを選択して取り込む」</strong>でeBayのActive listingsレポートを取り込むと、在庫管理の対象になります。
+                  取り込むまでは<strong>仕入先の売り切れチェックと自動取り下げが効きません</strong>。
+                </p>
+              </div>
+            )}
             <div className="flex items-stretch gap-3 flex-wrap">
               <div className="flex flex-col gap-1">
                 <span className="text-xs font-medium text-gray-700">① APIで同期する（推奨）</span>
