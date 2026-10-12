@@ -759,8 +759,15 @@ async function discoverNewListings(
     // 本番で確認した不具合(2026-09-27): 走査位置が無いセラー(追加したばかりの
     // akebono-32)は古い日付から順に読むため、直近にアップロードしたUK出品へ
     // たどり着く前に時間切れになり、いつまでも取り込めなかった。
-    // 初回は「新しい区間から」読み、当日分を最優先で取り込む。
-    if (!scannedUntil && sellerAccountId) {
+    // 「新しい区間から」読み、当日分を最優先で取り込む。
+    //
+    // 本番で確認した不具合(2026-10-12): この対処を初回(走査位置が無い場合)
+    // だけに適用していたため、2回目以降は古い方から読む経路に戻っていた。
+    // miyabi-24 は走査位置が 9/30 のまま、毎回 9/30 の区間だけで時間切れに
+    // なって前進できず(discovered: 0 / discovery_truncated: true)、10/11に
+    // CSV出品した91件へ永久にたどり着けなかった。
+    // 新規出品の取り込みが目的なので、常に新しい方から読む。
+    if (sellerAccountId) {
       const siteIds = options.sellerSiteIds && options.sellerSiteIds.length > 0 ? options.sellerSiteIds : ['US']
       let chunkEnd = scanStartedAt
       let newestDone = false
@@ -782,6 +789,7 @@ async function discoverNewListings(
         }
         if (!stop && !newestDone) {
           // 直近の区間を読み切れたら、次回はその時点以降だけを見ればよい
+          // (ここで前進させないと、毎回同じ区間を読み直して先へ進めない)
           newestDone = true
           const { error } = await db
             .from('seller_accounts')
