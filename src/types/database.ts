@@ -165,6 +165,9 @@ export interface Product {
   // 出品CSVに出力した日時。CSV出品はeBayからItemIDが戻らないため、
   // 「出品した可能性がある」ことを示す唯一の手がかりになる(削除時の警告に使う)
   listing_csv_exported_at?: string | null
+  // 「出品CSVに出したが、eBayに弾かれて出品されなかった」と確認した日時。
+  // 在庫管理の未登録警告から外すために使う(出し直すと解除される)
+  listing_csv_unlisted_confirmed_at?: string | null
   ebay_category_id: string | null
   listing_status: ListingStatus
   ebay_item_id?: string | null

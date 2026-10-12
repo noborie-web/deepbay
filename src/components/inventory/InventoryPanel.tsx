@@ -194,6 +194,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
   // 取り込みを忘れると管理外の出品が静かに増えるため(626件が漏れていた)、
   // 「出品CSVに出したのに在庫管理に入っていない商品」を検知して知らせる。
   const [csvListedPending, setCsvListedPending] = useState(0)
+  const [confirmingUnlisted, setConfirmingUnlisted] = useState(false)
   const [ebayListingPage, setEbayListingPage] = useState(1)
   const [ebayListingTotalPages, setEbayListingTotalPages] = useState(Math.max(1, Math.ceil(initialListingCount / 50)))
   const [ebayListingSearch, setEbayListingSearch] = useState('')
@@ -525,6 +526,34 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       // 取得できなくても他の表示は続ける
     }
   }, [])
+
+  // ユーザー要望(2026-10-12): eBayに弾かれて出品されなかった商品は、確認済みに
+  // して警告から外せるようにする。実際10/11のアップロードでは Durability
+  // Guarantee の値不正(No / null)などで12件が弾かれており、放置すると警告が
+  // 消えないままになって新しい漏れに気づけなくなる。
+  const confirmUnlisted = async () => {
+    if (!confirm(
+      `CSVで出品した${csvListedPending}件を「出品されなかった」として警告から外します。\n\n`
+      + 'eBayのアップロード結果でエラーになっていることを確認してから実行してください。\n'
+      + '出品CSVを出し直すと、この確認は自動で解除されます。',
+    )) return
+    setConfirmingUnlisted(true)
+    try {
+      const res = await fetch('/api/inventory/csv-listed-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const json = await res.json() as { confirmed?: number; error?: string }
+      if (!res.ok) throw new Error(json.error ?? '確認済みにできませんでした')
+      await loadCsvListedStatus()
+      showMsg('success', `${json.confirmed ?? 0}件を「出品されなかった」として警告から外しました`)
+    } catch (e) {
+      showMsg('error', e instanceof Error ? e.message : 'エラー')
+    } finally {
+      setConfirmingUnlisted(false)
+    }
+  }
 
   const loadEbayListings = useCallback(async (pageNumber: number, searchValue: string, status: InventoryStatusFilter = 'total') => {
     // 「下書き」はeBayに出品済みのActiveリストという性質上、
@@ -1663,6 +1692,17 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                   下の<strong>②「activeファイルを選択して取り込む」</strong>でeBayのActive listingsレポートを取り込むと、在庫管理の対象になります。
                   取り込むまでは<strong>仕入先の売り切れチェックと自動取り下げが効きません</strong>。
                 </p>
+                <p className="mt-1.5 text-[11px] text-amber-800">
+                  eBayのアップロード結果でエラーになっていた場合は、取り込んでも在庫管理には入りません。
+                  その場合はこちらで警告から外してください（出品CSVを出し直すと自動で戻ります）。
+                </p>
+                <button
+                  onClick={confirmUnlisted}
+                  disabled={confirmingUnlisted}
+                  className="mt-1.5 rounded border border-amber-400 bg-white px-2.5 py-1 text-xs text-amber-800 hover:bg-amber-100 disabled:opacity-40"
+                >
+                  {confirmingUnlisted ? '処理中...' : `出品されなかったと確認済みにする（${csvListedPending.toLocaleString()}件）`}
+                </button>
               </div>
             )}
             <div className="flex items-stretch gap-3 flex-wrap">
