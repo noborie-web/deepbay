@@ -536,6 +536,53 @@ describe('新規出品の発見（サイト別）', () => {
     const sites = mockScanSellerList.mock.calls.map(call => (call[2] as { siteId?: string }).siteId)
     expect(new Set(sites)).toEqual(new Set(['UK', 'AU']))
   })
+
+  // 本番で確認した不具合(2026-10-12): 走査位置がある場合は古い方から読む経路に
+  // 戻っていた。miyabi-24 は走査位置が9/30のまま、毎回9/30の区間だけで時間切れに
+  // なって前進できず(discovered: 0 / discovery_truncated: true)、10/11にCSV出品
+  // した91件へ永久にたどり着けなかった。常に新しい方から読む。
+  it('走査位置があっても、直近の期間から先に読む', async () => {
+    const db = {
+      from: (table: string) => {
+        if (table === 'seller_accounts') {
+          const chain: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'update']) chain[m] = () => chain
+          // 12日前で止まっている走査位置
+          chain.maybeSingle = async () => ({
+            data: { inventory_discovery_scanned_until: new Date(Date.now() - 12 * 24 * 60 * 60 * 1000).toISOString() },
+            error: null,
+          })
+          chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+          return chain
+        }
+        if (table === 'extractions') {
+          return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        }
+        if (table === 'products') return productsTableFor([])
+        const chain: Record<string, unknown> = {}
+        chain.upsert = mockUpsert
+        chain.select = () => chain
+        chain.eq = () => chain
+        chain.not = () => chain
+        chain.is = () => chain
+        chain.in = () => chain
+        chain.delete = () => chain
+        chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
+        return chain
+      },
+    } as unknown as SupabaseClient
+
+    await syncKnownInventoryListings(db, 'user-1', 'token', {
+      sellerAccountId: 'seller-a',
+      sellerSiteIds: ['US'],
+      discoveryTimeBudgetMs: 5_000,
+    })
+
+    // 最初の走査は「今日を含む区間」でなければ、新しい出品にたどり着けない
+    const firstRange = mockScanSellerList.mock.calls[0]?.[1] as { from: Date; to: Date }
+    const hoursFromNow = (Date.now() - firstRange.to.getTime()) / (60 * 60 * 1000)
+    expect(hoursFromNow).toBeLessThan(1)
+  })
 })
 
 // 本番で確認した不具合(2026-09-27): 1人目のセラーのGetItemがeBayの呼び出し
