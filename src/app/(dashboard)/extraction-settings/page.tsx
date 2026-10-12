@@ -1,9 +1,10 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import AmazonConnectionPanel from '@/components/settings/AmazonConnectionPanel'
 
 type Engine = 'normal' | 'high' | 'best'
-type Tab = 'basic' | 'danger' | 'html'
+type Tab = 'basic' | 'danger' | 'html' | 'amazon'
 
 interface ExtractionSettings {
   title_engine: Engine; title_enabled: boolean
@@ -469,7 +470,7 @@ export default function ExtractionSettingsPage() {
 
       {/* タブ */}
       <div className="flex gap-6 border-b mb-6">
-        {([['basic', '抽出基本設定'], ['danger', '抽出危険設定'], ['html', 'HTML設定']] as [Tab, string][]).map(([key, label]) => (
+        {([['basic', '抽出基本設定'], ['danger', '抽出危険設定'], ['html', 'HTML設定'], ['amazon', '仕入先連携']] as [Tab, string][]).map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -727,6 +728,13 @@ export default function ExtractionSettingsPage() {
             onCsvUpload={uploadReplacesCsv}
             itemLabel="置換前"
           />
+        </div>
+      )}
+
+      {/* 仕入先連携(Amazon SP-API) */}
+      {tab === 'amazon' && (
+        <div className="bg-white border rounded-lg p-6">
+          <AmazonConnectionPanel />
         </div>
       )}
 
