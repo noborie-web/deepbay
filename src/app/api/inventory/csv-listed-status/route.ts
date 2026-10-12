@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 
@@ -32,6 +32,10 @@ export async function GET() {
     .eq('user_id', user.id)
     .not('listing_csv_exported_at', 'is', null)
     .is('ebay_item_id', null)
+    // ユーザー要望(2026-10-12): eBayに弾かれて出品されなかった商品は、
+    // 確認済みにして警告から外せるようにする(警告が消えないままだと、
+    // 新しい漏れに気づけなくなる)
+    .is('listing_csv_unlisted_confirmed_at', null)
     .order('listing_csv_exported_at', { ascending: false })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
@@ -63,4 +67,41 @@ export async function GET() {
       exported_at: product.listing_csv_exported_at,
     })),
   })
+}
+
+// 「出品されなかったと確認済み」にして警告から外す。
+// listing_csv_exported_at は消さない(消すと商品削除の安全装置(#270)まで
+// 外れてしまうため)。再出品に成功して在庫管理に入れば、そもそも対象から
+// 外れるので確認は不要になる。
+export async function POST(req: NextRequest) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  let body: { productIds?: unknown }
+  try {
+    body = await req.json()
+  } catch {
+    return NextResponse.json({ error: 'JSONを解釈できませんでした' }, { status: 400 })
+  }
+  const productIds = Array.isArray(body.productIds)
+    ? body.productIds.filter((id): id is string => typeof id === 'string')
+    : null
+
+  const db = admin()
+  const now = new Date().toISOString()
+  let query = db
+    .from('products')
+    .update({ listing_csv_unlisted_confirmed_at: now })
+    .eq('user_id', user.id)
+    .not('listing_csv_exported_at', 'is', null)
+    .is('ebay_item_id', null)
+    .is('listing_csv_unlisted_confirmed_at', null)
+  // 指定が無ければ、未確認のもの全部を確認済みにする
+  if (productIds && productIds.length > 0) query = query.in('id', productIds)
+
+  const { data, error } = await query.select('id')
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  return NextResponse.json({ ok: true, confirmed: (data ?? []).length })
 }

@@ -171,7 +171,9 @@ export async function GET(req: NextRequest) {
     const chunk = exportedProducts.slice(index, index + 100).map((product) => product.id)
     const { error: markError } = await admin
       .from('products')
-      .update({ listing_csv_exported_at: exportedAt })
+      // 出し直した = もう一度出品を試みるということなので、
+      // 「出品されなかったと確認済み」は解除する
+      .update({ listing_csv_exported_at: exportedAt, listing_csv_unlisted_confirmed_at: null })
       .eq('user_id', user.id)
       .in('id', chunk)
     // 印が付かなくてもCSVの出力自体は成功させる(次回の出力で付く)
