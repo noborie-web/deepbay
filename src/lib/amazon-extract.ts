@@ -139,3 +139,81 @@ export async function fetchAmazonProducts(
 
   return result
 }
+
+// ---------------------------------------------------------------------------
+// 仕入先チェック用
+// ---------------------------------------------------------------------------
+
+export interface AmazonSupplierStatus {
+  /** 新品で購入できるオファーがあるか */
+  available: boolean
+  /** 本体価格+送料(円)。買えない場合は null */
+  priceJpy: number | null
+  isFba: boolean
+}
+
+/**
+ * 在庫チェック用に、ASINの現在の購入可否と価格を取る。
+ *
+ * 抽出時と違いカタログは取らない(商品名はAmazonのカタログなので変わらず、
+ * 余計なAPI呼び出しとタイトル変更の誤検知を避けるため)。
+ *
+ * 取得できなかったASINは Map に入れない。呼び出し側は「売り切れ」ではなく
+ * 「未確認」として扱うこと(HTMLの429を売り切れ扱いして64件を誤って
+ * 取り下げた2026-09-22の事故と同じ考え方)。
+ */
+export async function fetchAmazonSupplierStatus(
+  db: SupabaseClient,
+  userId: string,
+  asins: string[],
+  options: { signal?: AbortSignal; timeBudgetMs?: number; offersIntervalMs?: number; fbaOnly?: boolean } = {},
+): Promise<Map<string, AmazonSupplierStatus>> {
+  const statuses = new Map<string, AmazonSupplierStatus>()
+  if (asins.length === 0) return statuses
+
+  const credentials = await loadAmazonCredentials(db, userId)
+  // 未接続なら何も返さない = すべて「未確認」になる(売り切れ扱いしない)
+  if (!credentials) return statuses
+
+  const { accessToken } = await fetchAccessToken(credentials, { signal: options.signal })
+  const startedAt = Date.now()
+  const budgetMs = options.timeBudgetMs ?? Number.POSITIVE_INFINITY
+  const intervalMs = options.offersIntervalMs ?? OFFERS_INTERVAL_MS
+
+  for (let index = 0; index < asins.length; index += BATCH_SIZE) {
+    if (Date.now() - startedAt >= budgetMs) break
+    const chunk = asins.slice(index, index + BATCH_SIZE)
+    const offers = await fetchItemOffersBatch(accessToken, chunk, {
+      marketplaceId: credentials.marketplaceId,
+      signal: options.signal,
+    })
+
+    for (const asin of chunk) {
+      if (offers.failed.includes(asin)) continue
+      const picked = pickBestNewOffer(offers.payloads.get(asin) as SpApiOffersPayload | undefined)
+      if (!picked || (options.fbaOnly && !picked.isFba)) {
+        statuses.set(asin, { available: false, priceJpy: null, isFba: false })
+        continue
+      }
+      statuses.set(asin, {
+        available: true,
+        priceJpy: Math.round(picked.listingPriceJpy + picked.shippingJpy),
+        isFba: picked.isFba,
+      })
+    }
+
+    const hasMore = index + BATCH_SIZE < asins.length
+    if (hasMore && intervalMs > 0) {
+      if (budgetMs - (Date.now() - startedAt) <= intervalMs) break
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    }
+  }
+
+  return statuses
+}
+
+/** Amazonの商品URL(/dp/ASIN)からASINを取り出す。 */
+export function asinFromSourceUrl(sourceUrl: string | null | undefined): string | null {
+  if (!sourceUrl) return null
+  return sourceUrl.toUpperCase().match(/\/DP\/([A-Z0-9]{10})/)?.[1] ?? null
+}
