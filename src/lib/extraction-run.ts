@@ -47,6 +47,12 @@ export type ExtractionRunResult =
   | { status: 'failed'; errorMessage: string }
 
 export interface RunScrapeOptions {
+  // ユーザー要望(2026-10-12): Amazon.co.jpを仕入先にする。AmazonはSP-APIで
+  // 取るため、URLからスクレイピングする経路を通らない。取得済みの商品を
+  // 直接渡せるようにして、以降(翻訳・価格計算・除外・重複判定)は
+  // 既存の仕入先とまったく同じ処理に合流させる。
+  presetProducts?: Awaited<ReturnType<typeof scrapeUrl>>
+
   // この時刻(epoch ms)までに必ず完了させる。実行環境の上限(Vercel Hobbyは
   // 300秒)で強制終了されると catch も走らず、商品0件のまま「処理中」で
   // 残ってしまうため、呼び出し側が上限より手前の時刻を渡す。
@@ -171,7 +177,7 @@ export async function runScrape(
       return { status: 'excluded' }
     }
 
-    const scrapedList = await scrapeUrl(url, {
+    const scrapedList = options.presetProducts ?? await scrapeUrl(url, {
       limit,
       // 危険セラーが1件も登録されていなければ、出品者URL取得のための
       // 追加コスト(ラクマ等、検索結果に出品者情報がないサイトでは商品

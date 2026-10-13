@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   Gift,
+  ShoppingCart,
   RefreshCw,
   Settings,
   Cloud,
@@ -24,6 +25,7 @@ const NAV = [
     section: '抽出',
     items: [
       { label: '抽出管理', href: '/extraction', icon: Gift },
+      { label: 'Amazon抽出', href: '/extraction/amazon', icon: ShoppingCart },
       { label: '自動抽出', href: '/auto-extraction', icon: RefreshCw },
       { label: '抽出設定', href: '/extraction-settings', icon: Settings },
     ],
