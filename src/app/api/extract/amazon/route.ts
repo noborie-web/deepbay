@@ -121,11 +121,29 @@ export async function POST(req: NextRequest) {
         fbaOnly,
       })
 
+      // 本番で確認(2026-10-13): 5件中2件しか取り込まれなかったが、残り3件が
+      // どの理由で落ちたか画面に何も出ていなかった。件数が0のときだけ理由を
+      // 書いていたため。無在庫では「なぜ仕入れられないか」が重要なので、
+      // 一部成功した場合も必ず除外詳細に残す。
+      const amazonSummary = {
+        amazon_requested: asins.length,
+        amazon_no_new_offer: fetched.noOffer.length,
+        amazon_not_fba: fetched.notFba.length,
+        amazon_pricing_failed: fetched.pricingFailed.length,
+        amazon_time_skipped: fetched.skipped.length,
+        // 再実行や個別確認に使えるよう、落ちたASINも残す
+        amazon_no_new_offer_asins: fetched.noOffer,
+        amazon_not_fba_asins: fetched.notFba,
+        amazon_pricing_failed_asins: fetched.pricingFailed,
+        amazon_time_skipped_asins: fetched.skipped,
+      }
+
       if (fetched.products.length === 0) {
         await bg.from('extractions').update({
           status: 'failed',
           progress: 0,
           error_message: amazonEmptyReason(fetched),
+          exclusion_summary: amazonSummary,
         }).eq('id', extractionId)
         return
       }
@@ -133,6 +151,7 @@ export async function POST(req: NextRequest) {
       await runScrape(userId, extractionId, `amazon:asin-list:${asins.length}`, bulkEditSettingId, bg, {
         deadlineAt: Date.now() + (EXTRACTION_DEADLINE_MS - AMAZON_FETCH_BUDGET_MS),
         presetProducts: fetched.products,
+        extraExclusionSummary: amazonSummary,
       })
     } catch (error) {
       const message = (error instanceof Error ? error.message : '不明なエラー').slice(0, 500)
@@ -152,9 +171,11 @@ function amazonEmptyReason(fetched: {
   pricingFailed: string[]
   noOffer: string[]
   skipped: string[]
+  notFba: string[]
 }): string {
   const parts: string[] = []
   if (fetched.noOffer.length > 0) parts.push(`新品の出品が無い: ${fetched.noOffer.length}件`)
+  if (fetched.notFba.length > 0) parts.push(`FBAの出品が無い: ${fetched.notFba.length}件（「FBAのみ」を外すと対象になります）`)
   if (fetched.pricingFailed.length > 0) parts.push(`価格を取得できなかった: ${fetched.pricingFailed.length}件（再実行で取得できることがあります）`)
   if (fetched.skipped.length > 0) parts.push(`時間切れで未処理: ${fetched.skipped.length}件`)
   return `取り込める商品がありませんでした。${parts.join(' / ')}`

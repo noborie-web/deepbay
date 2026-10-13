@@ -24,6 +24,8 @@ export interface AmazonExtractResult {
   noOffer: string[]
   /** 時間切れで処理しなかったASIN */
   skipped: string[]
+  /** FBAのみ指定で、自社発送しか無く対象外にしたASIN */
+  notFba: string[]
 }
 
 export interface AmazonExtractOptions {
@@ -46,7 +48,7 @@ export async function fetchAmazonProducts(
   asins: string[],
   options: AmazonExtractOptions = {},
 ): Promise<AmazonExtractResult> {
-  const result: AmazonExtractResult = { products: [], pricingFailed: [], noOffer: [], skipped: [] }
+  const result: AmazonExtractResult = { products: [], pricingFailed: [], noOffer: [], skipped: [], notFba: [] }
   if (asins.length === 0) return result
 
   const credentials = await loadAmazonCredentials(db, userId)
@@ -89,7 +91,8 @@ export async function fetchAmazonProducts(
         continue
       }
       if (options.fbaOnly && !picked.isFba) {
-        result.noOffer.push(asin)
+        // 「新品が無い」とは理由が違うので分けて数える
+        result.notFba.push(asin)
         continue
       }
       const item = catalog.get(asin)

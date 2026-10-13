@@ -52,6 +52,10 @@ export interface RunScrapeOptions {
   // 直接渡せるようにして、以降(翻訳・価格計算・除外・重複判定)は
   // 既存の仕入先とまったく同じ処理に合流させる。
   presetProducts?: Awaited<ReturnType<typeof scrapeUrl>>
+  // 仕入先ごとの追加の内訳。Amazonでは「新品の出品が無い」「FBAが無い」
+  // 「価格を取得できなかった」など、抽出パイプラインに入る前に落ちた分を
+  // ここで渡して除外詳細に残す(渡さなければ従来どおり)。
+  extraExclusionSummary?: Record<string, unknown>
 
   // この時刻(epoch ms)までに必ず完了させる。実行環境の上限(Vercel Hobbyは
   // 300秒)で強制終了されると catch も走らず、商品0件のまま「処理中」で
@@ -738,6 +742,8 @@ export async function runScrape(
       // 時間切れで一部商品のAI処理(タイトル翻訳・説明文・ブランド)を
       // 省略した場合に立つ。商品は破棄せず下書きとして保存する。
       ai_time_limited: aiTimeLimited,
+      // 仕入先ごとの追加の内訳(Amazonの取得段階で落ちた分など)
+      ...(options.extraExclusionSummary ?? {}),
     }
 
     await Promise.all([
