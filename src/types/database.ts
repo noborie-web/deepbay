@@ -110,6 +110,17 @@ export interface ExtractionExclusionSummary {
   // 実行時間の上限が近づいたため、一部商品のAI処理(タイトル翻訳・説明文・
   // ブランド)を省略して保存した場合に true。古い抽出には存在しない。
   ai_time_limited?: boolean
+  // Amazon(SP-API)の取得段階で落ちた分。抽出パイプラインに入る前なので
+  // 既存の除外項目には出てこない
+  amazon_requested?: number
+  amazon_no_new_offer?: number
+  amazon_not_fba?: number
+  amazon_pricing_failed?: number
+  amazon_time_skipped?: number
+  amazon_no_new_offer_asins?: string[]
+  amazon_not_fba_asins?: string[]
+  amazon_pricing_failed_asins?: string[]
+  amazon_time_skipped_asins?: string[]
 }
 
 export interface Extraction {

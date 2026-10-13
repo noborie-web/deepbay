@@ -107,7 +107,9 @@ describe('ASINからの抽出', () => {
       offersIntervalMs: 0, fbaOnly: true,
     })
     expect(result.products).toHaveLength(0)
-    expect(result.noOffer).toEqual(['B0F18J2CJF'])
+    // 「新品が無い」とは理由が違うので分けて数える(画面で設定を外せばよいと分かる)
+    expect(result.notFba).toEqual(['B0F18J2CJF'])
+    expect(result.noOffer).toEqual([])
   })
 
   it('20件ずつに分けて価格を取る（SP-APIの上限）', async () => {

@@ -7,9 +7,24 @@ interface Props {
   onClose: () => void
 }
 
-// ai_time_limited だけは件数ではなく真偽値なので、一覧の行ではなく注意書き
-// として表示する。
-type NumericSummaryKey = Exclude<keyof ExtractionExclusionSummary, 'ai_time_limited'>
+// ai_time_limited は真偽値、amazon_*_asins は配列なので、件数の一覧には出さない。
+type NumericSummaryKey = Exclude<
+  keyof ExtractionExclusionSummary,
+  'ai_time_limited'
+  | 'amazon_no_new_offer_asins' | 'amazon_not_fba_asins'
+  | 'amazon_pricing_failed_asins' | 'amazon_time_skipped_asins'
+>
+
+// 本番で確認(2026-10-13): ASIN5件で抽出したら2件しか取り込まれず、残り3件が
+// どの理由で落ちたか画面に何も出ていなかった。Amazonは抽出パイプラインに
+// 入る前(SP-APIの取得段階)で落ちるものがあるので、別枠で表示する。
+const AMAZON_ROWS: { key: NumericSummaryKey; label: string; hint?: string }[] = [
+  { key: 'amazon_requested', label: '指定したASIN' },
+  { key: 'amazon_no_new_offer', label: '新品の出品が無い' },
+  { key: 'amazon_not_fba', label: 'FBAの出品が無い', hint: '「FBAのみ」を外すと対象になります' },
+  { key: 'amazon_pricing_failed', label: '価格を取得できなかった', hint: '再実行で取得できることがあります' },
+  { key: 'amazon_time_skipped', label: '時間切れで未処理', hint: '件数を減らして再実行してください' },
+]
 
 // 既存ツール(公式)の「抽出結果確認」に相当する除外詳細モーダル。
 // 抽出パイプラインで実際に実行されている除外を表示する。評価数・発送
@@ -54,6 +69,29 @@ export default function ExclusionSummaryModal({ summary, onClose }: Props) {
           <h2 className="font-bold text-gray-900">除外詳細</h2>
         </div>
         <div className="overflow-y-auto flex-1 px-5 py-4 space-y-3 text-sm">
+          {summary.amazon_requested !== undefined && (
+            <div className="rounded border bg-amber-50 border-amber-200 p-3">
+              <p className="text-xs font-medium text-amber-900">Amazonからの取り込み</p>
+              <p className="pt-0.5 text-[11px] text-amber-800">
+                ここで落ちた商品は、以下の除外項目には含まれません（抽出に入る前の段階です）。
+              </p>
+              <div className="pt-2 space-y-1.5">
+                {AMAZON_ROWS.map(({ key, label, hint }) => (
+                  <div key={key} className="flex items-start justify-between gap-3">
+                    <span className="text-xs text-amber-900">
+                      {label}
+                      {hint && (summary[key] ?? 0) > 0 && (
+                        <span className="block text-[11px] text-amber-700">{hint}</span>
+                      )}
+                    </span>
+                    <span className="text-xs font-medium text-amber-900">
+                      {(summary[key] ?? 0).toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {summary.ai_time_limited && (
             <p className="rounded bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
               実行時間の上限が近づいたため、一部の商品はAI処理(タイトル翻訳・説明文・ブランド)を省略して保存しました。
