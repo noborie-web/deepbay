@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { findScraper, scrapeUrl } from '@/lib/scrapers'
+import { asinFromSourceUrl, fetchAmazonSupplierStatus } from '@/lib/amazon-extract'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { titleSimilarity } from '@/lib/supplier-match'
 import { calculateAutomaticEbayPrice } from '@/lib/extraction-run'
@@ -248,6 +249,8 @@ export interface SupplierCheckOptions {
   // 続けてしまう。一定時間確認できていない出品は取り下げ対象(在庫0)にする。
   delistOnUnverified?: boolean
   unverifiedDelistHours?: number
+  // Amazonの在庫確認でFBAのオファーだけを「買える」とみなす
+  amazonFbaOnly?: boolean
 }
 
 export async function checkSupplierListings(
@@ -394,6 +397,31 @@ export async function checkSupplierListings(
     jpyPerUsd = null
   }
 
+  // ユーザー要望(2026-10-13): Amazonを仕入先にした無在庫では、Amazon側で
+  // 値上がり・在庫切れしたのに出品が残るのが一番危ない。AmazonはHTMLを
+  // 取りに行かず、SP-APIでASINをまとめて照会する(1回20件)。
+  // 取得できなかったASINはMapに入らず「未確認」になり、売り切れ扱いしない
+  // (HTMLの429を売り切れと誤判定して64件を取り下げた2026-09-22と同じ考え方)。
+  const amazonAsins = Array.from(new Set(
+    targets
+      .map(listing => productMap.get(listing.product_id))
+      .filter(product => product?.source_site === 'amazon')
+      .map(product => asinFromSourceUrl(product?.source_url))
+      .filter((asin): asin is string => asin !== null),
+  ))
+  let amazonStatuses: Awaited<ReturnType<typeof fetchAmazonSupplierStatus>> = new Map()
+  if (amazonAsins.length > 0) {
+    try {
+      amazonStatuses = await fetchAmazonSupplierStatus(db, userId, amazonAsins, {
+        timeBudgetMs: options.timeBudgetMs,
+        fbaOnly: options.amazonFbaOnly,
+      })
+    } catch (error) {
+      // 認証切れ等。すべて未確認として扱い、売り切れにはしない
+      console.warn('[supplier-check] Amazon status fetch failed:', error instanceof Error ? error.message : error)
+    }
+  }
+
   const titleChangeDelist = options.delistOnTitleChange ?? false
   // 仕入先を確認できないまま一定時間が過ぎた出品の自動取り下げ(既定24時間)
   const delistOnUnverified = options.delistOnUnverified ?? false
@@ -440,10 +468,26 @@ export async function checkSupplierListings(
       outcome = 'unavailable'
       quantity = 0
       result.no_supplier += 1
-    } else if (sourceUrl && findScraper(sourceUrl)) {
+    } else if (product?.source_site === 'amazon' || (sourceUrl && findScraper(sourceUrl))) {
       try {
-        const scrapedProducts = await scrapeUrl(sourceUrl, { limit: 1 })
-        const scraped = scrapedProducts[0] as { availability?: string; price?: number | null; title?: string | null } | undefined
+        let scraped: { availability?: string; price?: number | null; title?: string | null } | undefined
+        if (product?.source_site === 'amazon') {
+          const asin = asinFromSourceUrl(sourceUrl)
+          const status = asin ? amazonStatuses.get(asin) : undefined
+          if (!status) {
+            // 照会できなかった。売り切れ扱いにせず次回へ回す
+            throw new Error('amazon: not checked')
+          }
+          scraped = {
+            availability: status.available ? 'available' : 'sold_out',
+            price: status.priceJpy,
+            // カタログ名は変わらないので取得しない(タイトル変更の誤検知も防ぐ)
+            title: null,
+          }
+        } else {
+          const scrapedProducts = await scrapeUrl(sourceUrl as string, { limit: 1 })
+          scraped = scrapedProducts[0] as typeof scraped
+        }
         if (scraped && product) {
           supplierTitle = typeof scraped.title === 'string' && scraped.title.trim() ? scraped.title.trim() : null
           supplierPriceJpy = typeof scraped.price === 'number' && scraped.price > 0 ? scraped.price : null
