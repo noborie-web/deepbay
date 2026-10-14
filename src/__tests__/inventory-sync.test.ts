@@ -129,7 +129,7 @@ describe('syncInventoryListings', () => {
 
     const result = await syncInventoryListings(db, 'user-1', 'access-token')
 
-    expect(result).toEqual({ total: 2, matched: 1, unmanaged: 0 })
+    expect(result).toEqual({ total: 2, matched: 1, unmanaged: 0, ended: 0 })
     expect(mockFetchAllActiveListings).toHaveBeenCalledWith(
       { accessToken: 'access-token' },
       { signal: undefined },
@@ -169,7 +169,7 @@ describe('syncInventoryListings', () => {
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
-    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1, unmanaged: 0 })
+    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1, unmanaged: 0, ended: 0 })
     expect(mockUpsert).toHaveBeenCalledWith([expect.objectContaining({ product_id: productId })], { onConflict: 'user_id,ebay_item_id' })
   })
 
@@ -192,7 +192,7 @@ describe('syncInventoryListings', () => {
         throw new Error(`Unexpected table: ${table}`)
       }),
     } as unknown as SupabaseClient
-    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1, unmanaged: 0 })
+    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1, unmanaged: 0, ended: 0 })
     expect(mockUpsert).toHaveBeenCalledWith([expect.objectContaining({ product_id: productId })], { onConflict: 'user_id,ebay_item_id' })
   })
 
@@ -219,7 +219,7 @@ describe('syncInventoryListings', () => {
       }),
     } as unknown as SupabaseClient
 
-    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1, unmanaged: 0 })
+    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 1, unmanaged: 0, ended: 0 })
     expect(mockUpsert).toHaveBeenCalledWith(
       [expect.objectContaining({ product_id: 'source-product' })],
       { onConflict: 'user_id,ebay_item_id' },
@@ -252,7 +252,7 @@ describe('syncInventoryListings', () => {
       }),
     } as unknown as SupabaseClient
 
-    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 0, unmanaged: 0 })
+    await expect(syncInventoryListings(db, 'user-1', 'access-token')).resolves.toEqual({ total: 1, matched: 0, unmanaged: 0, ended: 0 })
     // 紐付け先を一意に決められない出品はKakehashi管理外として保存しない
     expect(mockUpsert).not.toHaveBeenCalled()
   })
@@ -296,7 +296,7 @@ describe('syncInventoryListings', () => {
       { writeConcurrency: 4 },
     )
 
-    expect(result).toEqual({ total: 450, matched: 450, unmanaged: 0 })
+    expect(result).toEqual({ total: 450, matched: 450, unmanaged: 0, ended: 0 })
     expect(mockUpsert).toHaveBeenCalledTimes(5)
     expect(maxActiveWrites).toBe(4)
   })
@@ -338,7 +338,7 @@ describe('syncInventoryListings', () => {
 
     const result = await syncInventoryListings(db, 'user-1', 'access-token')
 
-    expect(result).toEqual({ total: 205, matched: 0, unmanaged: 0 })
+    expect(result).toEqual({ total: 205, matched: 0, unmanaged: 0, ended: 0 })
     // 本番で確認した不具合(2026-09-24): まとめて .in(...) するとURLが長すぎて
     // PostgREST が 400 Bad Request を返し、同期が失敗していた。ItemID照会も
     // source_item_id照会と同じく100件ずつに分割する。
@@ -371,7 +371,7 @@ describe('syncInventoryListings', () => {
 
     const result = await syncInventoryListings(db, 'user-1', 'access-token')
 
-    expect(result).toEqual({ total: 1, matched: 1, unmanaged: 0 })
+    expect(result).toEqual({ total: 1, matched: 1, unmanaged: 0, ended: 0 })
     expect(mockUpsert).toHaveBeenCalledWith([
       expect.objectContaining({
         ebay_item_id: 'item-1',
@@ -419,6 +419,7 @@ describe('syncInventoryListings', () => {
       total: 1,
       matched: 1,
       unmanaged: 0,
+      ended: 0,
       nextPage: 9,
       totalPages: 12,
       lastFetchedPage: 8,

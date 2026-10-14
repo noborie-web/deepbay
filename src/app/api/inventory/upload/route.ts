@@ -5,6 +5,7 @@ import { createClient as createServiceClient } from '@supabase/supabase-js'
 import {
   extractProductIdFromCustomLabel,
   extractSourceLookupKeys,
+  isEndedListing,
   parseEbayActiveListingsCsv,
   resolveInventoryProductId,
 } from '@/lib/inventory'
@@ -86,6 +87,7 @@ export async function POST(req: NextRequest) {
 
   const db = admin()
   const now = new Date().toISOString()
+  const nowMs = Date.parse(now)
 
   if (sellerAccountId) {
     const { data: seller } = await db
@@ -190,6 +192,9 @@ export async function POST(req: NextRequest) {
     // 値が入る(他ツールの任意のSKUでは null)。商品が見つからなくても、
     // Kakehashiが出品した印があるなら保存する。
     if (!productId && directProductId === null) return []
+    // 終了済みの出品は「出品中」のスナップショットに入れない(API同期と同じ方針)。
+    // Active listingsレポートに終了済みが混ざっても件数が水増しされないようにする。
+    if (isEndedListing(l, nowMs)) return []
 
     return [{
       ...(sellerAccountId ? { seller_account_id: sellerAccountId, site_id: site.siteId, currency: site.currency } : {}),

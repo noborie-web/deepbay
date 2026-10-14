@@ -4,6 +4,7 @@ import type { EndedListingInfo } from './ebay-inventory'
 import {
   extractProductIdFromCustomLabel,
   extractSourceLookupKeys,
+  isEndedListing,
   resolveInventoryProductId,
   type InventoryListingInput,
 } from './inventory'
@@ -14,6 +15,8 @@ export interface InventorySyncResult {
   // Kakehashiで出品した印はあるが、商品レコードが失われている出品の件数。
   // 仕入先URLが無いため在庫チェックができない(画面で可視化する)。
   unmanaged: number
+  // eBayから返ってきたが既に終了していたため、出品中として保存しなかった件数
+  ended: number
 }
 
 export interface InventorySyncOptions {
@@ -79,12 +82,34 @@ export async function storeInventoryListings(
   // eBay pagination can briefly overlap while active listings are changing.
   // PostgreSQL upsert rejects duplicate conflict keys in the same statement,
   // so keep the latest occurrence of each item before building write chunks.
-  const uniqueListings = Array.from(new Map(
+  const fetchedListings = Array.from(new Map(
     listings
       .filter(listing => listing.ebayItemId)
       .map(listing => [listing.ebayItemId, listing]),
   ).values())
   const now = new Date().toISOString()
+  const nowMs = Date.parse(now)
+
+  // 本番で確認した不具合(2026-10-13): 10/10に取り下げた100件が、CSV取込
+  // (未管理0件)の9分後の同期で「出品中」としてよみがえった。新規出品の発見に
+  // 使う GetSellerList は StartTimeFrom/To で期間を絞るだけなので、その期間に
+  // 出品されたものを終了済みも含めて返す。終了済みを出品中として保存すると、
+  // 在庫一覧の件数が水増しされ、仕入先チェックも死んだ出品に対して走る。
+  // 終了済みは保存せず、終了の扱い(履歴に記録して一覧から外す)に回す。
+  const endedFromFetch: EndedListingInfo[] = []
+  const uniqueListings = fetchedListings.filter(listing => {
+    if (!isEndedListing(listing, nowMs)) return true
+    // Kakehashiが出品した印が無いものは元々保存しないので、掃除も不要
+    if (extractProductIdFromCustomLabel(listing.customLabel) !== null) {
+      endedFromFetch.push({
+        ebayItemId: listing.ebayItemId,
+        quantitySold: listing.quantitySold,
+        listingStatus: listing.listingStatus,
+        endTime: listing.endTime,
+      })
+    }
+    return false
+  })
 
   const sourceLookupKeys = Array.from(new Set(
     uniqueListings.flatMap(listing => extractSourceLookupKeys(listing.customLabel)),
@@ -235,7 +260,18 @@ export async function storeInventoryListings(
       quantity_sold: row.quantity_sold,
     })))
 
-  return { total: uniqueListings.length, matched, unmanaged }
+  // 終了済みとして返ってきた出品が在庫一覧に残っていたら、履歴に記録して外す
+  if (endedFromFetch.length > 0) {
+    await removeEndedListings(
+      db,
+      userId,
+      endedFromFetch.map(info => info.ebayItemId),
+      options.sellerAccountId,
+      endedFromFetch,
+    )
+  }
+
+  return { total: uniqueListings.length, matched, unmanaged, ended: endedFromFetch.length }
 }
 
 export interface ProductListingStateInput {
@@ -1059,7 +1095,8 @@ export async function syncKnownInventoryListingBatch(
     totalItems: knownIds.length,
     processedItems,
     updated: stored.matched,
-    ended: fetched.endedItemIds.length,
+    // 個別照会で終了を検知した分 + 期間走査で終了済みとして返ってきた分
+    ended: fetched.endedItemIds.length + stored.ended,
     discovered: discovery.discovered,
     discoveryTruncated: discovery.truncated,
     discoveryError: discovery.error,
@@ -1183,7 +1220,8 @@ export async function syncKnownInventoryListings(
     total: knownIds.length,
     matched: stored.matched,
     unmanaged: stored.unmanaged,
-    ended: fetched.endedItemIds.length,
+    // 個別照会で終了を検知した分 + 期間走査で終了済みとして返ってきた分
+    ended: fetched.endedItemIds.length + stored.ended,
     discovered: discovery.discovered,
     discoveryTruncated: discovery.truncated,
     discoveryError: discovery.error,
