@@ -203,3 +203,20 @@ export function parseEbayActiveListingsCsv(csv: string): InventoryListingInput[]
 
   return results
 }
+
+// 本番で確認した不具合(2026-10-13): ユーザーが10/10に取り下げた100件が、
+// 10/13のCSV取込(未管理0件)の9分後の同期で「出品中」として在庫管理に
+// よみがえった。新規出品の発見に使う GetSellerList は StartTimeFrom/To で
+// 期間を絞るだけなので、その期間に出品されたものを終了済みも含めて返す。
+// ListingStatus は OutputSelector を指定しても返らない(実データで null)ため、
+// EndTime が過去かどうかで判定する。
+export function isEndedListing(
+  listing: Pick<InventoryListingInput, 'listingStatus' | 'endTime'>,
+  nowMs: number = Date.now(),
+): boolean {
+  const status = listing.listingStatus?.trim()
+  if (status && status.toLowerCase() !== 'active') return true
+  if (!listing.endTime) return false
+  const endMs = Date.parse(listing.endTime)
+  return Number.isFinite(endMs) && endMs <= nowMs
+}
