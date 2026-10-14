@@ -5,10 +5,19 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
 // ユーザー要望(2026-10-12): Amazon.co.jpを仕入先にして新品無在庫でeBayに出品する。
-// Amazonは検索URLからの取得がサイト側と一致しないため、まず確実なASIN指定から作る。
+// 段階1は確実なASIN指定。段階2(2026-10-14)で検索URL・キーワードからASINを
+// 探せるようにした。SP-APIの検索はAmazon.co.jpの検索結果と一致しないため、
+// 検索結果をそのまま抽出に流さず、画面で選んでASIN欄に入れる形にしている。
 interface SellerAccount { id: string; seller_id: string; display_name: string | null }
 interface ListingCategory { id: string; ebay_category_id: string; name: string }
 interface BulkEditSetting { id: string; name: string }
+interface SearchItem { asin: string; title: string | null; brand: string | null }
+interface SearchResult {
+  items: SearchItem[]
+  truncated: boolean
+  warnings?: string[]
+  query?: { keywords: string[]; brandNames: string[]; classificationIds: string[] }
+}
 
 const MAX_ASINS = 300
 
@@ -18,6 +27,13 @@ export default function AmazonExtractionPage() {
 
   const [asinText, setAsinText] = useState('')
   const [fbaOnly, setFbaOnly] = useState(true)
+  // 段階2: 検索URL・キーワードからASINを探す
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchLimit, setSearchLimit] = useState(100)
+  const [searching, setSearching] = useState(false)
+  const [searchResult, setSearchResult] = useState<SearchResult | null>(null)
+  const [selectedAsins, setSelectedAsins] = useState<Set<string>>(new Set())
+  const [searchError, setSearchError] = useState<string | null>(null)
   const [memo, setMemo] = useState('')
   const [sellerAccountId, setSellerAccountId] = useState('')
   const [categoryId, setCategoryId] = useState('')
@@ -62,6 +78,52 @@ export default function AmazonExtractionPage() {
     return () => window.clearTimeout(timer)
   }, [load])
 
+  const runSearch = async () => {
+    setSearching(true)
+    setSearchError(null)
+    setSearchResult(null)
+    try {
+      const res = await fetch('/api/amazon/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: searchQuery, limit: searchLimit }),
+      })
+      const json = await res.json() as SearchResult & { error?: string }
+      if (!res.ok) throw new Error(json.error ?? '検索できませんでした')
+      setSearchResult(json)
+      // 既にASIN欄にある分は選択から外す(入れ直しても重複は除かれるが、
+      // 画面上でも「これから足す分」が分かるようにする)
+      const already = new Set(parsed)
+      setSelectedAsins(new Set(json.items.map(i => i.asin).filter(a => !already.has(a))))
+      if (json.items.length === 0) setSearchError('該当する商品が見つかりませんでした')
+    } catch (e) {
+      setSearchError(e instanceof Error ? e.message : 'エラーが発生しました')
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const toggleAsin = (asin: string) => {
+    setSelectedAsins(prev => {
+      const next = new Set(prev)
+      if (next.has(asin)) next.delete(asin)
+      else next.add(asin)
+      return next
+    })
+  }
+
+  const addSelectedToAsinList = () => {
+    const picked = (searchResult?.items ?? [])
+      .map(i => i.asin)
+      .filter(a => selectedAsins.has(a))
+    if (picked.length === 0) return
+    // 重複は入力欄の時点で除く(抽出側でも除かれるが、件数表示を正しくする)
+    const existing = new Set(parsed)
+    const added = picked.filter(a => !existing.has(a))
+    setAsinText(prev => [prev.trim(), ...added].filter(Boolean).join('\n'))
+    setSelectedAsins(new Set())
+  }
+
   const submit = async () => {
     setSubmitting(true)
     setMessage(null)
@@ -97,9 +159,10 @@ export default function AmazonExtractionPage() {
   return (
     <div className="p-6 max-w-3xl space-y-5">
       <div>
-        <h1 className="text-xl font-bold">Amazon抽出（ASIN指定）</h1>
+        <h1 className="text-xl font-bold">Amazon抽出</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Amazon.co.jpの新品をASINで取り込みます。取り込んだあとは他の仕入先と同じで、
+          Amazon.co.jpの新品を取り込みます。ASINを直接入力するか、検索URL・キーワードから
+          ASINを探して選べます。取り込んだあとは他の仕入先と同じで、
           翻訳・価格の自動計算・除外条件・重複判定がそのまま適用されます。
         </p>
       </div>
@@ -111,6 +174,121 @@ export default function AmazonExtractionPage() {
           で接続してください。
         </div>
       )}
+
+      {/* 段階2: 検索URL・キーワードからASINを探す */}
+      <div className="rounded-lg border bg-white p-5 space-y-3">
+        <div>
+          <h2 className="text-sm font-medium text-gray-700">検索URL・キーワードからASINを探す</h2>
+          <p className="mt-0.5 text-xs text-gray-500">
+            Amazonの検索URLを貼るか、キーワードを入力してください。URLの
+            <code className="mx-1 rounded bg-gray-100 px-1">k</code>（キーワード）・
+            <code className="mx-1 rounded bg-gray-100 px-1">node</code>／
+            <code className="mx-1 rounded bg-gray-100 px-1">rh=n:</code>（カテゴリ）・
+            <code className="mx-1 rounded bg-gray-100 px-1">rh=p_89:</code>（ブランド）を読み取ります。
+          </p>
+          <p className="mt-1 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+            この検索はAmazonの商品カタログ（SP-API）を検索するもので、
+            <strong>Amazon.co.jpの検索結果ページとは並び順も件数も一致しません</strong>。
+            サイトと同じ並びで取ることはできないため、取れたASINを下の一覧で確認してから抽出に渡してください。
+            カテゴリ・ブランドだけでは検索できず、キーワードが必要です。
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="min-w-[18rem] flex-1 text-xs text-gray-600">
+            検索URL / キーワード
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && searchQuery.trim() && !searching) void runSearch() }}
+              placeholder="https://www.amazon.co.jp/s?k=casio+watch&node=2017157051　または　casio 腕時計"
+              className="mt-0.5 w-full rounded border px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs text-gray-600">
+            取得件数
+            <select value={searchLimit} onChange={e => setSearchLimit(Number(e.target.value))}
+              className="mt-0.5 block w-24 rounded border bg-white px-2 py-1.5 text-sm">
+              {[20, 50, 100, 200, 300].map(n => <option key={n} value={n}>{n}件</option>)}
+            </select>
+          </label>
+          <button
+            onClick={() => void runSearch()}
+            disabled={searching || !searchQuery.trim() || connected === false}
+            className="rounded border border-blue-600 px-3 py-1.5 text-sm text-blue-700 hover:bg-blue-50 disabled:opacity-40"
+          >
+            {searching ? '検索しています...' : 'ASINを検索'}
+          </button>
+        </div>
+
+        {searchError && <p className="text-xs text-red-600">{searchError}</p>}
+        {searchResult?.warnings?.map(w => (
+          <p key={w} className="text-xs text-amber-700">{w}</p>
+        ))}
+
+        {searchResult && searchResult.items.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
+              <span>
+                {searchResult.items.length}件見つかりました
+                {searchResult.truncated && '（上限に達したため、これ以上は取得していません）'}
+                ・選択中 <strong className="text-gray-900">{selectedAsins.size}</strong>件
+              </span>
+              <button
+                onClick={() => setSelectedAsins(new Set(searchResult.items.map(i => i.asin)))}
+                className="underline hover:text-gray-900"
+              >
+                すべて選ぶ
+              </button>
+              <button onClick={() => setSelectedAsins(new Set())} className="underline hover:text-gray-900">
+                選択を外す
+              </button>
+              <button
+                onClick={addSelectedToAsinList}
+                disabled={selectedAsins.size === 0}
+                className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-700 disabled:opacity-40"
+              >
+                選んだ{selectedAsins.size}件をASIN欄に入れる
+              </button>
+            </div>
+            <div className="max-h-72 overflow-y-auto rounded border">
+              <table className="w-full text-xs">
+                <tbody>
+                  {searchResult.items.map(item => (
+                    <tr key={item.asin} className="border-b last:border-0 hover:bg-gray-50">
+                      <td className="w-8 px-2 py-1.5 align-top">
+                        <input
+                          type="checkbox"
+                          checked={selectedAsins.has(item.asin)}
+                          onChange={() => toggleAsin(item.asin)}
+                        />
+                      </td>
+                      <td className="w-28 px-2 py-1.5 align-top font-mono text-gray-700">
+                        <a
+                          href={`https://www.amazon.co.jp/dp/${item.asin}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="underline hover:text-blue-700"
+                        >
+                          {item.asin}
+                        </a>
+                      </td>
+                      <td className="px-2 py-1.5 align-top text-gray-800">
+                        {item.title ?? <span className="text-gray-400">（商品名なし）</span>}
+                        {item.brand && <span className="ml-1 text-gray-500">／{item.brand}</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs text-gray-500">
+              価格・在庫はここでは取得していません（抽出のときに取得します）。
+              新品の出品が無い商品は抽出時に除外されます。
+            </p>
+          </div>
+        )}
+      </div>
 
       <div className="rounded-lg border bg-white p-5 space-y-4">
         <label className="block">

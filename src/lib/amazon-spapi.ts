@@ -251,7 +251,11 @@ export async function fetchItemOffersBatch(
   return { payloads, failed }
 }
 
-async function spapiFetch(
+/**
+ * SP-APIのリクエスト(認証ヘッダ・タイムアウト付き)。
+ * 同じ扱いで呼べるよう、検索(amazon-search.ts)からも使う。
+ */
+export async function spapiFetch(
   accessToken: string,
   path: string,
   options: { method?: string; body?: string; signal?: AbortSignal; timeoutMs?: number } = {},
