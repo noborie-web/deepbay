@@ -195,45 +195,50 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
       </div>
 
       {/* 進捗バー / エラーメッセージ */}
-      <div className="flex items-center gap-2">
-        {extraction.status === 'failed' && extraction.error_message ? (
-          <span className="text-xs text-red-500 line-clamp-2" title={extraction.error_message}>
-            {extraction.error_message}
-          </span>
-        ) : (
-          <>
-            <div className="flex-1 bg-gray-200 rounded-full h-2">
-              <div
-                className="bg-blue-500 h-2 rounded-full transition-all"
-                style={{ width: `${extraction.progress}%` }}
-              />
-            </div>
-            <span className="text-xs text-gray-500 w-8">{extraction.progress}%</span>
-          </>
-        )}
-      </div>
-      {/* 商品ページからの補完の進み具合。抽出結果を開かなくても分かるようにする
-          (補完は抽出結果のページを開いているあいだに進む) */}
-      {enrichPending && enrichPending.total > 0 && extraction.status === 'completed' && (
-        <div className="col-span-full -mt-1 px-0.5">
-          {enrichPending.pending > 0 ? (
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          {extraction.status === 'failed' && extraction.error_message ? (
+            <span className="text-xs text-red-500 line-clamp-2" title={extraction.error_message}>
+              {extraction.error_message}
+            </span>
+          ) : (
+            <>
+              <div className="flex-1 bg-gray-200 rounded-full h-2">
+                <div
+                  className="bg-blue-500 h-2 rounded-full transition-all"
+                  style={{ width: `${extraction.progress}%` }}
+                />
+              </div>
+              <span className="text-xs text-gray-500 w-8">{extraction.progress}%</span>
+            </>
+          )}
+        </div>
+        {/* 商品ページからの補完の進み具合。抽出結果を開かなくても分かるようにする
+            (補完は抽出結果のページを開いているあいだに進む)。
+            行を増やすと操作ボタンが次の行に押し出されて縦書きになるため、
+            進捗セルの中に収める。 */}
+        {enrichPending && enrichPending.total > 0 && extraction.status === 'completed' && (
+          enrichPending.pending > 0 ? (
             <button
               onClick={() => onViewResult(extraction.id)}
-              className="text-[11px] text-amber-700 hover:underline"
-              title="抽出結果のページを開くと補完が進みます"
+              className="block text-left text-[11px] leading-tight text-amber-700 hover:underline"
+              title={`説明文・画像の補完が ${enrichPending.pending.toLocaleString()} 件残っています（${(enrichPending.total - enrichPending.pending).toLocaleString()}/${enrichPending.total.toLocaleString()} 補完済み）。抽出結果のページを開くと続きから再開します。`}
             >
-              説明文・画像の補完待ち {enrichPending.pending.toLocaleString()} 件
+              補完待ち {enrichPending.pending.toLocaleString()}件
               <span className="text-amber-600/70">
-                （{(enrichPending.total - enrichPending.pending).toLocaleString()}/{enrichPending.total.toLocaleString()} 補完済み・開くと再開）
+                {' '}({(enrichPending.total - enrichPending.pending).toLocaleString()}/{enrichPending.total.toLocaleString()})
               </span>
             </button>
           ) : (
-            <span className="text-[11px] text-gray-400">
-              説明文・画像の補完済み（{enrichPending.total.toLocaleString()} 件）
+            <span
+              className="block text-[11px] leading-tight text-gray-400"
+              title={`説明文・画像の補完は完了しています（${enrichPending.total.toLocaleString()} 件）`}
+            >
+              補完済み {enrichPending.total.toLocaleString()}件
             </span>
-          )}
-        </div>
-      )}
+          )
+        )}
+      </div>
 
       {/* アクション */}
       <div className="flex items-center gap-2 justify-end">

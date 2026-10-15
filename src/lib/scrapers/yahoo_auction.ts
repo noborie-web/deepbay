@@ -51,6 +51,8 @@ export interface YahooAuctionListingItem {
   imageUrl?: string
   itemCondition?: string
   seller?: { userId?: string }
+  // 一覧にも商品カテゴリ名が入っている(抽出リスト名の自動入力に使う)
+  category?: { id?: number; name?: string }
 }
 
 export interface YahooAuctionSearchData {
@@ -225,7 +227,7 @@ export class YahooAuctionScraper extends BaseScraper {
             images: item.imageUrl ? [upsizeImage(item.imageUrl)] : [],
             // 一覧でも状態が取れる。商品ページの取得に失敗しても状態が残る
             condition: yahooAuctionItemCondition(item.itemCondition),
-            category: null,
+            category: item.category?.name?.trim() || null,
             sellerRatingCount: null,
             shippingDays: null,
             sourceUpdatedAt: null,
