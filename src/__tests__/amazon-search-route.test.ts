@@ -64,10 +64,11 @@ describe('POST /api/amazon/search', () => {
     )
   })
 
-  it('取得件数の上限は300件に収める(抽出の上限と同じ)', async () => {
+  // 1ページ20件・2 req/s = 40 ASIN/秒なので、1,000件でも約25秒で収まる
+  it('取得件数の上限は1,000件に収める', async () => {
     await POST(request({ query: 'casio', limit: 5000 }))
     expect(mocks.searchAmazonAsins).toHaveBeenCalledWith(
-      'token', expect.anything(), expect.objectContaining({ limit: 300 }),
+      'token', expect.anything(), expect.objectContaining({ limit: 1000 }),
     )
   })
 
