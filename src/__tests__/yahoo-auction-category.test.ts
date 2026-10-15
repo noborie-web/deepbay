@@ -179,3 +179,85 @@ describe('yahooAuctionTaxInPrice', () => {
     expect(yahooAuctionTaxInPrice(null)).toBeNull()
   })
 })
+
+// 本番で確認した取りこぼし(2026-10-15): ユーザーの抽出が109件で、総件数131件に
+// 届かなかった。ヤフオクは取得のたびに並びが変わるため、ページをまたいで同じ
+// 商品が重複して返り、そのぶん別の商品が1件も出てこない。
+// 実測: 1巡目109件 → もう1巡で残り22件が出て131件そろった。
+describe('並びの入れ替わりによる取りこぼしの拾い直し', () => {
+  // 1巡目は重複込みで返し(ユニーク2件)、2巡目で残りを返すヤフオクを模す
+  function shufflingYahoo(pages: string[][][], total: number) {
+    let sweep = -1
+    let pageInSweep = 0
+    return async (input: string | URL | Request) => {
+      const b = Number(new URL(String(input)).searchParams.get('b') ?? '1')
+      if (b === 1) { sweep += 1; pageInSweep = 0 } else { pageInSweep += 1 }
+      const ids = pages[Math.min(sweep, pages.length - 1)]?.[pageInSweep] ?? []
+      return new Response(nextDataHtml({
+        props: { pageProps: { initialState: { search: { items: { listing: {
+          items: ids.map(id => ({
+            auctionId: id, title: `商品 ${id}`, price: 1000, buyNowPrice: 1000,
+            imageUrl: 'https://example.com/i.jpg?w=300', itemCondition: 'NEW',
+            seller: { userId: 'seller1' },
+          })),
+          totalResultsAvailable: total,
+        } } } } } },
+      }), { status: 200 })
+    }
+  }
+
+  it('総件数に届かなければ取り直して、取りこぼした商品を拾う', async () => {
+    const scraper = new YahooAuctionScraper()
+    const original = globalThis.fetch
+    // 1巡目: a,b / b,c(重複) → ユニーク3件。2巡目で d,e が出て5件そろう
+    globalThis.fetch = shufflingYahoo([
+      [['a', 'b'], ['b', 'c'], []],
+      [['a', 'd'], ['e', 'c'], []],
+    ], 5) as typeof globalThis.fetch
+    try {
+      const products = await scraper.scrape(
+        'https://auctions.yahoo.co.jp/category/list/123', { limit: 600, skipDetailEnrichment: true },
+      )
+      expect(products.map(p => p.sourceItemId).sort()).toEqual(['a', 'b', 'c', 'd', 'e'])
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  it('取り直しても増えなければ打ち切る（終了済みで総件数に届かない場合）', async () => {
+    const scraper = new YahooAuctionScraper()
+    const original = globalThis.fetch
+    // 何度取り直しても同じ2件しか返らない。総件数は99と言っている
+    globalThis.fetch = shufflingYahoo([[['a', 'b'], []]], 99) as typeof globalThis.fetch
+    try {
+      const products = await scraper.scrape(
+        'https://auctions.yahoo.co.jp/category/list/123', { limit: 600, skipDetailEnrichment: true },
+      )
+      // 取れた分は捨てない
+      expect(products.map(p => p.sourceItemId)).toEqual(['a', 'b'])
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
+  it('1巡目で総件数に届けば取り直さない（余計なリクエストを投げない）', async () => {
+    const scraper = new YahooAuctionScraper()
+    const original = globalThis.fetch
+    let requests = 0
+    const inner = shufflingYahoo([[['a', 'b'], []]], 2)
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      requests += 1
+      return inner(input)
+    }) as typeof globalThis.fetch
+    try {
+      const products = await scraper.scrape(
+        'https://auctions.yahoo.co.jp/category/list/123', { limit: 600, skipDetailEnrichment: true },
+      )
+      expect(products).toHaveLength(2)
+      // 1ページ目で2件=総件数に達するので、2ページ目以降は取りに行かない
+      expect(requests).toBe(1)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+})
