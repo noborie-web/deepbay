@@ -4,6 +4,7 @@ import { checkTranslatedDescription } from '@/lib/description-translation'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
 import { calcProfit, DEFAULT_AUTO_PRICING, validateProfitParams } from '@/lib/pricing'
 import { matchesVeroBrandInTitle } from '@/lib/product-exclusion'
+import { buildExtractionName } from '@/lib/extraction-name'
 
 interface AutoPricingSetting {
   profit_rate?: number | string | null
@@ -164,10 +165,11 @@ export async function runScrape(
     // 重複判定を出品セラーごとに行うため、この抽出の出品セラーを取得する。
     const { data: extractionRow } = await supabase
       .from('extractions')
-      .select('seller_account_id')
+      .select('seller_account_id, memo')
       .eq('id', extractionId)
       .single()
     const sellerAccountId: string | null = extractionRow?.seller_account_id ?? null
+    const existingMemo: string = (extractionRow?.memo as string | null) ?? ''
 
     // 「最初に接続したセラー」かどうか(在庫管理の ownsUnassignedProducts と
     // 同じ規約)。出品セラーが設定されていない抽出は従来どおり全商品と比較する。
@@ -796,6 +798,12 @@ export async function runScrape(
       return { status: 'completed', exclusionSummary: mergedSummary, savedCount: deduped.length }
     }
 
+    // ユーザー要望(2026-10-15): 抽出リスト名を自動で入れる。
+    // 既に名前が付いていれば触らない(手で付けた名前を上書きしない)。
+    const autoName = existingMemo.trim() ? null : buildExtractionName(url, deduped.map(row => ({
+      category: (row as { category?: string | null }).category ?? null,
+    })))
+
     await Promise.all([
       supabase
         .from('extractions')
@@ -804,6 +812,7 @@ export async function runScrape(
           progress: 100,
           extracted_at: new Date().toISOString(),
           exclusion_summary: mergedSummary,
+          ...(autoName ? { memo: autoName } : {}),
         })
         .eq('id', extractionId),
       supabase.rpc('increment_extraction_used', { user_id: userId }),
