@@ -85,6 +85,23 @@ export function parseYahooAuctionSearchData(html: string): YahooAuctionSearchDat
   }
 }
 
+/**
+ * 実際に支払う価格(税込)を選ぶ。
+ *
+ * ヤフオクの商品データは税抜(price / bidorbuy)と税込(taxinPrice /
+ * taxinBidorbuy)を両方持つ。課税セラー(ストア)では10%違うため、税抜を
+ * 仕入値にすると利益計算が甘くなる。無在庫では即決で買うので、
+ * 税込の即決価格 → 税込の現在価格 → 税抜 の順に見る。
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function yahooAuctionTaxInPrice(item: any): number | null {
+  const candidates = [item?.taxinBidorbuy, item?.taxinPrice, item?.bidorbuy, item?.price]
+  for (const value of candidates) {
+    if (typeof value === 'number' && value > 0) return value
+  }
+  return null
+}
+
 export function yahooAuctionItemCondition(code: string | undefined): string | null {
   if (!code) return null
   return ITEM_CONDITION_LABELS[code] ?? null
@@ -529,7 +546,12 @@ export class YahooAuctionScraper extends BaseScraper {
         sourceSite: this.siteKey,
         sourceItemId: nextItem.auctionId ?? itemId,
         title: nextItem.title ?? '',
-        price: typeof nextItem.price === 'number' ? nextItem.price : null,
+        // 本番で確認した不具合(2026-10-15): nextItem.price は**税抜**で、
+        // 実際に支払う税込価格より安い(例: t1241692266 は税抜26,500/税込29,150)。
+        // 仕入値を10%低く見積もると利益計算がそのぶん甘くなる。実際に
+        // ユーザーのカテゴリ検索132件のうち33件(25%)が課税セラーの出品だった。
+        // 無在庫で支払うのは「税込の即決価格」なので、そちらを優先する。
+        price: yahooAuctionTaxInPrice(nextItem),
         description,
         images,
         condition: nextItem.conditionName ?? null,

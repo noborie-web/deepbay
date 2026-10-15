@@ -3,6 +3,7 @@ import {
   YahooAuctionScraper,
   parseYahooAuctionSearchData,
   yahooAuctionItemCondition,
+  yahooAuctionTaxInPrice,
 } from '@/lib/scrapers/yahoo_auction'
 
 // ユーザー報告(2026-10-15): カテゴリの一覧URLが「このURLには対応していません」で
@@ -145,5 +146,36 @@ describe('カテゴリ一覧の取得', () => {
     } finally {
       globalThis.fetch = original
     }
+  })
+})
+
+// 本番で確認した不具合(2026-10-15): 商品ページの解析が**税抜**価格を取っていた。
+// 実データ(t1241692266)は税抜26,500 / 税込29,150で、仕入値を10%低く
+// 見積もると利益計算がそのぶん甘くなる。ユーザーのカテゴリ検索132件のうち
+// 33件(25%)が課税セラーの出品だった。
+describe('yahooAuctionTaxInPrice', () => {
+  it('税込の即決価格を優先する（無在庫で実際に支払う額）', () => {
+    expect(yahooAuctionTaxInPrice({
+      price: 26500, bidorbuy: 26500, taxinPrice: 29150, taxinBidorbuy: 29150,
+    })).toBe(29150)
+  })
+
+  it('即決が無ければ税込の現在価格を使う', () => {
+    expect(yahooAuctionTaxInPrice({ price: 5000, taxinPrice: 5500 })).toBe(5500)
+  })
+
+  it('税込が取れなければ税抜に落とす（0件にしない）', () => {
+    expect(yahooAuctionTaxInPrice({ price: 5000 })).toBe(5000)
+    expect(yahooAuctionTaxInPrice({ bidorbuy: 7000 })).toBe(7000)
+  })
+
+  it('非課税セラーでは税込と税抜が同じなので値は変わらない', () => {
+    expect(yahooAuctionTaxInPrice({ price: 12840, taxinPrice: 12840 })).toBe(12840)
+  })
+
+  it('価格が無い・0ならnull（0円で出品しない）', () => {
+    expect(yahooAuctionTaxInPrice({})).toBeNull()
+    expect(yahooAuctionTaxInPrice({ price: 0, taxinPrice: 0 })).toBeNull()
+    expect(yahooAuctionTaxInPrice(null)).toBeNull()
   })
 })
