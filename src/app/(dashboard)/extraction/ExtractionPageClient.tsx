@@ -18,10 +18,13 @@ interface Props {
   categories: ListingCategory[]
   bulkSettings: BulkEditSetting[]
   extractions: Extraction[]
+  // 抽出ごとの「商品ページからの補完」の残件数(集計できなかった抽出は入らない)
+  enrichPending?: Record<string, { pending: number; total: number }>
 }
 
 export default function ExtractionPageClient({
   profile,
+  enrichPending,
   sellers,
   categories,
   bulkSettings,
@@ -224,6 +227,7 @@ export default function ExtractionPageClient({
             <ExtractionRow
               key={extraction.id}
               extraction={extraction}
+              enrichPending={enrichPending?.[extraction.id]}
               onViewResult={(id) => router.push(`/extraction/${id}`)}
               onDelete={(id) => setExtractions((prev) => prev.filter((e) => e.id !== id))}
               onEdit={(id) => setEditingId((prev) => prev === id ? null : id)}
