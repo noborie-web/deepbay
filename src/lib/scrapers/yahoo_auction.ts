@@ -6,6 +6,10 @@ import { YahooFleaScraper, buildYahooFleaSearchUrlFromAuction } from './yahoo_fl
 import { fetchWithRetry, mapThrottled } from './throttled-fetch'
 
 const SEARCH_URL_PATTERN = /auctions\.yahoo\.co\.jp\/search\/search/
+// ユーザー報告(2026-10-15): カテゴリの一覧URLが「対応していません」で弾かれた。
+// 実際に確認したところ、/search/search?auccat=... は /category/list/{id} へ
+// 302リダイレクトされるようになっていた(ヤフオク側の変更)。
+const CATEGORY_URL_PATTERN = /auctions\.yahoo\.co\.jp\/category\/list\//
 const SELLER_URL_PATTERN = /auctions\.yahoo\.co\.jp\/seller\/[^/?#]+/
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const PAGE_SIZE = 50
@@ -20,6 +24,87 @@ const DETAIL_TIME_BUDGET_MS = 40_000
 // 画像URLのリサイズ指定を大きい値に書き換えて元画像に近いサイズを取得する。
 function upsizeImage(src: string): string {
   return src.replace(/([?&])w=\d+/, '$1w=1200').replace(/([?&])h=\d+/, '$1h=1200')
+}
+
+
+// ヤフオクの検索・カテゴリ一覧の商品データ。
+//
+// 本番で確認した変更(2026-10-15): 検索結果ページから旧来のHTML
+// (a.Product__imageLink[data-auction-id])が消え、商品は __NEXT_DATA__ の
+// props.pageProps.initialState.search.items.listing に入るようになった。
+// カテゴリ一覧(/category/list/)もキーワード検索(/search/search)も同じ形。
+// 旧HTMLが戻ってきた場合に備えて、こちらが取れないときは従来の解析に落とす。
+export interface YahooAuctionListingItem {
+  auctionId?: string
+  title?: string
+  price?: number
+  buyNowPrice?: number
+  imageUrl?: string
+  itemCondition?: string
+  seller?: { userId?: string }
+}
+
+export interface YahooAuctionSearchData {
+  items: YahooAuctionListingItem[]
+  totalResultsAvailable: number | null
+  categoryPath: string[]
+}
+
+// 商品状態。USED40=「やや傷や汚れあり」、USED60=「傷や汚れあり」は
+// 実際の商品ページと突き合わせて確認済み。残りはヤフオクの6段階の並び順。
+const ITEM_CONDITION_LABELS: Record<string, string> = {
+  NEW: '新品、未使用',
+  USED10: '未使用に近い',
+  USED20: '目立った傷や汚れなし',
+  USED40: 'やや傷や汚れあり',
+  USED60: '傷や汚れあり',
+  USED80: '全体的に状態が悪い',
+}
+
+export function parseYahooAuctionSearchData(html: string): YahooAuctionSearchData | null {
+  const match = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)
+  if (!match) return null
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data: any = JSON.parse(match[1])
+    const listing = data?.props?.pageProps?.initialState?.search?.items?.listing
+    if (!listing || !Array.isArray(listing.items)) return null
+
+    const total = typeof listing.totalResultsAvailable === 'number' ? listing.totalResultsAvailable : null
+    // パンくず(Yahoo!フリマ側の検索に使う)。先頭の「すべて」「オークション」は除く
+    const rawPath: Array<{ id?: number; name?: string }> =
+      listing.metadata?.categories?.[0]?.path ?? listing.items?.[0]?.categoryPath ?? []
+    const categoryPath = rawPath
+      .filter((entry) => entry?.id !== 0 && entry?.name)
+      .map((entry) => String(entry.name).trim())
+      .filter(Boolean)
+
+    return { items: listing.items as YahooAuctionListingItem[], totalResultsAvailable: total, categoryPath }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 実際に支払う価格(税込)を選ぶ。
+ *
+ * ヤフオクの商品データは税抜(price / bidorbuy)と税込(taxinPrice /
+ * taxinBidorbuy)を両方持つ。課税セラー(ストア)では10%違うため、税抜を
+ * 仕入値にすると利益計算が甘くなる。無在庫では即決で買うので、
+ * 税込の即決価格 → 税込の現在価格 → 税抜 の順に見る。
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function yahooAuctionTaxInPrice(item: any): number | null {
+  const candidates = [item?.taxinBidorbuy, item?.taxinPrice, item?.bidorbuy, item?.price]
+  for (const value of candidates) {
+    if (typeof value === 'number' && value > 0) return value
+  }
+  return null
+}
+
+export function yahooAuctionItemCondition(code: string | undefined): string | null {
+  if (!code) return null
+  return ITEM_CONDITION_LABELS[code] ?? null
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -45,11 +130,14 @@ export class YahooAuctionScraper extends BaseScraper {
   urlPattern = /auctions\.yahoo\.co\.jp\/(?:item\/|jp\/auction\/)/
 
   matches(url: string): boolean {
-    return this.urlPattern.test(url) || SEARCH_URL_PATTERN.test(url) || SELLER_URL_PATTERN.test(url)
+    return this.urlPattern.test(url)
+      || SEARCH_URL_PATTERN.test(url)
+      || CATEGORY_URL_PATTERN.test(url)
+      || SELLER_URL_PATTERN.test(url)
   }
 
   async scrape(url: string, options: ScraperOptions = {}): Promise<ScrapedProduct[]> {
-    if (SEARCH_URL_PATTERN.test(url)) {
+    if (SEARCH_URL_PATTERN.test(url) || CATEGORY_URL_PATTERN.test(url)) {
       return this.scrapeSearch(url, options)
     }
     if (SELLER_URL_PATTERN.test(url)) {
@@ -100,17 +188,50 @@ export class YahooAuctionScraper extends BaseScraper {
       }
 
       const $ = cheerio.load(html)
+      const pageProducts: ScrapedProduct[] = []
 
+      // 2026-10-15以降のヤフオクは、商品が __NEXT_DATA__ に入る
+      const searchData = parseYahooAuctionSearchData(html)
+      if (searchData) {
+        if (numFound === null) numFound = searchData.totalResultsAvailable
+        if (page === 0 && searchData.categoryPath.length > 0) categoryPath = searchData.categoryPath
+
+        for (const item of searchData.items) {
+          const itemId = item.auctionId
+          if (!itemId) continue
+          const sellerId = item.seller?.userId
+          pageProducts.push({
+            sourceUrl: `https://auctions.yahoo.co.jp/jp/auction/${itemId}`,
+            sourceSite: this.siteKey,
+            sourceItemId: itemId,
+            title: item.title?.trim() ?? '',
+            // 定額(即決)価格があればそちらを使う。無在庫では入札を待てない
+            price: item.buyNowPrice ?? item.price ?? null,
+            description: '',
+            images: item.imageUrl ? [upsizeImage(item.imageUrl)] : [],
+            // 一覧でも状態が取れる。商品ページの取得に失敗しても状態が残る
+            condition: yahooAuctionItemCondition(item.itemCondition),
+            category: null,
+            sellerRatingCount: null,
+            shippingDays: null,
+            sourceUpdatedAt: null,
+            // seller.userId はセラーページURLの識別子と一致することを実データで確認済み
+            sellerUrl: sellerId ? `https://auctions.yahoo.co.jp/seller/${sellerId}` : null,
+          })
+        }
+      }
+
+      // 旧HTMLが戻ってきた場合の保険(__NEXT_DATA__から取れなかったときだけ)
+      if (pageProducts.length === 0) {
       if (numFound === null) {
         const headerText = $('.Result__header').first().text()
         const m = headerText.match(/([\d,]+)\s*件/)
         if (m) numFound = parseInt(m[1].replace(/,/g, ''), 10)
       }
-      if (page === 0) {
+      if (page === 0 && categoryPath.length === 0) {
         categoryPath = $('.CategoryTree__link').map((_, el) => $(el).text().trim()).get().filter(Boolean)
       }
 
-      const pageProducts: ScrapedProduct[] = []
       $('a.Product__imageLink[data-auction-id]').each((_, el) => {
         const $el = $(el)
         const itemId = $el.attr('data-auction-id') ?? ''
@@ -140,6 +261,7 @@ export class YahooAuctionScraper extends BaseScraper {
           sellerUrl,
         })
       })
+      }
 
       // 「そのページの結果が0件」以外(取得件数がpageSize未満など)を終了条件に
       // してはいけない(メルカリ検索抽出で見つかった不具合と同じ罠)。
@@ -424,7 +546,12 @@ export class YahooAuctionScraper extends BaseScraper {
         sourceSite: this.siteKey,
         sourceItemId: nextItem.auctionId ?? itemId,
         title: nextItem.title ?? '',
-        price: typeof nextItem.price === 'number' ? nextItem.price : null,
+        // 本番で確認した不具合(2026-10-15): nextItem.price は**税抜**で、
+        // 実際に支払う税込価格より安い(例: t1241692266 は税抜26,500/税込29,150)。
+        // 仕入値を10%低く見積もると利益計算がそのぶん甘くなる。実際に
+        // ユーザーのカテゴリ検索132件のうち33件(25%)が課税セラーの出品だった。
+        // 無在庫で支払うのは「税込の即決価格」なので、そちらを優先する。
+        price: yahooAuctionTaxInPrice(nextItem),
         description,
         images,
         condition: nextItem.conditionName ?? null,
