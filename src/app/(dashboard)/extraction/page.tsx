@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import ExtractionPageClient from './ExtractionPageClient'
+import { ENRICHABLE_SITES } from '@/lib/enrich-sites'
 
 export default async function ExtractionPage() {
   const supabase = await createClient()
@@ -37,8 +38,31 @@ export default async function ExtractionPage() {
       .limit(50),
   ])
 
+  // ユーザー要望(2026-10-15): 商品ページからの補完が残っているかを、抽出結果を
+  // 開かなくても一覧で分かるようにする。件数はDB側で数える(一覧50件ぶんの
+  // productsをそのまま取るとPostgRESTの行上限で黙って切られ、誤った件数になる)。
+  const extractionIds = ((extractions ?? []) as Array<{ id: string }>).map((row) => row.id)
+  let enrichPending: Record<string, { pending: number; total: number }> = {}
+  if (extractionIds.length > 0) {
+    const { data: pendingRows, error: pendingError } = await (supabase.rpc as unknown as (
+      fn: string, args: Record<string, unknown>,
+    ) => Promise<{ data: Array<{ extraction_id: string; pending: number; total: number }> | null; error: unknown }>)(
+      'extraction_enrich_pending',
+      { p_user_id: user.id, p_extraction_ids: extractionIds, p_sites: [...ENRICHABLE_SITES] },
+    )
+    // 集計に失敗したら「補完待ち0件」と見せず、表示自体を出さない
+    if (pendingError) {
+      console.warn('[extraction] enrich pending count failed:', pendingError)
+    } else {
+      enrichPending = Object.fromEntries(
+        (pendingRows ?? []).map((row) => [row.extraction_id, { pending: Number(row.pending), total: Number(row.total) }]),
+      )
+    }
+  }
+
   return (
     <ExtractionPageClient
+      enrichPending={enrichPending}
       profile={profile as { extraction_limit: number; extraction_used: number } | null}
       sellers={sellers ?? []}
       categories={categories ?? []}

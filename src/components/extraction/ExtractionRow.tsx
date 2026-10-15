@@ -9,13 +9,16 @@ import type { Extraction } from '@/types/database'
 
 interface Props {
   extraction: Extraction
+  // ユーザー要望(2026-10-15): 商品ページからの補完が残っているかを、抽出結果を
+  // 開かなくても一覧で分かるようにする。集計できなかった抽出では undefined。
+  enrichPending?: { pending: number; total: number }
   onViewResult: (id: string) => void
   onDelete?: (id: string) => void
   onEdit?: (id: string) => void
   onList?: (id: string) => void
 }
 
-export default function ExtractionRow({ extraction, onViewResult, onDelete, onEdit, onList }: Props) {
+export default function ExtractionRow({ extraction, enrichPending, onViewResult, onDelete, onEdit, onList }: Props) {
   const isManual = !extraction.is_bulk
   const [menuOpen, setMenuOpen] = useState(false)
   const [exclusionSummaryOpen, setExclusionSummaryOpen] = useState(false)
@@ -209,6 +212,28 @@ export default function ExtractionRow({ extraction, onViewResult, onDelete, onEd
           </>
         )}
       </div>
+      {/* 商品ページからの補完の進み具合。抽出結果を開かなくても分かるようにする
+          (補完は抽出結果のページを開いているあいだに進む) */}
+      {enrichPending && enrichPending.total > 0 && extraction.status === 'completed' && (
+        <div className="col-span-full -mt-1 px-0.5">
+          {enrichPending.pending > 0 ? (
+            <button
+              onClick={() => onViewResult(extraction.id)}
+              className="text-[11px] text-amber-700 hover:underline"
+              title="抽出結果のページを開くと補完が進みます"
+            >
+              説明文・画像の補完待ち {enrichPending.pending.toLocaleString()} 件
+              <span className="text-amber-600/70">
+                （{(enrichPending.total - enrichPending.pending).toLocaleString()}/{enrichPending.total.toLocaleString()} 補完済み・開くと再開）
+              </span>
+            </button>
+          ) : (
+            <span className="text-[11px] text-gray-400">
+              説明文・画像の補完済み（{enrichPending.total.toLocaleString()} 件）
+            </span>
+          )}
+        </div>
+      )}
 
       {/* アクション */}
       <div className="flex items-center gap-2 justify-end">

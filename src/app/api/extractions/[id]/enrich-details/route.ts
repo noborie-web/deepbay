@@ -7,6 +7,7 @@ import { YahooAuctionScraper } from '@/lib/scrapers/yahoo_auction'
 import { fetchWithRetry, mapThrottled, RateLimitedError } from '@/lib/scrapers/throttled-fetch'
 import { generateDescriptionsSafely, normalizeAiDescriptionMode, translateDescriptionsWithFailures } from '@/lib/translate'
 import type { ScrapedProduct } from '@/lib/scrapers/types'
+import { ENRICHABLE_SITES, type EnrichableSite } from '@/lib/enrich-sites'
 
 // ユーザー要望: ヤフオク・Yahoo!フリマの抽出で「必要なものは取得できるように」。
 // 実データで確認した不具合: 抽出中に商品ページを並行取得するとYahoo!フリマから
@@ -23,11 +24,13 @@ const TIME_BUDGET_MS = 42_000
 // 実データで計測(2026-09-21): Yahoo!フリマは1つのIPから約15件で429になり約15分
 // ブロックされる。1回の呼び出しでは FLEA_DETAIL_PER_RUN 件だけ1件ずつ取得し、
 // 429が出たら打ち切って呼び出し側に「15分後に再開」を返す。
-const SITE_PACING: Record<string, { concurrency: number; intervalMs: number; retries: number; maxPerRun: number }> = {
+// 対象サイトは一覧の集計(extraction_enrich_pending)と共通にする。
+// ここで Record<EnrichableSite, ...> にしておくと、サイトを増やしたときに
+// ペース設定の追加漏れをTypeScriptが知らせてくれる。
+const SITE_PACING: Record<EnrichableSite, { concurrency: number; intervalMs: number; retries: number; maxPerRun: number }> = {
   yahoo_flea: { concurrency: 1, intervalMs: 1000, retries: 0, maxPerRun: FLEA_DETAIL_PER_RUN },
   yahoo_auction: { concurrency: 2, intervalMs: 500, retries: 2, maxPerRun: BATCH },
 }
-const ENRICHABLE_SITES = Object.keys(SITE_PACING)
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 function admin() {
@@ -51,7 +54,7 @@ async function countPending(db: ReturnType<typeof admin>, userId: string, extrac
     .select('id', { count: 'exact', head: true })
     .eq('user_id', userId)
     .eq('extraction_id', extractionId)
-    .in('source_site', ENRICHABLE_SITES)
+    .in('source_site', [...ENRICHABLE_SITES])
     .is('detail_enriched_at', null)
   return count ?? 0
 }
@@ -84,7 +87,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .select('id, source_url, source_site, original_description, ebay_description, original_images, detail_attempts, detail_retry_after')
     .eq('user_id', user.id)
     .eq('extraction_id', extractionId)
-    .in('source_site', ENRICHABLE_SITES)
+    .in('source_site', [...ENRICHABLE_SITES])
     .is('detail_enriched_at', null)
     .or(`detail_retry_after.is.null,detail_retry_after.lte.${nowIso}`)
     .order('created_at', { ascending: true })
@@ -98,7 +101,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       .select('detail_retry_after')
       .eq('user_id', user.id)
       .eq('extraction_id', extractionId)
-      .in('source_site', ENRICHABLE_SITES)
+      .in('source_site', [...ENRICHABLE_SITES])
       .is('detail_enriched_at', null)
       .not('detail_retry_after', 'is', null)
       .order('detail_retry_after', { ascending: true })
