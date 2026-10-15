@@ -19,6 +19,15 @@ const DETAIL_CONCURRENCY = 3
 const DETAIL_INTERVAL_MS = 250
 const DETAIL_RETRIES = 3
 const DETAIL_TIME_BUDGET_MS = 40_000
+// 本番で確認した取りこぼし(2026-10-15): ヤフオクは取得のたびに並びが変わるため、
+// ページをまたいで同じ商品が重複して返り、そのぶん別の商品が1件も出てこない。
+// 実データ: 総件数131件に対し、1巡目は109件しかユニークに集まらなかった。
+// もう1巡すると残りの22件が出てきて131件そろった。
+// 総件数に届かないときは、ページを取り直して差分を拾う。
+const MAX_SEARCH_SWEEPS = 10
+// 取り直しに使ってよい時間。大きな検索で何巡もして実行時間を使い切らないよう、
+// 取りこぼしが残っていても打ち切る(取れた分は捨てない)。
+const SWEEP_TIME_BUDGET_MS = 45_000
 
 // 検索結果のサムネイルはデフォルトでは小さい(w=300&h=300)ため、
 // 画像URLのリサイズ指定を大きい値に書き換えて元画像に近いサイズを取得する。
@@ -158,6 +167,11 @@ export class YahooAuctionScraper extends BaseScraper {
     // 暴走防止用の安全上限
     const maxPages = Math.ceil(limit / PAGE_SIZE) + 5
 
+    // 1巡で総件数に届かなければ、増えなくなるまで取り直す(上の説明を参照)
+    const sweepStartedAt = Date.now()
+    for (let sweep = 0; sweep < MAX_SEARCH_SWEEPS; sweep++) {
+    const foundBeforeSweep = allProducts.length
+
     for (let page = 0; page < maxPages && allProducts.length < limit; page++) {
       const offset = page * PAGE_SIZE + 1 // ヤフオクの`b`パラメータは1始まり
       baseUrl.searchParams.set('b', String(offset))
@@ -276,6 +290,18 @@ export class YahooAuctionScraper extends BaseScraper {
       onPage?.(allProducts.length, numFound ?? limit)
 
       if (numFound !== null && allProducts.length >= numFound) break
+    }
+
+      // 総件数が分からない / 取りきった / 上限に達したら、取り直さない
+      const target = numFound === null ? null : Math.min(numFound, limit)
+      if (target === null || allProducts.length >= target) break
+      // 取り直しても増えないなら、これ以上は出てこない(終了済み等)
+      if (allProducts.length === foundBeforeSweep) break
+      if (Date.now() - sweepStartedAt > SWEEP_TIME_BUDGET_MS) {
+        console.warn(`[yahoo auction] ${allProducts.length}/${target}件で打ち切り(取り直しの時間上限)`)
+        break
+      }
+      console.warn(`[yahoo auction] ${allProducts.length}/${target}件。並びの入れ替わりで取りこぼした分を取り直します`)
     }
 
     // ユーザー要望: 検索結果は一覧のタイトル・価格・画像だけなので、商品ページを
