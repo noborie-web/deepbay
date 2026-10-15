@@ -136,7 +136,7 @@ describe('runScrape: 実行時間の期限(deadlineAt)', () => {
       deadlineAt: Date.now() - 1,
     })
 
-    expect(result).toEqual({ status: 'completed' })
+    expect(result).toMatchObject({ status: 'completed' })
     // 商品は捨てずに下書きとして保存する(翻訳は元タイトルのまま)
     expect(insertedProducts).toHaveLength(1)
     expect(insertedProducts[0].ebay_title).toBe(scrapedProduct.title)

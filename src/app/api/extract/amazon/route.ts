@@ -2,19 +2,18 @@ import { NextRequest, NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { runScrape } from '@/lib/extraction-run'
-import { fetchAmazonProducts } from '@/lib/amazon-extract'
 import { parseAsinInput } from '@/lib/amazon-spapi'
+import { CHUNK_SIZE, processChunkAndChain } from '@/lib/amazon-job'
 import type { Extraction, Profile } from '@/types/database'
 
 export const maxDuration = 300
 
-// 実行時間の上限(300秒)より手前で打ち切り、「処理中」のまま残さない(#255と同じ)
-const EXTRACTION_DEADLINE_MS = 270_000
-// SP-APIの取得に使う時間。残りは翻訳・価格計算・保存に回す
-const AMAZON_FETCH_BUDGET_MS = 150_000
-// 1回で扱えるASIN数。実効2 ASIN/s なので、これ以上は時間内に終わらない
-const MAX_ASINS_PER_RUN = 300
+// ユーザー要望(2026-10-14): 300件という上限を上げたい。
+// 1回の実行で処理できるのは300件(2 ASIN/s × 150秒)が限界なので、
+// それ以上はASINを300件ずつに分け、複数回の実行にまたがって1つの抽出を
+// 仕上げる。レート制限はアカウント単位なので速くはならない
+// (1,000件はどうやっても約8分半かかる)。
+const MAX_ASINS_PER_RUN = 2000
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -64,6 +63,8 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  const db = createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data: extraction, error: insertError } = await (supabase as any)
     .from('extractions')
@@ -88,95 +89,47 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `DB error: ${message}` }, { status: 500 })
   }
 
-  const extractionId = extraction.id
-  const userId = user.id
   // ユーザー判断(2026-10-13): 無在庫では発送が安定しているFBAを既定にする
-  // (抽出時に切り替えられる)
   const fbaOnly = body.fbaOnly !== false
   const bulkEditSettingId = typeof body.bulkEditSettingId === 'string' ? body.bulkEditSettingId : null
 
+  const { data: job, error: jobError } = await db
+    .from('amazon_extract_jobs')
+    .insert({
+      user_id: user.id,
+      extraction_id: extraction.id,
+      asins,
+      chunk_size: CHUNK_SIZE,
+      fba_only: fbaOnly,
+      bulk_edit_setting_id: bulkEditSettingId,
+      status: 'pending',
+    })
+    .select('id')
+    .single() as { data: { id: string } | null; error: { message: string } | null }
+
+  if (jobError || !job) {
+    await db.from('extractions')
+      .update({ status: 'failed', progress: 0, error_message: `抽出ジョブを作成できませんでした: ${jobError?.message ?? '不明なエラー'}` })
+      .eq('id', extraction.id)
+    return NextResponse.json({ error: `DB error: ${jobError?.message ?? '不明なエラー'}` }, { status: 500 })
+  }
+
+  const jobId = job.id
+  const extractionId = extraction.id
+  const origin = req.nextUrl.origin
+  const chunks = Math.ceil(asins.length / CHUNK_SIZE)
+
   after(async () => {
-    const bg = createServiceClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    )
-    let finished = false
-    const timeout = setTimeout(() => {
-      if (finished) return
-      void bg
-        .from('extractions')
-        .update({
-          status: 'failed',
-          progress: 0,
-          error_message: '抽出が時間内に完了しませんでした（実行時間の上限）。ASINの件数を減らして再実行してください。',
-        })
-        .eq('id', extractionId)
-        .eq('status', 'processing')
-        .then(({ error }) => { if (error) console.warn('[extract/amazon] failed to mark timeout:', error.message) })
-    }, EXTRACTION_DEADLINE_MS)
-
-    try {
-      const fetched = await fetchAmazonProducts(bg, userId, asins, {
-        timeBudgetMs: AMAZON_FETCH_BUDGET_MS,
-        fbaOnly,
-      })
-
-      // 本番で確認(2026-10-13): 5件中2件しか取り込まれなかったが、残り3件が
-      // どの理由で落ちたか画面に何も出ていなかった。件数が0のときだけ理由を
-      // 書いていたため。無在庫では「なぜ仕入れられないか」が重要なので、
-      // 一部成功した場合も必ず除外詳細に残す。
-      const amazonSummary = {
-        amazon_requested: asins.length,
-        amazon_no_new_offer: fetched.noOffer.length,
-        amazon_not_fba: fetched.notFba.length,
-        amazon_pricing_failed: fetched.pricingFailed.length,
-        amazon_time_skipped: fetched.skipped.length,
-        // 再実行や個別確認に使えるよう、落ちたASINも残す
-        amazon_no_new_offer_asins: fetched.noOffer,
-        amazon_not_fba_asins: fetched.notFba,
-        amazon_pricing_failed_asins: fetched.pricingFailed,
-        amazon_time_skipped_asins: fetched.skipped,
-      }
-
-      if (fetched.products.length === 0) {
-        await bg.from('extractions').update({
-          status: 'failed',
-          progress: 0,
-          error_message: amazonEmptyReason(fetched),
-          exclusion_summary: amazonSummary,
-        }).eq('id', extractionId)
-        return
-      }
-
-      await runScrape(userId, extractionId, `amazon:asin-list:${asins.length}`, bulkEditSettingId, bg, {
-        deadlineAt: Date.now() + (EXTRACTION_DEADLINE_MS - AMAZON_FETCH_BUDGET_MS),
-        presetProducts: fetched.products,
-        extraExclusionSummary: amazonSummary,
-      })
-    } catch (error) {
-      const message = (error instanceof Error ? error.message : '不明なエラー').slice(0, 500)
-      await bg.from('extractions').update({
-        status: 'failed', progress: 0, error_message: message,
-      }).eq('id', extractionId)
-    } finally {
-      finished = true
-      clearTimeout(timeout)
-    }
+    await processChunkAndChain(jobId, extractionId, origin)
   })
 
-  return NextResponse.json({ extractionId, asinCount: asins.length, invalid }, { status: 200 })
-}
-
-function amazonEmptyReason(fetched: {
-  pricingFailed: string[]
-  noOffer: string[]
-  skipped: string[]
-  notFba: string[]
-}): string {
-  const parts: string[] = []
-  if (fetched.noOffer.length > 0) parts.push(`新品の出品が無い: ${fetched.noOffer.length}件`)
-  if (fetched.notFba.length > 0) parts.push(`FBAの出品が無い: ${fetched.notFba.length}件（「FBAのみ」を外すと対象になります）`)
-  if (fetched.pricingFailed.length > 0) parts.push(`価格を取得できなかった: ${fetched.pricingFailed.length}件（再実行で取得できることがあります）`)
-  if (fetched.skipped.length > 0) parts.push(`時間切れで未処理: ${fetched.skipped.length}件`)
-  return `取り込める商品がありませんでした。${parts.join(' / ')}`
+  return NextResponse.json({
+    extractionId,
+    jobId,
+    asinCount: asins.length,
+    chunks,
+    // 実効2 ASIN/s(SP-APIのレート制限)から出した目安
+    estimatedSec: Math.ceil(asins.length / 2),
+    invalid,
+  }, { status: 200 })
 }

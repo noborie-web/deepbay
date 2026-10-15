@@ -12,6 +12,16 @@ interface SellerAccount { id: string; seller_id: string; display_name: string | 
 interface ListingCategory { id: string; ebay_category_id: string; name: string }
 interface BulkEditSetting { id: string; name: string }
 interface SearchItem { asin: string; title: string | null; brand: string | null }
+// 自動継続が途切れたジョブ(画面から再開できるようにする)
+interface PendingJob {
+  id: string
+  extraction_id: string
+  next_index: number
+  status: string
+  last_error: string | null
+  last_progress_at: string
+  asin_count: number
+}
 interface SearchResult {
   items: SearchItem[]
   truncated: boolean
@@ -19,7 +29,10 @@ interface SearchResult {
   query?: { keywords: string[]; brandNames: string[]; classificationIds: string[] }
 }
 
-const MAX_ASINS = 300
+// 1回の実行で処理できるのは300件(2 ASIN/s × 150秒)。それ以上は300件ずつの
+// チャンクに分けて、複数回の実行にまたがって1つの抽出を仕上げる。
+const MAX_ASINS = 2000
+const CHUNK_SIZE = 300
 
 export default function AmazonExtractionPage() {
   const router = useRouter()
@@ -34,6 +47,8 @@ export default function AmazonExtractionPage() {
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null)
   const [selectedAsins, setSelectedAsins] = useState<Set<string>>(new Set())
   const [searchError, setSearchError] = useState<string | null>(null)
+  const [pendingJobs, setPendingJobs] = useState<PendingJob[]>([])
+  const [resumingJobId, setResumingJobId] = useState<string | null>(null)
   const [memo, setMemo] = useState('')
   const [sellerAccountId, setSellerAccountId] = useState('')
   const [categoryId, setCategoryId] = useState('')
@@ -52,7 +67,47 @@ export default function AmazonExtractionPage() {
     .map(t => t.match(/(?:\/DP\/|\/GP\/PRODUCT\/)([A-Z0-9]{10})/)?.[1] ?? t)
     .filter(t => /^[A-Z0-9]{10}$/.test(t))
   const uniqueCount = new Set(parsed).size
+  // 実効2 ASIN/s(SP-APIのレート制限)。アカウント単位の制限なので、
+  // 分割しても速くはならない
   const estimatedSec = Math.ceil(uniqueCount / 2)
+  const estimatedLabel = estimatedSec >= 90
+    ? `約${Math.ceil(estimatedSec / 60)}分`
+    : `約${estimatedSec}秒`
+  const chunkCount = Math.ceil(uniqueCount / CHUNK_SIZE)
+
+  // 自動継続が途切れたジョブを拾う。1チャンクは最長270秒なので、
+  // 10分進んでいなければ止まっているとみなす
+  const loadPendingJobs = useCallback(async () => {
+    const stalledBefore = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    const { data } = await supabase
+      .from('amazon_extract_jobs')
+      .select('id, extraction_id, next_index, status, last_error, last_progress_at, asins')
+      .in('status', ['pending', 'running', 'failed'])
+      .lt('last_progress_at', stalledBefore)
+      .order('last_progress_at', { ascending: false })
+      .limit(5)
+    const rows = (data ?? []) as Array<Omit<PendingJob, 'asin_count'> & { asins: string[] }>
+    setPendingJobs(rows.map(({ asins, ...rest }) => ({ ...rest, asin_count: asins?.length ?? 0 })))
+  }, [supabase])
+
+  const resumeJob = async (jobId: string) => {
+    setResumingJobId(jobId)
+    try {
+      const res = await fetch('/api/extract/amazon/continue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId }),
+      })
+      const json = await res.json() as { error?: string }
+      if (!res.ok) throw new Error(json.error ?? '再開できませんでした')
+      setMessage({ type: 'success', text: '続きの処理を開始しました。抽出一覧で進捗を確認できます' })
+      await loadPendingJobs()
+    } catch (e) {
+      setMessage({ type: 'error', text: e instanceof Error ? e.message : 'エラーが発生しました' })
+    } finally {
+      setResumingJobId(null)
+    }
+  }
 
   const load = useCallback(async () => {
     const [{ data: sellerRows }, { data: categoryRows }, { data: bulkRows }] = await Promise.all([
@@ -71,7 +126,9 @@ export default function AmazonExtractionPage() {
     } catch {
       setConnected(null)
     }
-  }, [supabase])
+
+    await loadPendingJobs()
+  }, [supabase, loadPendingJobs])
 
   useEffect(() => {
     const timer = window.setTimeout(() => { void load() }, 0)
@@ -140,11 +197,17 @@ export default function AmazonExtractionPage() {
           bulkEditSettingId: bulkEditSettingId || null,
         }),
       })
-      const json = await res.json() as { error?: string; asinCount?: number; invalid?: string[] }
+      const json = await res.json() as {
+        error?: string; asinCount?: number; invalid?: string[]; chunks?: number; estimatedSec?: number
+      }
       if (!res.ok) throw new Error(json.error ?? '抽出を開始できませんでした')
+      const eta = json.estimatedSec
+        ? (json.estimatedSec >= 90 ? `約${Math.ceil(json.estimatedSec / 60)}分` : `約${json.estimatedSec}秒`)
+        : null
       setMessage({
         type: 'success',
         text: `${json.asinCount}件のASINで抽出を開始しました`
+          + ((json.chunks ?? 1) > 1 ? `（${json.chunks}回に分けて自動で続けます${eta ? `・目安${eta}` : ''}）` : '')
           + (json.invalid?.length ? `（読み取れなかった値: ${json.invalid.length}件）` : ''),
       })
       setAsinText('')
@@ -166,6 +229,33 @@ export default function AmazonExtractionPage() {
           翻訳・価格の自動計算・除外条件・重複判定がそのまま適用されます。
         </p>
       </div>
+
+      {pendingJobs.length > 0 && (
+        <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-900 space-y-2">
+          <p>
+            <strong>途中で止まっている抽出があります。</strong>
+            自動での続行が途切れた可能性があります。ここまでに取り込んだ商品は残っているので、
+            続きから再開できます（最初からやり直しにはなりません）。
+          </p>
+          {pendingJobs.map(job => (
+            <div key={job.id} className="flex flex-wrap items-center gap-2">
+              <span>
+                {job.asin_count.toLocaleString()}件中 <strong>{job.next_index.toLocaleString()}件</strong>まで処理済み
+                （最終更新: {new Date(job.last_progress_at).toLocaleString('ja-JP')}）
+                {job.last_error && <span className="ml-1 text-red-700">／{job.last_error}</span>}
+              </span>
+              <button
+                onClick={() => void resumeJob(job.id)}
+                disabled={resumingJobId === job.id}
+                className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700 disabled:opacity-40"
+              >
+                {resumingJobId === job.id ? '再開しています...' : '続きを実行'}
+              </button>
+              <a href={`/extraction/${job.extraction_id}`} className="underline">抽出を見る</a>
+            </div>
+          ))}
+        </div>
+      )}
 
       {connected === false && (
         <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
@@ -209,7 +299,7 @@ export default function AmazonExtractionPage() {
             取得件数
             <select value={searchLimit} onChange={e => setSearchLimit(Number(e.target.value))}
               className="mt-0.5 block w-24 rounded border bg-white px-2 py-1.5 text-sm">
-              {[20, 50, 100, 200, 300].map(n => <option key={n} value={n}>{n}件</option>)}
+              {[20, 50, 100, 300, 500, 1000].map(n => <option key={n} value={n}>{n.toLocaleString()}件</option>)}
             </select>
           </label>
           <button
@@ -295,7 +385,9 @@ export default function AmazonExtractionPage() {
           <span className="text-sm font-medium text-gray-700">ASIN</span>
           <p className="mt-0.5 text-xs text-gray-500">
             改行・カンマ・タブ区切りで入力できます。Amazonの商品URLを貼っても構いません。
-            重複は自動で取り除きます。1回に{MAX_ASINS}件までです。
+            重複は自動で取り除きます。1回に{MAX_ASINS.toLocaleString()}件までです。
+            {CHUNK_SIZE}件を超える分は自動で分割して続けます（Amazonの価格取得が
+            実効2件/秒に制限されているため、件数に比例して時間がかかります）。
           </p>
           <textarea
             value={asinText}
@@ -306,8 +398,10 @@ export default function AmazonExtractionPage() {
           />
           <span className="mt-1 block text-xs text-gray-500">
             読み取れたASIN: <strong className={uniqueCount > MAX_ASINS ? 'text-red-600' : 'text-gray-900'}>{uniqueCount}</strong>件
-            {uniqueCount > 0 && `（取得にかかる目安: 約${estimatedSec}秒）`}
-            {uniqueCount > MAX_ASINS && ` — ${MAX_ASINS}件までに分けてください`}
+            {uniqueCount > 0 && `（取得にかかる目安: ${estimatedLabel}）`}
+            {chunkCount > 1 && uniqueCount <= MAX_ASINS
+              && `・${CHUNK_SIZE}件ずつ${chunkCount}回に分けて自動で続けます`}
+            {uniqueCount > MAX_ASINS && ` — ${MAX_ASINS.toLocaleString()}件までに分けてください`}
           </span>
         </label>
 

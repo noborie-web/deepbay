@@ -42,7 +42,8 @@ export function calculateAutomaticEbayPrice(
 }
 
 export type ExtractionRunResult =
-  | { status: 'completed' }
+  // 分割実行(Amazon)では、チャンクごとの除外内訳を呼び出し側で足し合わせる
+  | { status: 'completed'; exclusionSummary: Record<string, unknown>; savedCount: number }
   | { status: 'excluded' }
   | { status: 'failed'; errorMessage: string }
 
@@ -61,6 +62,17 @@ export interface RunScrapeOptions {
   // 300秒)で強制終了されると catch も走らず、商品0件のまま「処理中」で
   // 残ってしまうため、呼び出し側が上限より手前の時刻を渡す。
   deadlineAt?: number
+
+  // ユーザー要望(2026-10-14): Amazon抽出の300件上限を上げる。1回の実行時間
+  // (Vercel Hobbyは300秒)には収まらないため、ASINを分割して複数回の実行で
+  // 1つの抽出を仕上げる。最後のチャンク以外は「完了」にせず、抽出回数も
+  // 数えない(1つの抽出につき1回だけ数える)。
+  finalize?: boolean
+  // 進捗を 0-100 ではなく、この範囲に割り当てる(チャンクをまたいで
+  // 進捗バーが戻らないようにする)
+  progressRange?: { from: number; to: number }
+  // これまでのチャンクの除外内訳。最後のチャンクでまとめて書き込む
+  previousExclusionSummary?: Record<string, unknown>
 }
 
 // 重複チェック・商品のinsert・完了記録のために残しておく時間。
@@ -69,6 +81,26 @@ const FINALIZE_RESERVE_MS = 25_000
 // ページ取得(スクレイピング)に使える割合。これを超えたら残りのAI処理を
 // 諦めてでも、取得済みの商品を保存して完了させる。
 const SCRAPE_BUDGET_RATE = 0.6
+
+/**
+ * 分割実行(Amazon)で、チャンクごとの除外内訳を足し合わせる。
+ * 数は合計し、真偽値はどれかが true なら true、配列(落ちたASIN等)は連結する。
+ */
+export function mergeExclusionSummaries(
+  previous: Record<string, unknown> | undefined,
+  current: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!previous) return current
+  const merged: Record<string, unknown> = { ...previous }
+  for (const [key, value] of Object.entries(current)) {
+    const before = merged[key]
+    if (typeof value === 'number' && typeof before === 'number') merged[key] = before + value
+    else if (typeof value === 'boolean' && typeof before === 'boolean') merged[key] = before || value
+    else if (Array.isArray(value) && Array.isArray(before)) merged[key] = [...before, ...value]
+    else merged[key] = value
+  }
+  return merged
+}
 
 export async function runScrape(
   userId: string,
@@ -100,8 +132,13 @@ export async function runScrape(
 
   // AI処理の段ごとに進捗を進める。90%で止まったまま何分も動かないと
   // 「固まった」と見えるため。
+  const progressRange = options.progressRange ?? null
   const setProgress = async (pct: number): Promise<void> => {
-    const { error } = await supabase.from('extractions').update({ progress: pct }).eq('id', extractionId)
+    // 分割実行では、このチャンクの進捗を全体の一部に割り当てる
+    const mapped = progressRange
+      ? Math.round(progressRange.from + (pct / 100) * (progressRange.to - progressRange.from))
+      : pct
+    const { error } = await supabase.from('extractions').update({ progress: mapped }).eq('id', extractionId)
     if (error) console.warn('[extract] progress update failed:', error.message)
   }
 
@@ -746,6 +783,19 @@ export async function runScrape(
       ...(options.extraExclusionSummary ?? {}),
     }
 
+    // 分割実行では、これまでのチャンクの内訳と足し合わせる
+    const mergedSummary = mergeExclusionSummaries(options.previousExclusionSummary, exclusionSummary)
+
+    // 最後のチャンク以外は完了にせず、抽出回数も数えない
+    // (1つの抽出につき1回だけ数える)
+    if (options.finalize === false) {
+      await supabase
+        .from('extractions')
+        .update({ exclusion_summary: mergedSummary })
+        .eq('id', extractionId)
+      return { status: 'completed', exclusionSummary: mergedSummary, savedCount: deduped.length }
+    }
+
     await Promise.all([
       supabase
         .from('extractions')
@@ -753,12 +803,12 @@ export async function runScrape(
           status: 'completed',
           progress: 100,
           extracted_at: new Date().toISOString(),
-          exclusion_summary: exclusionSummary,
+          exclusion_summary: mergedSummary,
         })
         .eq('id', extractionId),
       supabase.rpc('increment_extraction_used', { user_id: userId }),
     ])
-    return { status: 'completed' }
+    return { status: 'completed', exclusionSummary: mergedSummary, savedCount: deduped.length }
   } catch (err) {
     const message = (err instanceof Error ? err.message : '不明なエラー').slice(0, 500)
     console.error('Scrape failed:', message)

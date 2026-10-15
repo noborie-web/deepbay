@@ -13,8 +13,10 @@ import { AmazonSearchError, parseAmazonSearchQuery, searchAmazonAsins } from '@/
 // (抽出回数を消費する前に中身を確認できるようにする)。
 export const maxDuration = 60
 
-// 1回の検索で返す件数の上限(抽出の上限と同じ300件)
-const MAX_LIMIT = 300
+// 1回の検索で返す件数の上限。
+// searchCatalogItems は1ページ20件・2 req/s なので 40 ASIN/秒。
+// 1,000件なら50ページ=約25秒で、下の時間予算(45秒)に収まる。
+const MAX_LIMIT = 1000
 // SP-APIの検索に使う時間。maxDuration(60秒)より手前で打ち切る
 const SEARCH_BUDGET_MS = 45_000
 

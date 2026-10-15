@@ -102,7 +102,7 @@ describe('automatic extraction pricing', () => {
       shippingUsd: DEFAULT_AUTO_PRICING.shippingCostJpy / 150,
       fixedCostUsd: DEFAULT_AUTO_PRICING.fixedCostUsd,
     }).salePriceUsd
-    expect(result).toEqual({ status: 'completed' })
+    expect(result).toMatchObject({ status: 'completed' })
     expect(insertedProducts[0].ebay_price).toBe(expected)
     expect(insertedProducts[1].ebay_price).toBe(expected)
     expect(calculateAutomaticEbayPrice(5000, 150)).toBe(expected)
@@ -139,7 +139,7 @@ describe('automatic extraction pricing', () => {
 
     const result = await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
 
-    expect(result).toEqual({ status: 'completed' })
+    expect(result).toMatchObject({ status: 'completed' })
     expect(insertedProducts[0].ebay_price).toBeNull()
     expect(extractionUpdates).toContainEqual(expect.objectContaining({ status: 'completed', progress: 100 }))
   })
