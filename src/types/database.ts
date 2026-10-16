@@ -133,6 +133,9 @@ export interface Extraction {
   bulk_edit_setting_id: string | null
   status: ExtractionStatus
   progress: number
+  // 抽出リスト名。空なら抽出の完了時に自動で入る(検索キーワード/カテゴリ名)。
+  // 「メモ」はユーザーが手で書く欄で、別物。
+  name: string | null
   memo: string
   is_bulk: boolean
   extracted_at: string | null

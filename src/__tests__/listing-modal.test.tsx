@@ -37,6 +37,7 @@ const extraction: Extraction = {
   bulk_edit_setting_id: null,
   status: 'completed',
   progress: 100,
+  name: null,
   memo: '',
   edited_at: null,
   is_bulk: true,
