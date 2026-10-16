@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   runEnrichDetailsBatch: vi.fn(),
   rows: [] as Array<{ user_id: string | null; extraction_id: string | null }>,
   selectError: null as { message: string } | null,
+  notFilters: [] as unknown[][],
 }))
 
 vi.mock('@supabase/supabase-js', () => ({
@@ -16,6 +17,7 @@ vi.mock('@supabase/supabase-js', () => ({
         select: () => chain,
         in: () => chain,
         is: () => chain,
+        not: (...args: unknown[]) => { mocks.notFilters.push(args); return chain },
         or: () => chain,
         order: () => chain,
         limit: async () => ({ data: mocks.rows, error: mocks.selectError }),
@@ -38,6 +40,7 @@ describe('GET /api/cron/enrich-details', () => {
   beforeEach(() => {
     process.env.CRON_SECRET = 'test-secret'
     mocks.selectError = null
+    mocks.notFilters.length = 0
     mocks.runEnrichDetailsBatch.mockReset().mockResolvedValue({
       processed: 30, failed: 0, pending: 155, fleaPending: 0, retryAfterMs: 0, fleaRateLimited: false,
     })
@@ -60,6 +63,14 @@ describe('GET /api/cron/enrich-details', () => {
     expect(mocks.runEnrichDetailsBatch).toHaveBeenCalledWith(
       expect.anything(), { id: 'user-1' }, 'extraction-1',
     )
+  })
+
+  // 本番で確認した不具合(2026-10-16): 抽出が消えた商品(extraction_id が null)が
+  // 509件あり、それが最も古い。古い順に200件取ると全部それで埋まり、
+  // 「補完待ちの商品はありません」と返して何も進まなかった。
+  it('抽出が消えた商品(extraction_idがnull)を対象から外す', async () => {
+    await GET(request('Bearer test-secret'))
+    expect(mocks.notFilters).toContainEqual(['extraction_id', 'is', null])
   })
 
   it('補完待ちが無ければ何もしない', async () => {

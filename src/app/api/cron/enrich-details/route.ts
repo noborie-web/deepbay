@@ -26,11 +26,17 @@ export async function GET(req: NextRequest) {
 
   // 補完待ちで、いま試せる(再試行待ちでない)商品を古い順に拾う。
   // そこから抽出を1つ選んで進める。
+  //
+  // 本番で確認した不具合(2026-10-16): 抽出が消えた商品(extraction_id が null)が
+  // 509件あり、それが最も古い。古い順に200件取ると全部それで埋まり、
+  // 「補完待ちの商品はありません」と返して何も進まなかった。
+  // 補完は抽出単位で行うので、抽出に紐付く商品だけを対象にする。
   const { data: rows, error } = await db
     .from('products')
     .select('user_id, extraction_id')
     .in('source_site', [...ENRICHABLE_SITES])
     .is('detail_enriched_at', null)
+    .not('extraction_id', 'is', null)
     .or(`detail_retry_after.is.null,detail_retry_after.lte.${nowIso}`)
     .order('created_at', { ascending: true })
     .limit(200)
