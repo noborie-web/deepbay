@@ -15,7 +15,7 @@ const MAX_NAME_LENGTH = 40
 
 export function buildExtractionName(
   url: string,
-  products: Array<Pick<ScrapedProduct, 'category'>> = [],
+  products: Array<{ category?: ScrapedProduct['category'] }> = [],
 ): string | null {
   const keyword = keywordFromUrl(url)
   if (keyword) return truncate(keyword)
@@ -48,7 +48,7 @@ function keywordFromUrl(url: string): string | null {
   return null
 }
 
-function mostCommonCategory(products: Array<Pick<ScrapedProduct, 'category'>>): string | null {
+function mostCommonCategory(products: Array<{ category?: ScrapedProduct['category'] }>): string | null {
   const counts = new Map<string, number>()
   for (const product of products) {
     const category = product.category?.trim()

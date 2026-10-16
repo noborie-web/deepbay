@@ -31,9 +31,20 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
   const [savingMemo, setSavingMemo] = useState(false)
   const memoInputRef = useRef<HTMLInputElement>(null)
 
+  // 抽出リスト名のインライン編集。以前は鉛筆アイコンだけで保存先が無かった
+  const [name, setName] = useState(extraction.name ?? '')
+  const [editingName, setEditingName] = useState(false)
+  const [nameDraft, setNameDraft] = useState(name)
+  const [savingName, setSavingName] = useState(false)
+  const nameInputRef = useRef<HTMLInputElement>(null)
+
   useEffect(() => {
     if (editingMemo) memoInputRef.current?.focus()
   }, [editingMemo])
+
+  useEffect(() => {
+    if (editingName) nameInputRef.current?.focus()
+  }, [editingName])
 
   function startEditingMemo() {
     setMemoDraft(memo)
@@ -59,6 +70,33 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
       alert('メモの保存に失敗しました')
     } finally {
       setSavingMemo(false)
+    }
+  }
+
+  function startEditingName() {
+    setNameDraft(name)
+    setEditingName(true)
+  }
+
+  async function saveName() {
+    const next = nameDraft.trim()
+    setEditingName(false)
+    if (next === name) return
+    setSavingName(true)
+    const prev = name
+    setName(next)
+    try {
+      const res = await fetch(`/api/extractions/${extraction.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: next }),
+      })
+      if (!res.ok) throw new Error()
+    } catch {
+      setName(prev)
+      alert('抽出リスト名の保存に失敗しました')
+    } finally {
+      setSavingName(false)
     }
   }
 
@@ -150,7 +188,31 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
         </div>
         <div className="flex items-center gap-1">
           <span className="text-gray-400">抽出リスト名:</span>
-          <button className="hover:text-gray-900"><Pencil size={11} /></button>
+          {editingName ? (
+            <input
+              ref={nameInputRef}
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={saveName}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); saveName() }
+                if (e.key === 'Escape') { e.preventDefault(); setEditingName(false) }
+              }}
+              className="border rounded px-1 py-0.5 text-xs w-28 focus:outline-none focus:ring-1 focus:ring-blue-300"
+            />
+          ) : (
+            <>
+              {name && <span className="truncate max-w-[110px]" title={name}>{name}</span>}
+              <button
+                aria-label="抽出リスト名を編集"
+                onClick={startEditingName}
+                disabled={savingName}
+                className="hover:text-gray-900 disabled:opacity-50"
+              >
+                <Pencil size={11} />
+              </button>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-1">
           <span className="text-gray-400">メモ:</span>

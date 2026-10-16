@@ -11,9 +11,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const body = await req.json().catch(() => ({})) as { memo?: unknown }
-  if (typeof body.memo !== 'string') {
-    return NextResponse.json({ error: 'memoは文字列で指定してください' }, { status: 400 })
+  const body = await req.json().catch(() => ({})) as { memo?: unknown; name?: unknown }
+  // ユーザー要望(2026-10-15): 抽出リスト名も編集できるようにする
+  const hasMemo = typeof body.memo === 'string'
+  const hasName = typeof body.name === 'string'
+  if (!hasMemo && !hasName) {
+    return NextResponse.json({ error: 'memo か name を文字列で指定してください' }, { status: 400 })
   }
 
   const admin = createServiceClient(
@@ -23,12 +26,20 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const { error } = await admin
     .from('extractions')
-    .update({ memo: body.memo, updated_at: new Date().toISOString() })
+    .update({
+      ...(hasMemo ? { memo: body.memo as string } : {}),
+      ...(hasName ? { name: body.name as string } : {}),
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', id)
     .eq('user_id', user.id)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ ok: true, memo: body.memo })
+  return NextResponse.json({
+    ok: true,
+    ...(hasMemo ? { memo: body.memo as string } : {}),
+    ...(hasName ? { name: body.name as string } : {}),
+  })
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
