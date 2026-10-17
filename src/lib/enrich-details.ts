@@ -42,12 +42,26 @@ interface PendingProduct {
   detail_retry_after: string | null
 }
 
-export async function countPending(db: SupabaseClient, userId: string, extractionId: string): Promise<number> {
-  const { count } = await db
+// ユーザー要望(2026-10-17): 抽出を削除した商品も補完したい。
+// 抽出一覧から抽出を消すと products.extraction_id は null になる
+// (ON DELETE SET NULL。商品はeBay出品中なので残す)。補完は抽出単位で動くため、
+// それらが対象から漏れていた。extractionId に null を渡すと
+// 「そのユーザーの、抽出が消えた商品」をまとめて扱う。
+export type EnrichTarget = string | null
+
+// 絞り込みを1つ足すだけだが、Supabaseのクエリ型をそのまま通すと型の展開が
+// 深くなりすぎてコンパイルできないため、ここだけ型を緩める。
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function scopeToTarget(query: any, extractionId: EnrichTarget): any {
+  return extractionId === null ? query.is('extraction_id', null) : query.eq('extraction_id', extractionId)
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+export async function countPending(db: SupabaseClient, userId: string, extractionId: EnrichTarget): Promise<number> {
+  const { count } = await scopeToTarget(db
     .from('products')
     .select('id', { count: 'exact', head: true })
-    .eq('user_id', userId)
-    .eq('extraction_id', extractionId)
+    .eq('user_id', userId), extractionId)
     .in('source_site', [...ENRICHABLE_SITES])
     .is('detail_enriched_at', null)
   return count ?? 0
@@ -76,14 +90,13 @@ export interface EnrichBatchResult {
 export async function runEnrichDetailsBatch(
   db: SupabaseClient,
   user: { id: string },
-  extractionId: string,
+  extractionId: EnrichTarget,
 ): Promise<EnrichBatchResult> {
   const nowIso = new Date().toISOString()
-  const { data: rows, error } = await db
+  const { data: rows, error } = await scopeToTarget(db
     .from('products')
     .select('id, source_url, source_site, original_description, ebay_description, original_images, detail_attempts, detail_retry_after')
-    .eq('user_id', user.id)
-    .eq('extraction_id', extractionId)
+    .eq('user_id', user.id), extractionId)
     .in('source_site', [...ENRICHABLE_SITES])
     .is('detail_enriched_at', null)
     .or(`detail_retry_after.is.null,detail_retry_after.lte.${nowIso}`)
@@ -93,11 +106,10 @@ export async function runEnrichDetailsBatch(
   const targets = (rows ?? []) as PendingProduct[]
   if (targets.length === 0) {
     // 再試行待ちの商品があれば、次に試せる時刻を返す
-    const { data: waiting } = await db
+    const { data: waiting } = await scopeToTarget(db
       .from('products')
       .select('detail_retry_after')
-      .eq('user_id', user.id)
-      .eq('extraction_id', extractionId)
+      .eq('user_id', user.id), extractionId)
       .in('source_site', [...ENRICHABLE_SITES])
       .is('detail_enriched_at', null)
       .not('detail_retry_after', 'is', null)
@@ -228,11 +240,10 @@ export async function runEnrichDetailsBatch(
   }
 
   const pending = await countPending(db, user.id, extractionId)
-  const { count: fleaPending } = await db
+  const { count: fleaPending } = await scopeToTarget(db
     .from('products')
     .select('id', { count: 'exact', head: true })
-    .eq('user_id', user.id)
-    .eq('extraction_id', extractionId)
+    .eq('user_id', user.id), extractionId)
     .eq('source_site', 'yahoo_flea')
     .is('detail_enriched_at', null)
   return {

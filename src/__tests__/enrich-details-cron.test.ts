@@ -65,12 +65,33 @@ describe('GET /api/cron/enrich-details', () => {
     )
   })
 
-  // 本番で確認した不具合(2026-10-16): 抽出が消えた商品(extraction_id が null)が
-  // 509件あり、それが最も古い。古い順に200件取ると全部それで埋まり、
-  // 「補完待ちの商品はありません」と返して何も進まなかった。
-  it('抽出が消えた商品(extraction_idがnull)を対象から外す', async () => {
+  // ユーザー要望(2026-10-17): 抽出を削除した商品も補完する。
+  // 抽出を消すと extraction_id は null になるが、商品はeBay出品中なので残る。
+  // 実データでは509件が該当し、うち341件が写真1枚のまま出品中だった。
+  it('抽出が消えた商品(extraction_idがnull)も補完する', async () => {
+    mocks.rows = [
+      { user_id: 'user-1', extraction_id: null },
+      { user_id: 'user-1', extraction_id: 'extraction-1' },
+    ]
     await GET(request('Bearer test-secret'))
-    expect(mocks.notFilters).toContainEqual(['extraction_id', 'is', null])
+    // null をそのまま渡し、ライブラリ側で「抽出が消えた商品」として扱う
+    expect(mocks.runEnrichDetailsBatch).toHaveBeenCalledWith(
+      expect.anything(), { id: 'user-1' }, null,
+    )
+    // 対象から除外していないこと(#288で入れた除外を外した)
+    expect(mocks.notFilters).not.toContainEqual(['extraction_id', 'is', null])
+  })
+
+  it('抽出が消えた商品と抽出とを別々の対象として数える', async () => {
+    mocks.rows = [
+      { user_id: 'user-1', extraction_id: null },
+      { user_id: 'user-1', extraction_id: null },
+      { user_id: 'user-1', extraction_id: 'extraction-1' },
+    ]
+    await GET(request('Bearer test-secret'))
+    // 1回で進めるのは1組だけ。古い順なので「抽出が消えた商品」が先
+    expect(mocks.runEnrichDetailsBatch).toHaveBeenCalledTimes(1)
+    expect(mocks.runEnrichDetailsBatch.mock.calls[0][2]).toBeNull()
   })
 
   it('補完待ちが無ければ何もしない', async () => {

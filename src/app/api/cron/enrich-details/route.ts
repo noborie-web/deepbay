@@ -25,30 +25,30 @@ export async function GET(req: NextRequest) {
   const nowIso = new Date().toISOString()
 
   // 補完待ちで、いま試せる(再試行待ちでない)商品を古い順に拾う。
-  // そこから抽出を1つ選んで進める。
+  // そこから1組(抽出、または「抽出が消えた商品」)を選んで進める。
   //
-  // 本番で確認した不具合(2026-10-16): 抽出が消えた商品(extraction_id が null)が
-  // 509件あり、それが最も古い。古い順に200件取ると全部それで埋まり、
-  // 「補完待ちの商品はありません」と返して何も進まなかった。
-  // 補完は抽出単位で行うので、抽出に紐付く商品だけを対象にする。
+  // ユーザー要望(2026-10-17): 抽出を削除した商品も補完する。
+  // 抽出一覧から抽出を消すと extraction_id は null になる(商品はeBay出品中なので
+  // 残る)。補完は抽出単位で動くため、それらが対象から漏れていた。
+  // 実データでは509件が該当し、うち341件が写真1枚のまま出品中だった。
+  // extraction_id が null のものは「そのユーザーの分」としてまとめて進める。
   const { data: rows, error } = await db
     .from('products')
     .select('user_id, extraction_id')
     .in('source_site', [...ENRICHABLE_SITES])
     .is('detail_enriched_at', null)
-    .not('extraction_id', 'is', null)
     .or(`detail_retry_after.is.null,detail_retry_after.lte.${nowIso}`)
     .order('created_at', { ascending: true })
     .limit(200)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   const seen = new Set<string>()
-  const targets: Array<{ userId: string; extractionId: string }> = []
+  const targets: Array<{ userId: string; extractionId: string | null }> = []
   for (const row of rows ?? []) {
     const userId = row.user_id as string | null
-    const extractionId = row.extraction_id as string | null
-    if (!userId || !extractionId) continue
-    const key = `${userId}:${extractionId}`
+    if (!userId) continue
+    const extractionId = (row.extraction_id as string | null) ?? null
+    const key = `${userId}:${extractionId ?? '(抽出が消えた商品)'}`
     if (seen.has(key)) continue
     seen.add(key)
     targets.push({ userId, extractionId })
