@@ -115,6 +115,10 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [bulkDeleting, setBulkDeleting] = useState(false)
   // ユーザー要望(2026-10-18): 怪しい商品だけに絞って目視確認したい
   const [reviewFilter, setReviewFilter] = useState<Set<ReviewFlag>>(new Set())
+  // ユーザー要望(2026-10-18): リールで抽出してもスプール・ハンドル等の部品が
+  // 混ざる。1件ずつ目視で探すのではなく、キーワードで該当だけを集めて消す。
+  const [excludeKeywords, setExcludeKeywords] = useState('')
+  const [excludeKeywordActive, setExcludeKeywordActive] = useState(false)
 
   // Vero・危険セラー・危険単語は抽出設定(サーバー側)に依存するため、
   // 実行前の件数プレビューを表示するには先に設定を取得しておく必要がある。
@@ -789,9 +793,23 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     for (const flag of flags) reviewFlagCounts.set(flag, (reviewFlagCounts.get(flag) ?? 0) + 1)
   }
 
-  const filteredProducts = reviewFilter.size === 0
+  // 除外キーワード。元タイトル(日本語)と翻訳後のeBayタイトルの両方を見る
+  const excludeKeywordList = excludeKeywords.split(/[,、\n\s]+/).map((w) => w.trim()).filter(Boolean)
+  const excludeKeywordFields: KeywordMatchField[] = ['title', 'ebay_title']
+  const excludeKeywordIds = excludeKeywordList.length > 0
+    ? new Set(findKeywordProductIds(baseProducts, excludeKeywordList, excludeKeywordFields))
+    : new Set<string>()
+  // どの単語が何件に当たっているかを出す(短すぎる単語の誤爆に気づけるように)
+  const excludeKeywordBreakdown = excludeKeywordList.length > 0
+    ? keywordMatchBreakdown(baseProducts, excludeKeywordList, excludeKeywordFields)
+    : null
+
+  const reviewFiltered = reviewFilter.size === 0
     ? baseProducts
     : baseProducts.filter((p) => matchesReviewFilter(reviewFlagsById.get(p.id) ?? [], reviewFilter))
+  const filteredProducts = excludeKeywordActive && excludeKeywordIds.size > 0
+    ? reviewFiltered.filter((p) => excludeKeywordIds.has(p.id))
+    : reviewFiltered
 
   // 「タイトル重複」で絞ったときは、見比べられるよう同じタイトルを隣り合わせにする
   const visibleProducts = reviewFilter.has('duplicate_title')
@@ -1012,6 +1030,48 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                       {visibleProducts.length}件を表示中
                       {reviewFilter.has('duplicate_title') && '（同じタイトルを隣り合わせに並べています）'}
                     </span>
+                  </>
+                )}
+              </div>
+
+              {/* ユーザー要望(2026-10-18): リールで抽出してもスプール・ハンドル等の
+                  部品が混ざる。1件ずつ探すのではなく、キーワードで該当だけを
+                  集めて、まとめて消せるようにする */}
+              <div className="flex w-full flex-wrap items-center gap-1.5">
+                <span className="text-xs text-gray-500">除外キーワード:</span>
+                <input
+                  value={excludeKeywords}
+                  onChange={(e) => { setExcludeKeywords(e.target.value); setPage(1) }}
+                  placeholder="スプール, ハンドル, パーツ（カンマ区切り）"
+                  aria-label="除外キーワード"
+                  className="w-72 rounded border px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300"
+                />
+                {excludeKeywordList.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => { setExcludeKeywordActive((prev) => !prev); setPage(1); setSelectedIds(new Set()) }}
+                      className={`rounded border px-2 py-0.5 text-xs ${
+                        excludeKeywordActive
+                          ? 'border-amber-500 bg-amber-50 text-amber-800'
+                          : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      {excludeKeywordActive
+                        ? '絞り込み中（解除）'
+                        : `該当${excludeKeywordIds.size}件に絞る`}
+                    </button>
+                    {/* どの単語が何件に当たっているか。短すぎる単語の誤爆に気づけるように */}
+                    {excludeKeywordBreakdown && (
+                      <span className="text-xs text-gray-500">
+                        {excludeKeywordBreakdown.hits.map((hit) => `${hit.keyword} ${hit.count}`).join(' / ')}
+                        {excludeKeywordBreakdown.ignored.length > 0 && (
+                          <span className="ml-1 text-amber-700">
+                            （短すぎて無視: {excludeKeywordBreakdown.ignored.join(', ')}）
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </>
                 )}
               </div>

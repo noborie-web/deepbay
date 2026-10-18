@@ -68,11 +68,15 @@ export function findPriceTypeProductIds(
     .map((product) => product.id)
 }
 
-export type KeywordMatchField = 'title' | 'brand' | 'description'
+// ユーザー要望(2026-10-18): リールのカテゴリにスプール・ハンドル等の部品が
+// 混ざるので、キーワードでまとめて外したい。入力が日本語でも英語でも拾えるよう、
+// 翻訳後のeBayタイトルも照合できるようにする('title'は仕入先の元タイトル)。
+export type KeywordMatchField = 'title' | 'ebay_title' | 'brand' | 'description'
 
 function keywordSearchText(product: Product, field: KeywordMatchField): string {
   switch (field) {
     case 'title': return product.original_title
+    case 'ebay_title': return product.ebay_title ?? ''
     case 'brand': return product.ebay_brand ?? ''
     case 'description': return product.ebay_description ?? ''
   }
