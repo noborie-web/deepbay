@@ -119,6 +119,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // 混ざる。1件ずつ目視で探すのではなく、キーワードで該当だけを集めて消す。
   const [excludeKeywords, setExcludeKeywords] = useState('')
   const [excludeKeywordActive, setExcludeKeywordActive] = useState(false)
+  // ユーザー要望(2026-10-18): タイトルと1枚目の画像でAIに「本体か部品か」を
+  // 判定させる。判定しただけでは何も消さない(理由を見て確認してから消す)
+  const [classifying, setClassifying] = useState(false)
+  const [classifyPending, setClassifyPending] = useState<number | null>(null)
+  const [classifyError, setClassifyError] = useState<string | null>(null)
 
   // Vero・危険セラー・危険単語は抽出設定(サーバー側)に依存するため、
   // 実行前の件数プレビューを表示するには先に設定を取得しておく必要がある。
@@ -782,6 +787,7 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     description: getDescription(p),
     price: getPrice(p),
     images: getImages(p),
+    aiVerdict: p.ai_classification?.verdict,
   }))
   const duplicateTitleIds = findDuplicateTitleIds(reviewItems)
   const reviewFlagsById = new Map<string, ReviewFlag[]>(
@@ -823,6 +829,32 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         return [...filteredProducts].sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
       })()
     : filteredProducts
+
+  // 全件終わるまで繰り返し呼ぶ(1回あたり最大100件・約45秒)
+  async function runClassify() {
+    setClassifying(true)
+    setClassifyError(null)
+    try {
+      for (;;) {
+        const res = await fetch(`/api/products/${extractionId}/classify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+        const json = await res.json() as { error?: string; processed?: number; pending?: number }
+        if (!res.ok) throw new Error(json.error ?? '判定に失敗しました')
+        setClassifyPending(json.pending ?? 0)
+        if (!json.pending || json.processed === 0) break
+      }
+      // 判定結果を読み直す
+      const res = await fetch(`/api/products/${extractionId}`)
+      if (res.ok) setProducts(await res.json())
+    } catch (e) {
+      setClassifyError(e instanceof Error ? e.message : 'エラーが発生しました')
+    } finally {
+      setClassifying(false)
+    }
+  }
 
   function toggleReviewFilter(flag: ReviewFlag) {
     setReviewFilter((prev) => {
@@ -1038,6 +1070,23 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   部品が混ざる。1件ずつ探すのではなく、キーワードで該当だけを
                   集めて、まとめて消せるようにする */}
               <div className="flex w-full flex-wrap items-center gap-1.5">
+                {/* ユーザー要望(2026-10-18): キーワードで拾えない部品
+                    (「Light Arm」「ドラググリス」など)をAIに見分けさせる */}
+                <button
+                  type="button"
+                  onClick={() => void runClassify()}
+                  disabled={classifying || products.length === 0}
+                  className="rounded border border-purple-400 px-2 py-0.5 text-xs text-purple-700 hover:bg-purple-50 disabled:opacity-40"
+                  title="タイトルと1枚目の画像をAIが見て、本体か部品かを判定します。判定するだけで、商品は消しません。"
+                >
+                  {classifying
+                    ? `AIで判定中...${classifyPending != null ? `（残り${classifyPending}件）` : ''}`
+                    : 'AIで部品を判定'}
+                </button>
+                {classifyError && <span className="text-xs text-red-500">{classifyError}</span>}
+                {!classifying && classifyPending === 0 && (
+                  <span className="text-xs text-green-700">判定が終わりました</span>
+                )}
                 <span className="text-xs text-gray-500">除外キーワード:</span>
                 <input
                   value={excludeKeywords}
@@ -1814,11 +1863,22 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                         {(reviewFlagsById.get(product.id) ?? []).map((flag) => (
                           <span
                             key={flag}
-                            className="rounded bg-amber-100 px-1 py-0.5 text-center text-[10px] leading-tight text-amber-800"
+                            className={`rounded px-1 py-0.5 text-center text-[10px] leading-tight ${
+                              flag === 'ai_part'
+                                ? 'bg-purple-100 text-purple-800'
+                                : 'bg-amber-100 text-amber-800'
+                            }`}
+                            // AIの判定は理由も見せる(間違いに気づけるように)
+                            title={flag === 'ai_part' ? product.ai_classification?.reason ?? '' : undefined}
                           >
                             {REVIEW_FLAG_LABELS[flag]}
                           </span>
                         ))}
+                        {product.ai_classification?.verdict === 'part' && product.ai_classification.reason && (
+                          <span className="max-w-[72px] text-center text-[10px] leading-tight text-purple-700">
+                            {product.ai_classification.reason}
+                          </span>
+                        )}
                       </div>
 
                       {/* メイン画像。ユーザー要望(2026-10-18): 商品と画像が合って

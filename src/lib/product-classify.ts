@@ -1,0 +1,97 @@
+import OpenAI from 'openai'
+import { MODEL_MAP } from '@/lib/translate'
+
+// ユーザー要望(2026-10-18): リールのカテゴリで抽出しても、スプールやハンドル
+// などの部品が混ざる。キーワードでは拾いきれない(「Light Arm」「ドラググリス」
+// のように部品名が商品名化していて語彙に限りがない)ため、AIに判定させる。
+//
+// タイトルと1枚目の画像を一度に見せる。互いの弱点を補い合う:
+//   - 「管516iP」のような型番だけのタイトル → 画像が補う
+//   - 箱しか写っていない写真              → タイトルが補う
+// 画像は detail: 'low' の1枚だけにして、費用と時間を抑える。
+
+/** 1件あたりの判定結果 */
+export interface ClassifyVerdict {
+  verdict: 'main' | 'part' | 'unknown'
+  /** なぜそう判断したか(日本語・短く)。画面で確認するために残す */
+  reason: string
+}
+
+export interface ClassifyInput {
+  id: string
+  title: string
+  /** 仕入先の元タイトル(日本語)。英訳で落ちた情報を補う */
+  originalTitle: string
+  imageUrl: string | null
+}
+
+export const CLASSIFY_CONCURRENCY = Number(process.env.OPENAI_CLASSIFY_CONCURRENCY ?? 20)
+
+function systemPrompt(expected: string | null): string {
+  const target = expected?.trim()
+  return [
+    'あなたは中古品の出品者です。商品が「本体(完成品そのもの)」か',
+    '「部品・付属品・消耗品」かを判定します。',
+    target ? `この一覧は「${target}」を集めたものです。` : '',
+    '',
+    '判定の基準:',
+    '- main: その商品カテゴリの本体。壊れていても、付属品が欠けていても本体なら main',
+    '  (例: リールの「本体のみ」「ハンドル無し」「ジャンク」は main)',
+    '- part: 本体ではない部品・交換パーツ・付属品・消耗品・工具・収納品',
+    '  (例: スプール単体、ハンドル単体、ノブ、ベアリング、グリス、ケース、ステッカー)',
+    '- unknown: タイトルと画像のどちらからも判断できない',
+    '',
+    '出力は次のJSONだけ。説明文は書かない:',
+    '{"verdict":"main|part|unknown","reason":"日本語で20文字以内の理由"}',
+  ].filter(Boolean).join('\n')
+}
+
+/** モデルの応答を読む。壊れていたら unknown にして、商品は消さない */
+export function parseVerdict(content: string | null | undefined): ClassifyVerdict {
+  if (!content) return { verdict: 'unknown', reason: '応答が空' }
+  // ```json ... ``` で包まれて返ることがある
+  const json = content.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+  try {
+    const parsed = JSON.parse(json) as { verdict?: unknown; reason?: unknown }
+    const verdict = parsed.verdict === 'main' || parsed.verdict === 'part' ? parsed.verdict : 'unknown'
+    const reason = typeof parsed.reason === 'string' ? parsed.reason.slice(0, 60) : ''
+    return { verdict, reason }
+  } catch {
+    return { verdict: 'unknown', reason: '応答を読めなかった' }
+  }
+}
+
+export async function classifyProduct(
+  openai: OpenAI,
+  input: ClassifyInput,
+  options: { model?: string; expectedCategory?: string | null; timeoutMs?: number } = {},
+): Promise<ClassifyVerdict & { model: string }> {
+  const model = options.model ?? MODEL_MAP.high
+  const text = [
+    `英語タイトル: ${input.title}`,
+    `元のタイトル(日本語): ${input.originalTitle}`,
+  ].join('\n')
+
+  const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: 'text', text }]
+  if (input.imageUrl) {
+    // detail: 'low' で固定。枚数は1枚だけにして費用と時間を抑える
+    content.push({ type: 'image_url', image_url: { url: input.imageUrl, detail: 'low' } })
+  }
+
+  try {
+    const response = await openai.chat.completions.create({
+      model,
+      max_tokens: 60,
+      temperature: 0,
+      messages: [
+        { role: 'system', content: systemPrompt(options.expectedCategory ?? null) },
+        { role: 'user', content },
+      ],
+    }, { timeout: options.timeoutMs ?? 20_000, maxRetries: 1 })
+    return { ...parseVerdict(response.choices[0]?.message?.content), model }
+  } catch (error) {
+    // 判定できなくても商品は消さない。unknown にして次回また試せるようにする
+    const message = error instanceof Error ? error.message : '不明なエラー'
+    return { verdict: 'unknown', reason: `判定に失敗: ${message.slice(0, 40)}`, model }
+  }
+}
