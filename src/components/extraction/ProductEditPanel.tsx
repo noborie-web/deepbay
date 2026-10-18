@@ -2,6 +2,15 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Trash2, Link, ChevronUp, ChevronDown } from 'lucide-react'
+import {
+  findDuplicateTitleIds,
+  matchesReviewFilter,
+  productReviewFlags,
+  REVIEW_FLAG_LABELS,
+  sortDuplicatesTogether,
+  type ReviewFlag,
+  type ReviewItem,
+} from '@/lib/product-review'
 import type { Product } from '@/types/database'
 import TitleEditModal, { applyOp } from './TitleEditModal'
 import type { TitleEditOp, TitleEditScope } from './TitleEditModal'
@@ -104,6 +113,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   // Shift+クリックで範囲選択するための、直前に操作した行
   const [lastClickedId, setLastClickedId] = useState<string | null>(null)
   const [bulkDeleting, setBulkDeleting] = useState(false)
+  // ユーザー要望(2026-10-18): 怪しい商品だけに絞って目視確認したい
+  const [reviewFilter, setReviewFilter] = useState<Set<ReviewFlag>>(new Set())
 
   // Vero・危険セラー・危険単語は抽出設定(サーバー側)に依存するため、
   // 実行前の件数プレビューを表示するには先に設定を取得しておく必要がある。
@@ -753,11 +764,58 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     edits[product.id] ? { ...product, ...edits[product.id] } : product
   ))
   const pokemonProducts = productsForSearch.filter(isPokemonProduct)
-  const visibleProducts = tab === 'search'
+  const baseProducts = tab === 'search'
     ? filterProducts(productsForSearch, searchFilters)
     : tab === 'pokemon'
       ? pokemonProducts
       : products
+
+  // 確認用の絞り込み。編集中の値で判定するので、直した商品はすぐ対象から外れる
+  const reviewItems: ReviewItem[] = baseProducts.map((p) => ({
+    id: p.id,
+    title: getTitle(p),
+    brand: getBrand(p),
+    description: getDescription(p),
+    price: getPrice(p),
+    images: getImages(p),
+  }))
+  const duplicateTitleIds = findDuplicateTitleIds(reviewItems)
+  const reviewFlagsById = new Map<string, ReviewFlag[]>(
+    reviewItems.map((reviewItem) => [reviewItem.id, productReviewFlags(reviewItem, duplicateTitleIds)]),
+  )
+  // 条件ごとの件数(押す前に何件あるか分かるようにする)
+  const reviewFlagCounts = new Map<ReviewFlag, number>()
+  for (const flags of reviewFlagsById.values()) {
+    for (const flag of flags) reviewFlagCounts.set(flag, (reviewFlagCounts.get(flag) ?? 0) + 1)
+  }
+
+  const filteredProducts = reviewFilter.size === 0
+    ? baseProducts
+    : baseProducts.filter((p) => matchesReviewFilter(reviewFlagsById.get(p.id) ?? [], reviewFilter))
+
+  // 「タイトル重複」で絞ったときは、見比べられるよう同じタイトルを隣り合わせにする
+  const visibleProducts = reviewFilter.has('duplicate_title')
+    ? (() => {
+        const itemById = new Map(reviewItems.map((reviewItem) => [reviewItem.id, reviewItem]))
+        const ordered = sortDuplicatesTogether(
+          filteredProducts.map((p) => itemById.get(p.id)!),
+          duplicateTitleIds,
+        )
+        const order = new Map(ordered.map((reviewItem, index) => [reviewItem.id, index]))
+        return [...filteredProducts].sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
+      })()
+    : filteredProducts
+
+  function toggleReviewFilter(flag: ReviewFlag) {
+    setReviewFilter((prev) => {
+      const next = new Set(prev)
+      if (next.has(flag)) next.delete(flag)
+      else next.add(flag)
+      return next
+    })
+    setPage(1)
+    setSelectedIds(new Set())
+  }
   const totalPages = Math.max(1, Math.ceil(visibleProducts.length / pageSize))
   const pagedProducts = visibleProducts.slice((page - 1) * pageSize, page * pageSize)
   // 選択はこのページの表示分だけを対象にする(ページを跨いで消さない)
@@ -916,6 +974,48 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <option>詳細編集モード</option>
                 </select>
               </div>
+              {/* ユーザー要望(2026-10-18): 数百件を端から見るのは現実的でないので、
+                  怪しいものだけに絞れるようにする。選んだ条件のどれかに
+                  当てはまるものを残す(AND ではなく OR) */}
+              <div className="flex w-full flex-wrap items-center gap-1.5 border-t pt-2">
+                <span className="text-xs text-gray-500">確認したい条件:</span>
+                {(Object.keys(REVIEW_FLAG_LABELS) as ReviewFlag[]).map((flag) => {
+                  const count = reviewFlagCounts.get(flag) ?? 0
+                  const active = reviewFilter.has(flag)
+                  return (
+                    <button
+                      key={flag}
+                      type="button"
+                      onClick={() => toggleReviewFilter(flag)}
+                      disabled={count === 0 && !active}
+                      className={`rounded border px-2 py-0.5 text-xs transition-colors disabled:opacity-40 ${
+                        active
+                          ? 'border-amber-500 bg-amber-50 text-amber-800'
+                          : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      {REVIEW_FLAG_LABELS[flag]}
+                      <span className="ml-1 text-gray-400">{count}</span>
+                    </button>
+                  )
+                })}
+                {reviewFilter.size > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => { setReviewFilter(new Set()); setPage(1) }}
+                      className="text-xs text-blue-600 hover:underline"
+                    >
+                      絞り込みを解除
+                    </button>
+                    <span className="text-xs text-gray-500">
+                      {visibleProducts.length}件を表示中
+                      {reviewFilter.has('duplicate_title') && '（同じタイトルを隣り合わせに並べています）'}
+                    </span>
+                  </>
+                )}
+              </div>
+
               {/* ユーザー要望(2026-10-18): レ点で選んでまとめて削除する */}
               <div className="flex items-center gap-1.5 border-l pl-3">
                 <label className="flex items-center gap-1 text-xs text-gray-600">
@@ -1650,19 +1750,41 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                         >
                           <Link size={14} />
                         </a>
+                        {/* 絞り込んでいなくても、どこが気になる商品か分かるようにする */}
+                        {(reviewFlagsById.get(product.id) ?? []).map((flag) => (
+                          <span
+                            key={flag}
+                            className="rounded bg-amber-100 px-1 py-0.5 text-center text-[10px] leading-tight text-amber-800"
+                          >
+                            {REVIEW_FLAG_LABELS[flag]}
+                          </span>
+                        ))}
                       </div>
 
-                      {/* メイン画像 */}
-                      <div className={`shrink-0 ${IMAGE_SIZE_MAP[imageSize]}`}>
+                      {/* メイン画像。ユーザー要望(2026-10-18): 商品と画像が合って
+                          いるかはサムネイルでは判断しづらいので、カーソルを
+                          合わせたときだけ大きく出す(元ページを開かずに確認できる) */}
+                      <div className={`group relative shrink-0 ${IMAGE_SIZE_MAP[imageSize]}`}>
                         {getImages(product)[0] ? (
-                          // eslint-disable-next-line @next/next/no-img-element -- Marketplace image hosts are dynamic and cannot be safely allowlisted for next/image.
-                          <img
-                            src={getImages(product)[0]}
-                            alt=""
-                            loading="lazy"
-                            decoding="async"
-                            className="w-full h-full object-cover rounded border"
-                          />
+                          <>
+                            {/* eslint-disable-next-line @next/next/no-img-element -- Marketplace image hosts are dynamic and cannot be safely allowlisted for next/image. */}
+                            <img
+                              src={getImages(product)[0]}
+                              alt=""
+                              loading="lazy"
+                              decoding="async"
+                              className="w-full h-full object-cover rounded border"
+                            />
+                            <div className="pointer-events-none absolute left-full top-0 z-30 ml-2 hidden group-hover:block">
+                              {/* eslint-disable-next-line @next/next/no-img-element -- 同上 */}
+                              <img
+                                src={getImages(product)[0]}
+                                alt=""
+                                decoding="async"
+                                className="h-80 w-80 rounded border bg-white object-contain shadow-lg"
+                              />
+                            </div>
+                          </>
                         ) : (
                           <div className="w-full h-full bg-gray-100 rounded border flex items-center justify-center text-gray-300 text-xs">No image</div>
                         )}
