@@ -8,6 +8,11 @@ export interface ScrapedProduct {
   images: string[]
   condition: string | null
   category: string | null
+  // ユーザー要望(2026-10-18): 抽出リスト名を「ダイワ リール」のように
+  // 分かる形にしたい。末尾の名前だけでは「タイトル」(ファミコン>タイトル)の
+  // ように意味をなさないことがあるため、カテゴリの階層も持てるようにする。
+  // 保存はせず、抽出リスト名を決めるときにだけ使う。
+  categoryPath?: string[]
   sellerRatingCount: number | null  // 評価数（合計）
   sellerBadRatingCount?: number | null  // 低評価数（セラーの悪い評価件数）。取得できないサイトはundefined/null
   shippingDays: number | null       // 発送日数（最短日数）

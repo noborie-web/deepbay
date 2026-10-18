@@ -28,6 +28,40 @@ describe('buildExtractionName', () => {
     )).toBe('アブガルシア')
   })
 
+  // ユーザー要望(2026-10-18): 「ダイワ」だけでなく「ダイワ スピニングリール」の
+  // ように分かる名前にしたい。末尾の名前だけでは意味をなさないことがある
+  // (本番で確認: ファミコン > 「タイトル」という実在のカテゴリ)。
+  it('カテゴリの階層があれば末尾2つを使う', () => {
+    const path = ['スポーツ、レジャー', 'フィッシング', 'リール', 'スピニングリール', 'ダイワ']
+    expect(buildExtractionName(
+      'https://auctions.yahoo.co.jp/category/list/2084064356?auccat=2084064356',
+      [{ category: 'ダイワ', categoryPath: path }, { category: 'ダイワ', categoryPath: path }],
+    )).toBe('ダイワ スピニングリール')
+  })
+
+  it('末尾の名前だけでは意味をなさないカテゴリでも親が付く', () => {
+    const path = ['おもちゃ、ゲーム', 'ゲーム', 'テレビゲーム', 'ファミコン', 'タイトル']
+    expect(buildExtractionName(
+      'https://auctions.yahoo.co.jp/category/list/2084005190?auccat=2084005190',
+      [{ category: 'アクション', categoryPath: path }],
+    )).toBe('タイトル ファミコン')
+  })
+
+  it('親と末尾が重なる場合は繰り返さない', () => {
+    expect(buildExtractionName('https://auctions.yahoo.co.jp/category/list/1?auccat=1',
+      [{ categoryPath: ['リール', 'スピニングリール'] }])).toBe('スピニングリール')
+  })
+
+  it('階層が1つだけならそれを使う', () => {
+    expect(buildExtractionName('https://auctions.yahoo.co.jp/category/list/1?auccat=1',
+      [{ categoryPath: ['ダイワ'] }])).toBe('ダイワ')
+  })
+
+  it('階層が無ければ従来どおりカテゴリ名を使う', () => {
+    expect(buildExtractionName('https://auctions.yahoo.co.jp/category/list/1?auccat=1',
+      [{ category: 'ダイワ' }])).toBe('ダイワ')
+  })
+
   it('キーワードがあればカテゴリより優先する', () => {
     expect(buildExtractionName(
       'https://auctions.yahoo.co.jp/search/search?p=reel',
