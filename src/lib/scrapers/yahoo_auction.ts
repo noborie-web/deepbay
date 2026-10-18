@@ -228,6 +228,8 @@ export class YahooAuctionScraper extends BaseScraper {
             // 一覧でも状態が取れる。商品ページの取得に失敗しても状態が残る
             condition: yahooAuctionItemCondition(item.itemCondition),
             category: item.category?.name?.trim() || null,
+            // 抽出リスト名を決めるのに使う(保存はしない)
+            categoryPath: searchData.categoryPath.length > 0 ? searchData.categoryPath : undefined,
             sellerRatingCount: null,
             shippingDays: null,
             sourceUpdatedAt: null,

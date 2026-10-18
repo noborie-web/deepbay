@@ -5,7 +5,7 @@ import type { ScrapedProduct } from '@/lib/scrapers/types'
 //
 // 名前の決め方は「人が見て思い出せるもの」を優先する:
 //   1. 検索キーワード(URLの p / keyword / q / k)
-//   2. 商品のカテゴリで一番多いもの(カテゴリ検索ではキーワードが無いため)
+//   2. カテゴリの階層の末尾2つ(カテゴリ検索ではキーワードが無いため)
 //   3. ASIN指定のAmazon抽出は件数
 // どれも取れなければ null を返し、何も入れない
 // (「不明」のような中身の無い名前を付けない)。
@@ -15,12 +15,12 @@ const MAX_NAME_LENGTH = 40
 
 export function buildExtractionName(
   url: string,
-  products: Array<{ category?: ScrapedProduct['category'] }> = [],
+  products: Array<{ category?: ScrapedProduct['category']; categoryPath?: string[] }> = [],
 ): string | null {
   const keyword = keywordFromUrl(url)
   if (keyword) return truncate(keyword)
 
-  const category = mostCommonCategory(products)
+  const category = categoryNameFromProducts(products)
   if (category) return truncate(category)
 
   // ASIN指定のAmazon抽出(amazon:asin-list:317)には元URLが無い
@@ -46,6 +46,47 @@ function keywordFromUrl(url: string): string | null {
     if (value) return value
   }
   return null
+}
+
+/**
+ * カテゴリから名前を作る。
+ *
+ * 末尾の名前だけでは意味をなさないことがある(例: ファミコン > 「タイトル」)。
+ * 階層が取れていれば末尾2つを「末尾 親」の順に並べて
+ * 「ダイワ スピニングリール」のようにする。
+ */
+function categoryNameFromProducts(
+  products: Array<{ category?: ScrapedProduct['category']; categoryPath?: string[] }>,
+): string | null {
+  const path = mostCommonCategoryPath(products)
+  if (path && path.length > 0) {
+    const leaf = path[path.length - 1]
+    const parent = path.length >= 2 ? path[path.length - 2] : null
+    // 「リール リール」のような重なりは避ける
+    if (parent && !leaf.includes(parent) && !parent.includes(leaf)) return `${leaf} ${parent}`
+    return leaf
+  }
+  return mostCommonCategory(products)
+}
+
+function mostCommonCategoryPath(
+  products: Array<{ categoryPath?: string[] }>,
+): string[] | null {
+  const counts = new Map<string, { path: string[]; count: number }>()
+  for (const product of products) {
+    const path = (product.categoryPath ?? []).map((name) => name.trim()).filter(Boolean)
+    if (path.length === 0) continue
+    const key = path.join(' > ')
+    const entry = counts.get(key) ?? { path, count: 0 }
+    entry.count += 1
+    counts.set(key, entry)
+  }
+  let best: string[] | null = null
+  let bestCount = 0
+  for (const entry of counts.values()) {
+    if (entry.count > bestCount) { best = entry.path; bestCount = entry.count }
+  }
+  return best
 }
 
 function mostCommonCategory(products: Array<{ category?: ScrapedProduct['category'] }>): string | null {
