@@ -13,6 +13,7 @@ export type ReviewFlag =
   | 'long_title'      // タイトルが上限ぎりぎり
   | 'no_brand'        // ブランド未設定
   | 'duplicate_title' // 同じタイトルが複数ある(重複出品の候補)
+  | 'ai_part'         // AIが「本体ではなく部品・付属品」と判定した
 
 export const REVIEW_FLAG_LABELS: Record<ReviewFlag, string> = {
   few_images: '画像1枚以下',
@@ -21,10 +22,13 @@ export const REVIEW_FLAG_LABELS: Record<ReviewFlag, string> = {
   long_title: 'タイトル長い',
   no_brand: 'ブランドなし',
   duplicate_title: 'タイトル重複',
+  ai_part: 'AI判定: 部品',
 }
 
 export interface ReviewItem {
   id: string
+  /** AIの判定結果(未判定なら undefined) */
+  aiVerdict?: 'main' | 'part' | 'unknown'
   title: string
   brand: string
   description: string
@@ -71,6 +75,7 @@ export function productReviewFlags(item: ReviewItem, duplicateIds: Set<string>):
   if (item.title.length >= TITLE_NEAR_LIMIT) flags.push('long_title')
   if (!item.brand.trim()) flags.push('no_brand')
   if (duplicateIds.has(item.id)) flags.push('duplicate_title')
+  if (item.aiVerdict === 'part') flags.push('ai_part')
   return flags
 }
 

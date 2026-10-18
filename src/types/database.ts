@@ -170,6 +170,14 @@ export interface Product {
   ebay_price: number | null
   ebay_description: string | null
   ebay_images: string[]
+  // ユーザー要望(2026-10-18): タイトルと1枚目の画像で「本体か部品か」をAIが判定した結果。
+  // 判定しただけでは何も消さない(画面で理由を確認してから削除する)。
+  ai_classification?: {
+    verdict: 'main' | 'part' | 'unknown'
+    reason: string
+    model?: string
+    at?: string
+  } | null
   ebay_item_specifics: Record<string, string[]>
   ebay_condition: string | null
   // ユーザー要望(2026-10-05): 商品編集画面でConditionIDを直接指定する。
