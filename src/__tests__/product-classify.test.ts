@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type OpenAI from 'openai'
-import { classifyProduct, parseVerdict } from '@/lib/product-classify'
+import { CLASSIFY_MODEL, classifyProduct, parseVerdict } from '@/lib/product-classify'
 
 // ユーザー要望(2026-10-18): リールのカテゴリに混ざるスプール・ハンドル等を
 // AIで見分けたい。キーワードでは拾えない(「Light Arm」「ドラググリス」のように
@@ -33,7 +33,11 @@ describe('parseVerdict', () => {
 })
 
 interface ChatPayload {
+  model: string
   messages: Array<{ role: string; content: unknown }>
+  max_tokens?: number
+  max_completion_tokens?: number
+  temperature?: number
 }
 
 function fakeOpenAI(reply: string | Error) {
@@ -88,5 +92,35 @@ describe('classifyProduct', () => {
     const result = await classifyProduct(openai, input)
     expect(result.verdict).toBe('unknown')
     expect(result.reason).toContain('判定に失敗')
+  })
+})
+
+// ユーザー要望(2026-10-18): 判定は精度を高めに → 既定を gpt-5-mini にした。
+// gpt-5系は temperature と max_tokens を受け付けないため、直接指定していると
+// モデルを上げた瞬間に全件失敗する。ここを固定しておく。
+describe('モデルの指定', () => {
+  it('既定は精度優先のモデルを使う', () => {
+    expect(CLASSIFY_MODEL).toBe('gpt-5-mini')
+  })
+
+  it('gpt-5系には max_completion_tokens を使い、temperature を渡さない', async () => {
+    const { openai, create } = fakeOpenAI('{"verdict":"part","reason":"スプール"}')
+    await classifyProduct(openai, input, { model: 'gpt-5-mini' })
+    const payload = create.mock.calls[0][0]
+
+    expect(payload.temperature).toBeUndefined()
+    expect(payload.max_tokens).toBeUndefined()
+    // 推論トークンもこの上限を食うので、小さすぎると本文が空になり全件 unknown になる
+    expect(payload.max_completion_tokens).toBeGreaterThanOrEqual(200)
+  })
+
+  it('gpt-4系には従来どおり max_tokens と temperature を渡す', async () => {
+    const { openai, create } = fakeOpenAI('{"verdict":"main","reason":"本体"}')
+    await classifyProduct(openai, input, { model: 'gpt-4.1-mini' })
+    const payload = create.mock.calls[0][0]
+
+    expect(payload.max_tokens).toBeGreaterThan(0)
+    expect(payload.temperature).toBe(0)
+    expect(payload.max_completion_tokens).toBeUndefined()
   })
 })

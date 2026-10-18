@@ -17,7 +17,7 @@ function getClient() {
 
 // gpt-5系は temperature 指定と max_tokens を受け付けない(max_completion_tokens
 // を使う)。モデルごとに適切なパラメータを組み立てる。
-function completionParams(model: string, maxTokens: number, temperature: number) {
+export function completionParams(model: string, maxTokens: number, temperature: number) {
   return model.startsWith('gpt-5')
     ? { model, max_completion_tokens: maxTokens }
     : { model, max_tokens: maxTokens, temperature }

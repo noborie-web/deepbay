@@ -1,5 +1,5 @@
 import OpenAI from 'openai'
-import { MODEL_MAP } from '@/lib/translate'
+import { completionParams, MODEL_MAP } from '@/lib/translate'
 
 // ユーザー要望(2026-10-18): リールのカテゴリで抽出しても、スプールやハンドル
 // などの部品が混ざる。キーワードでは拾いきれない(「Light Arm」「ドラググリス」
@@ -26,6 +26,13 @@ export interface ClassifyInput {
 }
 
 export const CLASSIFY_CONCURRENCY = Number(process.env.OPENAI_CLASSIFY_CONCURRENCY ?? 20)
+
+// ユーザー要望(2026-10-18): 判定は精度を高めに。既定を best(gpt-5-mini)にする。
+export const CLASSIFY_MODEL = MODEL_MAP.best
+
+// 出力は短いJSONだが、gpt-5系は推論トークンもこの上限を食う。
+// 小さすぎると推論だけで使い切って本文が空になり、全件 unknown になってしまう。
+const MAX_OUTPUT_TOKENS = 400
 
 function systemPrompt(expected: string | null): string {
   const target = expected?.trim()
@@ -66,7 +73,7 @@ export async function classifyProduct(
   input: ClassifyInput,
   options: { model?: string; expectedCategory?: string | null; timeoutMs?: number } = {},
 ): Promise<ClassifyVerdict & { model: string }> {
-  const model = options.model ?? MODEL_MAP.high
+  const model = options.model ?? CLASSIFY_MODEL
   const text = [
     `英語タイトル: ${input.title}`,
     `元のタイトル(日本語): ${input.originalTitle}`,
@@ -80,9 +87,9 @@ export async function classifyProduct(
 
   try {
     const response = await openai.chat.completions.create({
-      model,
-      max_tokens: 60,
-      temperature: 0,
+      // gpt-5系は temperature と max_tokens を受け付けない。
+      // 直接指定するとモデルを上げた瞬間に全件失敗するため、必ずこれを通す
+      ...completionParams(model, MAX_OUTPUT_TOKENS, 0),
       messages: [
         { role: 'system', content: systemPrompt(options.expectedCategory ?? null) },
         { role: 'user', content },

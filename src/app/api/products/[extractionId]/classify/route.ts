@@ -3,8 +3,7 @@ import OpenAI from 'openai'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { mapWithConcurrency } from '@/lib/async-pool'
-import { CLASSIFY_CONCURRENCY, classifyProduct } from '@/lib/product-classify'
-import { MODEL_MAP } from '@/lib/translate'
+import { CLASSIFY_CONCURRENCY, CLASSIFY_MODEL, classifyProduct } from '@/lib/product-classify'
 
 // ユーザー要望(2026-10-18): リールのカテゴリに混ざる部品をAIで見分けたい。
 // タイトルと1枚目の画像を一度に見せて「本体か部品か」を判定する。
@@ -66,7 +65,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
   }
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  const model = MODEL_MAP.high
+  const model = CLASSIFY_MODEL
   const startedAt = Date.now()
 
   const results = await mapWithConcurrency(targets, CLASSIFY_CONCURRENCY, async (row) => {
@@ -86,6 +85,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
   })
 
   const now = new Date().toISOString()
+  // 内訳を返す。全件 unknown のような異常にその場で気づけるようにする
+  const counts = { main: 0, part: 0, unknown: 0 }
   let processed = 0
   for (const result of results) {
     if (!result) continue
@@ -101,7 +102,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
       })
       .eq('id', result.id)
       .eq('user_id', user.id)
-    if (!updateError) processed += 1
+    if (!updateError) {
+      processed += 1
+      counts[result.verdict.verdict] += 1
+    }
   }
 
   const { count: pending } = await db
@@ -111,5 +115,5 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
     .eq('extraction_id', extractionId)
     .is('ai_classification', null)
 
-  return NextResponse.json({ ok: true, processed, pending: pending ?? 0, model })
+  return NextResponse.json({ ok: true, processed, pending: pending ?? 0, model, counts })
 }
