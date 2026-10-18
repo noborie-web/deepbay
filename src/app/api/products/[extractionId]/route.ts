@@ -85,9 +85,20 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ e
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const body = await req.json().catch(() => null) as { productId?: unknown; force?: unknown } | null
-  const productId = body?.productId
-  if (typeof productId !== 'string' || productId.trim() === '') {
+  const body = await req.json().catch(() => null) as {
+    productId?: unknown
+    // ユーザー要望(2026-10-18): 不要な商品をレ点で選んでまとめて削除したい。
+    // 出品済みかどうかの判定を1件ずつ投げると選択数ぶんの往復になるため、
+    // まとめて受け取れるようにする。
+    productIds?: unknown
+    force?: unknown
+  } | null
+  const productIds = Array.isArray(body?.productIds)
+    ? body.productIds.filter((id): id is string => typeof id === 'string' && id.trim() !== '')
+    : typeof body?.productId === 'string' && body.productId.trim() !== ''
+      ? [body.productId]
+      : []
+  if (productIds.length === 0) {
     return NextResponse.json({ error: 'productId が無効です' }, { status: 400 })
   }
   const force = req.nextUrl.searchParams.get('force') === 'true' || body?.force === true
@@ -105,7 +116,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ e
     const { data: products, error: productsError } = await admin
       .from('products')
       .select('id, ebay_item_id, ebay_title, original_title, listing_csv_exported_at')
-      .eq('id', productId)
+      .in('id', productIds)
       .eq('extraction_id', extractionId)
       .eq('user_id', user.id)
 
@@ -131,10 +142,10 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ e
   const { error } = await admin
     .from('products')
     .delete()
-    .eq('id', productId)
+    .in('id', productIds)
     .eq('extraction_id', extractionId)
     .eq('user_id', user.id)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, deleted: productIds.length })
 }

@@ -99,6 +99,11 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [pendingExcludeIds, setPendingExcludeIds] = useState<Set<string>>(new Set())
   // 出品済み商品を強制削除する確認を得た除外予定ID(保存時にforce=trueを付与する)。
   const [forcedExcludeIds, setForcedExcludeIds] = useState<Set<string>>(new Set())
+  // ユーザー要望(2026-10-18): 不要な商品をレ点で選んでまとめて削除したい。
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // Shift+クリックで範囲選択するための、直前に操作した行
+  const [lastClickedId, setLastClickedId] = useState<string | null>(null)
+  const [bulkDeleting, setBulkDeleting] = useState(false)
 
   // Vero・危険セラー・危険単語は抽出設定(サーバー側)に依存するため、
   // 実行前の件数プレビューを表示するには先に設定を取得しておく必要がある。
@@ -640,6 +645,91 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     setProducts((prev) => prev.filter((p) => p.id !== productId))
   }
 
+  function toggleSelect(productId: string, shiftKey: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      // Shift+クリックは、直前に操作した行からこの行までをまとめて選ぶ
+      if (shiftKey && lastClickedId) {
+        const ids = pagedProducts.map((p) => p.id)
+        const from = ids.indexOf(lastClickedId)
+        const to = ids.indexOf(productId)
+        if (from !== -1 && to !== -1) {
+          const [start, end] = from < to ? [from, to] : [to, from]
+          const select = !prev.has(productId)
+          for (const id of ids.slice(start, end + 1)) {
+            if (select) next.add(id)
+            else next.delete(id)
+          }
+          return next
+        }
+      }
+      if (next.has(productId)) next.delete(productId)
+      else next.add(productId)
+      return next
+    })
+    setLastClickedId(productId)
+  }
+
+  // 選択した商品をまとめて除外予定にする。1件ずつの削除と同じく、
+  // 実際のDELETEは「編集保存」まで保留する。
+  async function deleteSelected() {
+    const ids = pagedProducts.map((p) => p.id).filter((id) => selectedIds.has(id))
+    if (ids.length === 0) return
+    if (!confirm(`選択した${ids.length}件を削除しますか？（「編集保存」を押すまで確定しません）`)) return
+
+    setBulkDeleting(true)
+    try {
+      // 出品済みかどうかの判定はまとめて1回で行う
+      const res = await fetch(`/api/products/${extractionId}?check=true`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productIds: ids }),
+      })
+
+      let forced: string[] = []
+      if (res.status === 409) {
+        const json = await res.json().catch(() => ({})) as {
+          error?: string
+          blockedProducts?: { id: string; title: string }[]
+        }
+        const blocked = json.blockedProducts ?? []
+        const titles = blocked.slice(0, 10).map((product) => `・${product.title}`).join('\n')
+        const more = blocked.length > 10 ? `\n…ほか${blocked.length - 10}件` : ''
+        const warning = [
+          `${json.error ?? '出品済みの商品です。'}（${blocked.length}件）`,
+          titles + more,
+          'eBay側のリスティングは削除されず、今後この商品の自動照合ができなくなります。',
+          'それでも選択した商品を除外予定に追加しますか？（「編集保存」を押すまで確定しません）',
+        ].filter(Boolean).join('\n\n')
+        if (!confirm(warning)) return
+        forced = blocked.map((product) => product.id)
+      } else if (!res.ok) {
+        const json = await res.json().catch(() => ({})) as { error?: string }
+        alert(`削除の確認に失敗しました: ${json.error ?? res.status}`)
+        return
+      }
+
+      if (forced.length > 0) {
+        setForcedExcludeIds((prev) => {
+          const next = new Set(prev)
+          for (const id of forced) next.add(id)
+          return next
+        })
+      }
+      setPendingExcludeIds((prev) => {
+        const next = new Set(prev)
+        for (const id of ids) next.add(id)
+        return next
+      })
+      const removing = new Set(ids)
+      setProducts((prev) => prev.filter((p) => !removing.has(p.id)))
+      setSelectedIds(new Set())
+      setLastClickedId(null)
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   const getTitle = (p: Product) =>
     edits[p.id]?.ebay_title !== undefined ? (edits[p.id].ebay_title as string) : (p.ebay_title ?? '')
   const getBrand = (p: Product) =>
@@ -670,6 +760,22 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       : products
   const totalPages = Math.max(1, Math.ceil(visibleProducts.length / pageSize))
   const pagedProducts = visibleProducts.slice((page - 1) * pageSize, page * pageSize)
+  // 選択はこのページの表示分だけを対象にする(ページを跨いで消さない)
+  const selectedOnPage = pagedProducts.reduce((count, p) => count + (selectedIds.has(p.id) ? 1 : 0), 0)
+  const pageAllSelected = pagedProducts.length > 0 && selectedOnPage === pagedProducts.length
+  const pageSomeSelected = selectedOnPage > 0
+
+  function toggleSelectPage(select: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      for (const p of pagedProducts) {
+        if (select) next.add(p.id)
+        else next.delete(p.id)
+      }
+      return next
+    })
+    setLastClickedId(null)
+  }
   const pagedIds = new Set(pagedProducts.map((p) => p.id))
 
   // 不正価格: edits に入っているが null でもなく正の有限数でもない
@@ -810,6 +916,28 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   <option>詳細編集モード</option>
                 </select>
               </div>
+              {/* ユーザー要望(2026-10-18): レ点で選んでまとめて削除する */}
+              <div className="flex items-center gap-1.5 border-l pl-3">
+                <label className="flex items-center gap-1 text-xs text-gray-600">
+                  <input
+                    type="checkbox"
+                    aria-label="このページの商品をすべて選択"
+                    checked={pageAllSelected}
+                    ref={(el) => { if (el) el.indeterminate = !pageAllSelected && pageSomeSelected }}
+                    onChange={(e) => toggleSelectPage(e.target.checked)}
+                  />
+                  全選択
+                </label>
+                <span className="text-xs text-gray-500">選択 {selectedOnPage}件</span>
+                <button
+                  onClick={deleteSelected}
+                  disabled={selectedOnPage === 0 || bulkDeleting}
+                  className="rounded bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white px-2 py-1 text-xs"
+                >
+                  {bulkDeleting ? '確認中...' : `選択した${selectedOnPage}件を削除`}
+                </button>
+              </div>
+
               {/* 編集保存 */}
               {pendingExcludeIds.size > 0 && (
                 <span className="text-xs text-amber-600">保存待ちの除外: {pendingExcludeIds.size}件</span>
@@ -1499,6 +1627,14 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                     <div className="flex gap-4">
                       {/* アクションボタン */}
                       <div className="flex flex-col gap-2 items-center pt-1 shrink-0">
+                        <input
+                          type="checkbox"
+                          aria-label={`${product.original_title}を選択`}
+                          checked={selectedIds.has(product.id)}
+                          onChange={() => { /* onClick で Shift を見るため、ここでは何もしない */ }}
+                          onClick={(e) => toggleSelect(product.id, (e as unknown as { shiftKey: boolean }).shiftKey)}
+                          className="w-4 h-4"
+                        />
                         <button
                           aria-label={`${product.original_title}を削除`}
                           onClick={() => deleteProduct(product.id)}
