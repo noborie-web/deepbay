@@ -261,3 +261,58 @@ describe('並びの入れ替わりによる取りこぼしの拾い直し', () =
     }
   })
 })
+
+// ユーザー報告(2026-10-19): ヤフオクのカテゴリ一覧に Yahoo!フリマ の出品が
+// 混ざって返る(実測: ファミコンのカテゴリは50件中43件がフリマだった)。
+// フリマの商品ページURLは別(paypayfleamarket.yahoo.co.jp/item/{id})なので、
+// ヤフオクのURLを付けると404になる。実害は2つ:
+//   1. 説明文・画像を補完できない(404を「終了した出品」と誤認していた)
+//   2. 仕入先チェックが404を「売り切れ」と判定し、出品中の商品を取り下げる
+describe('Yahoo!フリマの出品が混ざる場合', () => {
+  function listingWith(items: Array<Record<string, unknown>>) {
+    return nextDataHtml({
+      props: { pageProps: { initialState: { search: { items: { listing: {
+        items, totalResultsAvailable: items.length,
+      } } } } } },
+    })
+  }
+
+  async function scrapeWith(html: string) {
+    const scraper = new YahooAuctionScraper()
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => new Response(html, { status: 200 })) as typeof globalThis.fetch
+    try {
+      return await scraper.scrape(
+        'https://auctions.yahoo.co.jp/category/list/2084005190', { limit: 10, skipDetailEnrichment: true },
+      )
+    } finally {
+      globalThis.fetch = original
+    }
+  }
+
+  it('フリマの出品はフリマのURLと仕入先にする', async () => {
+    const products = await scrapeWith(listingWith([
+      { auctionId: 'z706706400', title: 'FC 剣の達人', price: 5000, isFleamarketItem: true, seller: { userId: 'u1' } },
+      { auctionId: 'q1248713393', title: 'FC ロックマン', price: 6000, isFleamarketItem: false, seller: { userId: 'u2' } },
+    ]))
+
+    const flea = products.find((p) => p.sourceItemId === 'z706706400')!
+    expect(flea.sourceSite).toBe('yahoo_flea')
+    expect(flea.sourceUrl).toBe('https://paypayfleamarket.yahoo.co.jp/item/z706706400')
+    expect(flea.sellerUrl).toBe('https://paypayfleamarket.yahoo.co.jp/user/u1')
+
+    const auction = products.find((p) => p.sourceItemId === 'q1248713393')!
+    expect(auction.sourceSite).toBe('yahoo_auction')
+    expect(auction.sourceUrl).toBe('https://auctions.yahoo.co.jp/jp/auction/q1248713393')
+    expect(auction.sellerUrl).toBe('https://auctions.yahoo.co.jp/seller/u2')
+  })
+
+  // フラグが無い古い形のデータでは、従来どおりヤフオク扱いにする
+  it('フラグが無ければヤフオク扱いのまま', async () => {
+    const products = await scrapeWith(listingWith([
+      { auctionId: 'q1248713393', title: 'FC ロックマン', price: 6000 },
+    ]))
+    expect(products[0].sourceSite).toBe('yahoo_auction')
+    expect(products[0].sourceUrl).toContain('/jp/auction/')
+  })
+})

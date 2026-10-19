@@ -53,6 +53,12 @@ export interface YahooAuctionListingItem {
   seller?: { userId?: string }
   // 一覧にも商品カテゴリ名が入っている(抽出リスト名の自動入力に使う)
   category?: { id?: number; name?: string }
+  // ユーザー報告(2026-10-19): ヤフオクのカテゴリ一覧には Yahoo!フリマ の出品が
+  // 混ざって返る(実測: ファミコンのカテゴリは50件中43件がフリマだった)。
+  // フリマの商品は商品ページのURLが別(paypayfleamarket.yahoo.co.jp/item/{id})
+  // なので、ヤフオクのURLを付けると404になり、説明文・画像を補完できないうえ、
+  // 仕入先チェックが404を「売り切れ」と判定して出品を取り下げてしまう。
+  isFleamarketItem?: boolean
 }
 
 export interface YahooAuctionSearchData {
@@ -216,9 +222,13 @@ export class YahooAuctionScraper extends BaseScraper {
           const itemId = item.auctionId
           if (!itemId) continue
           const sellerId = item.seller?.userId
+          // Yahoo!フリマの出品はURLも仕入先も別物として扱う(上の説明を参照)
+          const isFlea = item.isFleamarketItem === true
           pageProducts.push({
-            sourceUrl: `https://auctions.yahoo.co.jp/jp/auction/${itemId}`,
-            sourceSite: this.siteKey,
+            sourceUrl: isFlea
+              ? `https://paypayfleamarket.yahoo.co.jp/item/${itemId}`
+              : `https://auctions.yahoo.co.jp/jp/auction/${itemId}`,
+            sourceSite: isFlea ? 'yahoo_flea' : this.siteKey,
             sourceItemId: itemId,
             title: item.title?.trim() ?? '',
             // 定額(即決)価格があればそちらを使う。無在庫では入札を待てない
@@ -234,7 +244,11 @@ export class YahooAuctionScraper extends BaseScraper {
             shippingDays: null,
             sourceUpdatedAt: null,
             // seller.userId はセラーページURLの識別子と一致することを実データで確認済み
-            sellerUrl: sellerId ? `https://auctions.yahoo.co.jp/seller/${sellerId}` : null,
+            sellerUrl: sellerId
+              ? (isFlea
+                ? `https://paypayfleamarket.yahoo.co.jp/user/${sellerId}`
+                : `https://auctions.yahoo.co.jp/seller/${sellerId}`)
+              : null,
           })
         }
       }
