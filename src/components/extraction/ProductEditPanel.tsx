@@ -881,11 +881,23 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
       }
 
       for (;;) {
-        const res = await fetch(`/api/products/${extractionId}/classify`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        })
+        // 通信が切れた回は1度だけ試し直す。判定済みの分はサーバーに
+        // 保存されているので、やり直しても二重に課金されない。
+        let res: Response
+        try {
+          res = await fetch(`/api/products/${extractionId}/classify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          })
+        } catch {
+          await reloadProducts().catch(() => {})
+          res = await fetch(`/api/products/${extractionId}/classify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          })
+        }
         const json = await res.json() as {
           error?: string; processed?: number; pending?: number; unknown?: number
         }
@@ -897,7 +909,9 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         if (!json.pending || json.processed === 0) break
       }
     } catch (e) {
-      setClassifyError(e instanceof Error ? e.message : 'エラーが発生しました')
+      const message = e instanceof Error ? e.message : 'エラーが発生しました'
+      // ここまでの判定は保存されているので、押し直せば続きから進む
+      setClassifyError(`${message}（ここまでの判定は保存されています。もう一度押すと続きから進みます）`)
       await reloadProducts().catch(() => {})
     } finally {
       setClassifying(false)

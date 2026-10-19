@@ -10,11 +10,19 @@ import { CLASSIFY_CONCURRENCY, CLASSIFY_MODEL, classifyProduct } from '@/lib/pro
 //
 // 判定しただけでは何も消さない。結果を products.ai_classification に残し、
 // 画面で理由付きの一覧を確認してから削除してもらう(危険単語と同じ流れ)。
-export const maxDuration = 60
+// 本番で確認した不具合(2026-10-19): 567件の判定が123件で「Failed to fetch」に
+// なった。gpt-5-miniは推論する分だけ遅く、1回100件が60秒に収まらず関数が
+// 強制終了していた(1回目と2回目の書き込みの間隔が59秒だった)。
+// 他のルート(抽出・在庫同期)と同じ300秒にする。
+export const maxDuration = 300
 
-// 1回の呼び出しで判定する件数。並列20で1件1〜2秒なので、この件数で約45秒
+// 1回の呼び出しで判定する件数
 const BATCH = 100
-const TIME_BUDGET_MS = 45_000
+// 打ち切りの時刻。これを過ぎたら新しい判定を始めない。
+// 進行中の1件は最大40秒(20秒のタイムアウト × 再試行1回)かかるので、
+// TIME_BUDGET_MS + 40秒 が maxDuration を超えないようにする
+// (240 + 40 = 280 < 300)。超えると応答を返せず「Failed to fetch」になる。
+const TIME_BUDGET_MS = 240_000
 
 /** まだ判定が付いていない(または「判断できない」で終わった)件数 */
 async function countPending(
