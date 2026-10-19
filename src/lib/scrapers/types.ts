@@ -69,6 +69,9 @@ export class ScraperError extends Error {
     message: string,
     public readonly siteKey: string,
     public readonly url: string,
+    // ユーザー報告(2026-10-19): 終了した出品(404)を5回・最大2.5時間かけて
+    // 再試行していた。成功しようがないものを見分けるため状態コードを持つ。
+    public readonly status?: number,
   ) {
     super(message)
     this.name = 'ScraperError'

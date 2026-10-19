@@ -41,6 +41,9 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
   const [enrichError, setEnrichError] = useState<string | null>(null)
   // Yahoo!フリマの制限(約15件/15分)で待機中のとき、次の再開時刻
   const [enrichResumeAt, setEnrichResumeAt] = useState<number | null>(null)
+  // 待っている理由。ユーザー報告(2026-10-19): ヤフオクだけの抽出なのに
+  // 「Yahoo!フリマの制限」と出ていた(文言が決め打ちだった)。
+  const [enrichWaitReason, setEnrichWaitReason] = useState<'flea' | 'retry'>('retry')
   const [now, setNow] = useState(() => Date.now())
   const enrichStartedRef = useRef(false)
 
@@ -54,7 +57,10 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? '詳細の補完に失敗しました')
-      return json as { pending: number; processed?: number; retry_after_ms?: number; flea_rate_limited?: boolean }
+      return json as {
+        pending: number; processed?: number; retry_after_ms?: number
+        flea_rate_limited?: boolean; flea_pending?: number
+      }
     }
     const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
     ;(async () => {
@@ -72,7 +78,10 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
           setEnrichPending(pending)
           if (pending === 0) break
           if (result.retry_after_ms && result.retry_after_ms > 0) {
-            // Yahoo!フリマの制限: 次の1回分まで待つ
+            // 待つ理由を分ける。フリマの制限(15分)と、取得失敗の再試行待ちは別物
+            setEnrichWaitReason(
+              result.flea_rate_limited || (result.flea_pending ?? 0) > 0 ? 'flea' : 'retry',
+            )
             const resumeAt = Date.now() + result.retry_after_ms
             setEnrichResumeAt(resumeAt)
             while (!cancelled && Date.now() < resumeAt) await sleep(1000)
@@ -168,9 +177,14 @@ export default function ExtractionDetailClient({ extraction: initial, initialPro
         <div className="mb-6 bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
           商品ページから説明文・画像などを補完中… 残り {enrichPending} 件（補完済み {enrichDone} 件）。
           {enrichResumeAt !== null && (
-            <> 仕入先サイトのアクセス制限（Yahoo!フリマは約15件ごとに15分待機）のため、あと {Math.max(0, Math.ceil((enrichResumeAt - now) / 60000))} 分後に再開します。</>
+            <>
+              {enrichWaitReason === 'flea'
+                ? ' Yahoo!フリマのアクセス制限（約15件ごとに15分待機）のため、'
+                : ' 取得できなかった商品の再試行待ちのため、'}
+              あと {Math.max(0, Math.ceil((enrichResumeAt - now) / 60000))} 分後に再開します。
+            </>
           )}
-          このページを開いたままお待ちください（閉じても次回開いたときに続きから再開します）。
+          {' '}閉じても構いません（15分ごとの自動処理が続きを進めます。開いたままのほうが速く終わります）。
         </div>
       )}
       {enrichPending === 0 && enrichDone > 0 && (

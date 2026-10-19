@@ -4,7 +4,7 @@ import { YahooFleaScraper, FLEA_DETAIL_PER_RUN, FLEA_RATE_LIMIT_WINDOW_MS } from
 import { YahooAuctionScraper } from '@/lib/scrapers/yahoo_auction'
 import { fetchWithRetry, mapThrottled, RateLimitedError } from '@/lib/scrapers/throttled-fetch'
 import { generateDescriptionsSafely, normalizeAiDescriptionMode, translateDescriptionsWithFailures } from '@/lib/translate'
-import type { ScrapedProduct } from '@/lib/scrapers/types'
+import { ScraperError, type ScrapedProduct } from '@/lib/scrapers/types'
 import { ENRICHABLE_SITES, type EnrichableSite } from '@/lib/enrich-sites'
 
 // ユーザー要望: ヤフオク・Yahoo!フリマの抽出で「必要なものは取得できるように」。
@@ -17,7 +17,10 @@ import { ENRICHABLE_SITES, type EnrichableSite } from '@/lib/enrich-sites'
 // 画面(ページを開いているあいだ)と定期実行(cron)の両方から同じ処理を呼べるよう、
 // ルートから切り出した。Next.jsのroute.tsはHTTPハンドラ以外をexportできない。
 
-const BATCH = 30
+// ユーザー報告(2026-10-19): 補完に時間がかかりすぎる。
+// ヤフオクはYahoo!フリマほど制限が厳しくないので、1回の処理件数を上げる。
+// 時間予算(42秒)の範囲で収まる値にしている(並列4・間隔250ms)。
+const BATCH = 120
 const TIME_BUDGET_MS = 42_000
 // 実データで計測(2026-09-21): Yahoo!フリマは1つのIPから約15件で429になり約15分
 // ブロックされる。1回の呼び出しでは FLEA_DETAIL_PER_RUN 件だけ1件ずつ取得し、
@@ -26,8 +29,9 @@ const TIME_BUDGET_MS = 42_000
 // ここで Record<EnrichableSite, ...> にしておくと、サイトを増やしたときに
 // ペース設定の追加漏れをTypeScriptが知らせてくれる。
 const SITE_PACING: Record<EnrichableSite, { concurrency: number; intervalMs: number; retries: number; maxPerRun: number }> = {
+  // フリマは1つのIPから約15件/15分しか見せないため据え置き
   yahoo_flea: { concurrency: 1, intervalMs: 1000, retries: 0, maxPerRun: FLEA_DETAIL_PER_RUN },
-  yahoo_auction: { concurrency: 2, intervalMs: 500, retries: 2, maxPerRun: BATCH },
+  yahoo_auction: { concurrency: 4, intervalMs: 250, retries: 2, maxPerRun: BATCH },
 }
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
@@ -137,6 +141,10 @@ export async function runEnrichDetailsBatch(
   let fleaRateLimited = false
   let auctionRateLimited = false
   const failedIds: string[] = []
+  // 出品が終了して消えたページ(404)は、何度試しても成功しない。
+  // 再試行せずその場で打ち切る(ユーザー報告 2026-10-19: 終了した出品を
+  // 5回・最大2.5時間かけて再試行し、補完がいつまでも終わらなかった)。
+  const goneIds: string[] = []
   const enriched: Array<{ product: PendingProduct; detail: ScrapedProduct }> = []
 
   // サイトごとにアクセス間隔を分けて取得する
@@ -147,7 +155,7 @@ export async function runEnrichDetailsBatch(
     const remainingBudget = TIME_BUDGET_MS - (Date.now() - startedAt)
     if (remainingBudget <= 0) break
     let stop = false
-    const { results } = await mapThrottled(siteTargets.map(t => ({ target: t, detail: null as ScrapedProduct | null, failed: false })), async (entry) => {
+    const { results } = await mapThrottled(siteTargets.map(t => ({ target: t, detail: null as ScrapedProduct | null, failed: false, gone: false })), async (entry) => {
       if (stop) return entry
       try {
         const html = await fetchWithRetry(entry.target.source_url, {
@@ -164,12 +172,17 @@ export async function runEnrichDetailsBatch(
           else auctionRateLimited = true
           return entry
         }
-        console.error('[enrich-details] failed for', entry.target.id, err instanceof Error ? err.message : err)
-        return { ...entry, failed: true }
+        // 404(出品が終了してページが消えた)は再試行しても無駄
+        const gone = err instanceof ScraperError && (err as ScraperError).status === 404
+        if (!gone) {
+          console.error('[enrich-details] failed for', entry.target.id, err instanceof Error ? err.message : err)
+        }
+        return { ...entry, failed: true, gone }
       }
     }, { concurrency: pacing.concurrency, intervalMs: pacing.intervalMs, timeBudgetMs: remainingBudget })
     for (const r of results) {
       if (r.detail) enriched.push({ product: r.target, detail: r.detail })
+      else if (r.gone) { failed += 1; goneIds.push(r.target.id) }
       else if (r.failed) { failed += 1; failedIds.push(r.target.id) }
       // 時間切れで未処理のものは detail_enriched_at を付けず次回に回す
     }
@@ -229,6 +242,15 @@ export async function runEnrichDetailsBatch(
     processed += 1
   }
   // 取得に失敗した商品は時間を置いて再試行する(5回失敗したら諦める)
+  // 出品が消えている分は、ここで打ち切って補完待ちから外す
+  for (const id of goneIds) {
+    await db.from('products').update({
+      detail_enriched_at: now,
+      detail_attempts: (targets.find(t => t.id === id)?.detail_attempts ?? 0) + 1,
+      detail_retry_after: null,
+    }).eq('id', id).eq('user_id', user.id)
+  }
+
   for (const id of failedIds) {
     const target = targets.find(t => t.id === id)
     const attempts = (target?.detail_attempts ?? 0) + 1
