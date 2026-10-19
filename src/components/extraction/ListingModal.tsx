@@ -536,8 +536,12 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
               )}
             </div>
             <p className="text-xs text-gray-500 mt-2">
+              {/* ユーザー報告(2026-10-19): ここだけ「EBAY_AU のポリシーを使用」と
+                  出たままだった。いまはサイトごとに取得・選択するので、
+                  出品先のサイトを並べて出す(どのサイトの設定を選んでいるか
+                  取り違えないように)。 */}
               {sellerConnected
-                ? `${selectedSeller?.seller_id} / ${selectedSeller?.ebay_marketplace_id || 'EBAY_US'} のビジネスポリシーを使用します。`
+                ? `${selectedSeller?.seller_id} の ${csvSites.join('・')} のビジネスポリシーを使用します。サイトごとに別のポリシーです。`
                 : '接続すると、eBayに登録済みの配送・支払・返品ポリシーを安全に取得して選択できます。'}
             </p>
             {policyError && <p className="text-xs text-red-600 mt-2">{policyError}</p>}
