@@ -124,3 +124,13 @@ describe('モデルの指定', () => {
     expect(payload.max_completion_tokens).toBeUndefined()
   })
 })
+
+// 本番で確認(2026-10-19): 309件中8件が「応答が空」で unknown になった。
+// 出力自体は短いので、上限を上げても実際の消費はほとんど増えない。
+describe('出力トークンの上限', () => {
+  it('推論に余裕のある上限を渡す（応答が空になるのを減らす）', async () => {
+    const { openai, create } = fakeOpenAI('{"verdict":"part","reason":"スプール"}')
+    await classifyProduct(openai, input, { model: 'gpt-5-mini' })
+    expect(create.mock.calls[0][0].max_completion_tokens).toBeGreaterThanOrEqual(1000)
+  })
+})

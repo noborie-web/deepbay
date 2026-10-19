@@ -31,8 +31,10 @@ export const CLASSIFY_CONCURRENCY = Number(process.env.OPENAI_CLASSIFY_CONCURREN
 export const CLASSIFY_MODEL = MODEL_MAP.best
 
 // 出力は短いJSONだが、gpt-5系は推論トークンもこの上限を食う。
-// 小さすぎると推論だけで使い切って本文が空になり、全件 unknown になってしまう。
-const MAX_OUTPUT_TOKENS = 400
+// 小さすぎると推論だけで使い切って本文が空になり unknown になる。
+// 本番で確認(2026-10-19): 400トークンでも309件中8件が「応答が空」だった。
+// 出力自体は短いので、上限を上げても実際の消費はほとんど増えない。
+const MAX_OUTPUT_TOKENS = 1200
 
 function systemPrompt(expected: string | null): string {
   const target = expected?.trim()

@@ -124,6 +124,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [classifying, setClassifying] = useState(false)
   const [classifyPending, setClassifyPending] = useState<number | null>(null)
   const [classifyError, setClassifyError] = useState<string | null>(null)
+  // 前回「判断できない」で終わった件数(拾い直しのボタンに出す)
+  const [classifyUnknown, setClassifyUnknown] = useState(0)
 
   // Vero・危険セラー・危険単語は抽出設定(サーバー側)に依存するため、
   // 実行前の件数プレビューを表示するには先に設定を取得しておく必要がある。
@@ -831,26 +833,72 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
     : filteredProducts
 
   // 全件終わるまで繰り返し呼ぶ(1回あたり最大100件・約45秒)
+  //
+  // 本番で確認した問題(2026-10-19): 判定は進んでいるのに画面の件数が古いまま
+  // だった(DBは259件、画面は136件)。1巡し終わるまで一覧を読み直して
+  // いなかったため。1回ごとに読み直して、進み具合がその場で見えるようにする。
+  async function reloadProducts() {
+    const res = await fetch(`/api/products/${extractionId}`)
+    if (res.ok) setProducts(await res.json())
+  }
+
+  // 前回「判断できない」で終わった分だけを拾い直す。
+  // 自動で繰り返すと、毎回応答が空になる商品で終わらなくなるため手動にする。
+  async function retryUnknownClassify() {
+    setClassifying(true)
+    setClassifyError(null)
+    try {
+      const res = await fetch(`/api/products/${extractionId}/classify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ retryUnknown: true }),
+      })
+      const json = await res.json() as { error?: string; unknown?: number }
+      if (!res.ok) throw new Error(json.error ?? '判定に失敗しました')
+      setClassifyUnknown(json.unknown ?? 0)
+      await reloadProducts()
+    } catch (e) {
+      setClassifyError(e instanceof Error ? e.message : 'エラーが発生しました')
+    } finally {
+      setClassifying(false)
+    }
+  }
+
   async function runClassify() {
     setClassifying(true)
     setClassifyError(null)
     try {
+      // 残り件数を先に出す(1回目の応答を待つと約45秒ものあいだ何も出ない)
+      const statusRes = await fetch(`/api/products/${extractionId}/classify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'status' }),
+      })
+      if (statusRes.ok) {
+        const status = await statusRes.json() as { pending?: number; unknown?: number }
+        setClassifyPending(status.pending ?? 0)
+        setClassifyUnknown(status.unknown ?? 0)
+      }
+
       for (;;) {
         const res = await fetch(`/api/products/${extractionId}/classify`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({}),
         })
-        const json = await res.json() as { error?: string; processed?: number; pending?: number }
+        const json = await res.json() as {
+          error?: string; processed?: number; pending?: number; unknown?: number
+        }
         if (!res.ok) throw new Error(json.error ?? '判定に失敗しました')
         setClassifyPending(json.pending ?? 0)
+        setClassifyUnknown(json.unknown ?? 0)
+        // 1回ごとに反映する。途中で閉じても、ここまでの判定は残る
+        await reloadProducts()
         if (!json.pending || json.processed === 0) break
       }
-      // 判定結果を読み直す
-      const res = await fetch(`/api/products/${extractionId}`)
-      if (res.ok) setProducts(await res.json())
     } catch (e) {
       setClassifyError(e instanceof Error ? e.message : 'エラーが発生しました')
+      await reloadProducts().catch(() => {})
     } finally {
       setClassifying(false)
     }
@@ -1086,6 +1134,16 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                 {classifyError && <span className="text-xs text-red-500">{classifyError}</span>}
                 {!classifying && classifyPending === 0 && (
                   <span className="text-xs text-green-700">判定が終わりました</span>
+                )}
+                {!classifying && classifyUnknown > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => void retryUnknownClassify()}
+                    className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50"
+                    title="応答が空などで判定できなかった商品を、もう一度だけ判定します"
+                  >
+                    判断できない{classifyUnknown}件を再判定
+                  </button>
                 )}
                 <span className="text-xs text-gray-500">除外キーワード:</span>
                 <input
