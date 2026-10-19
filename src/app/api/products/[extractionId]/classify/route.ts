@@ -16,6 +16,32 @@ export const maxDuration = 60
 const BATCH = 100
 const TIME_BUDGET_MS = 45_000
 
+/** まだ判定が付いていない(または「判断できない」で終わった)件数 */
+async function countPending(
+  db: ReturnType<typeof admin>, userId: string, extractionId: string,
+): Promise<number> {
+  const { count } = await db
+    .from('products')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('extraction_id', extractionId)
+    .is('ai_classification', null)
+  return count ?? 0
+}
+
+/** 前回「判断できない」で終わった件数(拾い直しの案内に使う) */
+async function countUnknown(
+  db: ReturnType<typeof admin>, userId: string, extractionId: string,
+): Promise<number> {
+  const { count } = await db
+    .from('products')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('extraction_id', extractionId)
+    .eq('ai_classification->>verdict', 'unknown')
+  return count ?? 0
+}
+
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 }
@@ -29,7 +55,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
     return NextResponse.json({ error: 'OpenAIのAPIキーが設定されていません' }, { status: 400 })
   }
 
-  const body = await req.json().catch(() => ({})) as { mode?: unknown; recheck?: unknown }
+  const body = await req.json().catch(() => ({})) as {
+    mode?: unknown
+    recheck?: unknown
+    /** 前回「判断できない」で終わった分だけを拾い直す(明示指定のときだけ) */
+    retryUnknown?: unknown
+  }
   const db = admin()
 
   // 判定の基準にするカテゴリ(抽出リスト名。「ダイワ スピニングリール」など)
@@ -49,19 +80,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
     .eq('extraction_id', extractionId)
     .order('created_at', { ascending: true })
     .limit(BATCH)
-  if (body.recheck !== true) query = query.is('ai_classification', null)
+  // 既定では未判定のものだけ。判定済み(unknownを含む)は再課金しない。
+  //
+  // 「判断できない」を自動で retry すると、毎回応答が空になる商品で
+  // pending が減らず、画面側の繰り返し呼び出しが終わらなくなる。
+  // 拾い直しは retryUnknown を明示したときだけにする。
+  if (body.retryUnknown === true) {
+    query = query.eq('ai_classification->>verdict', 'unknown')
+  } else if (body.recheck !== true) {
+    query = query.is('ai_classification', null)
+  }
   const { data: rows, error } = await query
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   const targets = rows ?? []
   if (body.mode === 'status' || targets.length === 0) {
-    const { count: pending } = await db
-      .from('products')
-      .select('id', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .eq('extraction_id', extractionId)
-      .is('ai_classification', null)
-    return NextResponse.json({ ok: true, processed: 0, pending: pending ?? 0, usage: null })
+    return NextResponse.json({
+      ok: true,
+      processed: 0,
+      pending: await countPending(db, user.id, extractionId),
+      unknown: await countUnknown(db, user.id, extractionId),
+    })
   }
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
@@ -108,12 +147,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
     }
   }
 
-  const { count: pending } = await db
-    .from('products')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', user.id)
-    .eq('extraction_id', extractionId)
-    .is('ai_classification', null)
-
-  return NextResponse.json({ ok: true, processed, pending: pending ?? 0, model, counts })
+  return NextResponse.json({
+    ok: true,
+    processed,
+    pending: await countPending(db, user.id, extractionId),
+    unknown: await countUnknown(db, user.id, extractionId),
+    model,
+    counts,
+  })
 }
