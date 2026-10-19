@@ -1,10 +1,16 @@
 // ユーザー要望: US に加えて UK・AU にも直接アップロードしたい。
 // eBayのサイトごとに、CSVの SiteID / Currency と、Trading API の
 // X-EBAY-API-SITEID(数値)が決まっている。価格はそのサイトの通貨で出す。
+// marketplaceId は Sell API(ビジネスポリシー等)で使う識別子。
+// ユーザー報告(2026-10-19): akebono-32 は UK/AU に出品する設定なのに、
+// ポリシーをセラーの marketplaceId(EBAY_AU)でしか取っていなかったため、
+// UK向けのポリシーが選択肢に出てこなかった。
+// ビジネスポリシーはマーケットプレイスごとに別物なので、サイトごとに取る。
+// 注意: UK の marketplaceId は EBAY_UK ではなく EBAY_GB。
 export const EBAY_SITES = {
-  US: { siteId: 'US', currency: 'USD', tradingSiteId: '0', label: 'アメリカ (US)' },
-  UK: { siteId: 'UK', currency: 'GBP', tradingSiteId: '3', label: 'イギリス (UK)' },
-  AU: { siteId: 'AU', currency: 'AUD', tradingSiteId: '15', label: 'オーストラリア (AU)' },
+  US: { siteId: 'US', currency: 'USD', tradingSiteId: '0', marketplaceId: 'EBAY_US', label: 'アメリカ (US)' },
+  UK: { siteId: 'UK', currency: 'GBP', tradingSiteId: '3', marketplaceId: 'EBAY_GB', label: 'イギリス (UK)' },
+  AU: { siteId: 'AU', currency: 'AUD', tradingSiteId: '15', marketplaceId: 'EBAY_AU', label: 'オーストラリア (AU)' },
 } as const
 
 export type EbaySiteKey = keyof typeof EBAY_SITES
@@ -73,6 +79,12 @@ const CURRENCY_TO_KEY: Record<string, EbaySiteKey> = {
   USD: 'US',
   GBP: 'UK',
   AUD: 'AU',
+}
+
+/** サイト(US/UK/AU) → Sell APIの marketplaceId(EBAY_US/EBAY_GB/EBAY_AU) */
+export function marketplaceIdForSite(siteId: string | null | undefined): string {
+  const key = siteKeyFromEbaySiteName(siteId)
+  return key ? EBAY_SITES[key].marketplaceId : EBAY_SITES.US.marketplaceId
 }
 
 export function siteKeyFromEbaySiteName(value: string | null | undefined): EbaySiteKey | null {

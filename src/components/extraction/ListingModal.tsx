@@ -46,6 +46,14 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
     initialSeller?.ebay_connected_at ? 'ebay' : 'manual',
   )
   const [ebayPolicies, setEbayPolicies] = useState<EbayPolicySet | null>(null)
+  // ユーザー報告(2026-10-19): UK/AUに出品するセラーで、UK用のポリシーが
+  // 選択肢に出てこなかった。ビジネスポリシーはマーケットプレイスごとに
+  // 別物なので、サイトごとに保持して、サイトごとに選べるようにする。
+  const [policiesBySite, setPoliciesBySite] = useState<Record<string, EbayPolicySet>>({})
+  const [policySiteErrors, setPolicySiteErrors] = useState<Record<string, string>>({})
+  const [profilesBySite, setProfilesBySite] = useState<
+    Record<string, { shipping: string; payment: string; return: string }>
+  >({})
   const [loadingPolicies, setLoadingPolicies] = useState(Boolean(initialSeller?.ebay_connected_at))
   const [policyError, setPolicyError] = useState('')
   const [products, setProducts] = useState<Product[]>([])
@@ -136,8 +144,30 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
       })
       const json = await response.json()
       if (!response.ok) throw new Error(json.error ?? 'eBayポリシーの取得に失敗しました')
-      const policies = json as EbayPolicySet
+      const policies = json as EbayPolicySet & {
+        bySite?: Record<string, EbayPolicySet>
+        siteErrors?: Record<string, string>
+      }
       setEbayPolicies(policies)
+      const bySite = policies.bySite ?? {}
+      setPoliciesBySite(bySite)
+      setPolicySiteErrors(policies.siteErrors ?? {})
+      // サイトごとの選択を、取得できたポリシーに合わせて埋める
+      setProfilesBySite((current) => {
+        const next = { ...current }
+        for (const [site, set] of Object.entries(bySite)) {
+          const chosen = next[site]
+          next[site] = {
+            shipping: set.fulfillment.some((p) => p.name === chosen?.shipping)
+              ? chosen!.shipping : set.fulfillment[0]?.name ?? '',
+            payment: set.payment.some((p) => p.name === chosen?.payment)
+              ? chosen!.payment : set.payment[0]?.name ?? '',
+            return: set.return.some((p) => p.name === chosen?.return)
+              ? chosen!.return : set.return[0]?.name ?? '',
+          }
+        }
+        return next
+      })
       const missingPolicyTypes = [
         policies.fulfillment.length === 0 ? '配送' : '',
         policies.payment.length === 0 ? '支払' : '',
@@ -261,6 +291,18 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
       params.set('shippingProfile', shippingProfile.trim())
       params.set('paymentProfile', paymentProfile.trim())
       params.set('returnProfile', returnProfile.trim())
+      // 出品先が複数のときは、サイトごとに選んだポリシーを渡す。
+      // ビジネスポリシーはマーケットプレイスごとに別物なので、
+      // 1つの名前を全サイトのCSVに書くと、そのサイトに存在しない
+      // ポリシー名が入ってしまう(ユーザー報告 2026-10-19)。
+      if (policyMode === 'ebay' && csvSites.length > 1) {
+        const perSite: Record<string, { shipping: string; payment: string; return: string }> = {}
+        for (const site of csvSites) {
+          const chosen = profilesBySite[site]
+          if (chosen?.shipping && chosen.payment && chosen.return) perSite[site] = chosen
+        }
+        if (Object.keys(perSite).length > 0) params.set('policiesBySite', JSON.stringify(perSite))
+      }
       if (kind === 'listing') {
         params.set('formatVersion', 'ebay-upload-42-v1')
         params.set('sites', csvSites.join(','))
@@ -503,7 +545,61 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
 
           <section>
             <h3 className="text-lg font-bold mb-3">出品ポリシー選択</h3>
-            <div className="grid md:grid-cols-3 gap-4">
+            {/* ユーザー報告(2026-10-19): UK/AUに出品するセラーでUK用のポリシーが
+                出てこなかった。ビジネスポリシーはマーケットプレイスごとに別物なので、
+                出品先サイトが複数あるときはサイトごとに選ぶ。 */}
+            {policyMode === 'ebay' && csvSites.length > 1 ? (
+              <div className="space-y-4">
+                {csvSites.map((site) => {
+                  const set = policiesBySite[site]
+                  const chosen = profilesBySite[site]
+                  const update = (field: 'shipping' | 'payment' | 'return', value: string) =>
+                    setProfilesBySite((current) => ({
+                      ...current,
+                      [site]: { ...(current[site] ?? { shipping: '', payment: '', return: '' }), [field]: value },
+                    }))
+                  return (
+                    <div key={site} className="rounded-lg border p-3">
+                      <p className="mb-2 text-sm font-medium text-gray-700">{site} 向け</p>
+                      {policySiteErrors[site] && (
+                        <p className="mb-2 text-xs text-red-600">
+                          {site}のポリシーを取得できませんでした: {policySiteErrors[site]}
+                        </p>
+                      )}
+                      {!set && !policySiteErrors[site] && (
+                        <p className="mb-2 text-xs text-amber-700">
+                          {site}のポリシーがまだありません。「eBayと再同期」を押してください。
+                        </p>
+                      )}
+                      <div className="grid gap-3 md:grid-cols-3">
+                        {([
+                          ['shipping', '配送ポリシー', set?.fulfillment ?? []],
+                          ['payment', '支払ポリシー', set?.payment ?? []],
+                          ['return', '返品ポリシー', set?.return ?? []],
+                        ] as const).map(([field, label, options]) => (
+                          <label key={field}>
+                            <span className="text-sm text-gray-500">{label}</span>
+                            <select
+                              aria-label={`${site} ${label}`}
+                              value={chosen?.[field] ?? ''}
+                              onChange={(event) => update(field, event.target.value)}
+                              disabled={loadingPolicies || options.length === 0}
+                              className="mt-1 w-full rounded-lg border px-3 py-3 disabled:bg-gray-50"
+                            >
+                              {options.length === 0 && <option value="">（取得できていません）</option>}
+                              {options.map((policy) => (
+                                <option key={policy.id} value={policy.name}>{policy.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+<div className="grid md:grid-cols-3 gap-4">
               <label>
                 <span className="text-sm text-gray-500">配送ポリシー</span>
                 {policyMode === 'ebay' ? (
@@ -574,6 +670,7 @@ export default function ListingModal({ extraction, sellers, onClose }: Props) {
                 )}
               </label>
             </div>
+            )}
             {policyMode === 'ebay' && !loadingPolicies && ebayPolicies && (
               <p className="text-xs text-gray-500 mt-2">
                 最終同期: {new Date(ebayPolicies.syncedAt).toLocaleString('ja-JP')}

@@ -15,6 +15,26 @@ import { fetchJpyRate } from '@/lib/exchange-rate'
 import { getCategoryItemSpecificsNames } from '@/lib/ebay-taxonomy'
 import type { Product } from '@/types/database'
 
+interface SitePolicies { shipping: string; payment: string; return: string }
+
+/** サイトごとのポリシー指定。読めない値は無視して、従来の単一指定に落とす */
+function parsePoliciesBySite(value: string | null): Record<string, SitePolicies> {
+  if (!value) return {}
+  try {
+    const parsed = JSON.parse(value) as Record<string, Partial<SitePolicies>>
+    const result: Record<string, SitePolicies> = {}
+    for (const [site, policies] of Object.entries(parsed)) {
+      const shipping = policies?.shipping?.trim()
+      const payment = policies?.payment?.trim()
+      const ret = policies?.return?.trim()
+      if (shipping && payment && ret) result[site.toUpperCase()] = { shipping, payment, return: ret }
+    }
+    return result
+  } catch {
+    return {}
+  }
+}
+
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -31,6 +51,10 @@ export async function GET(req: NextRequest) {
   // ユーザー要望: US/UK/AU 向けに、SiteID・Currency・StartPrice を切り替えた
   // CSVをそれぞれ出力する(sites=US,UK,AU)。単一サイトなら従来どおりCSVを直接返す。
   const siteKeys = normalizeSiteKeys(searchParams.get('sites'))
+  // ユーザー報告(2026-10-19): ビジネスポリシーはマーケットプレイスごとに
+  // 別物なので、1つの名前を全サイトのCSVに書くと、そのサイトに存在しない
+  // ポリシー名が入ってしまう。サイトごとの指定があればそれを使う。
+  const policiesBySite = parsePoliciesBySite(searchParams.get('policiesBySite'))
 
   if (!extractionId || (!sellerAccountId && !requestedSellerId)) {
     return NextResponse.json({ error: '抽出IDと出品セラーIDが必要です' }, { status: 400 })
@@ -173,9 +197,9 @@ export async function GET(req: NextRequest) {
       defaultConditionId,
       htmlTemplate,
       sellerId: seller.seller_id,
-      paymentProfileName: paymentProfile,
-      returnProfileName: returnProfile,
-      shippingProfileName: shippingProfile,
+      paymentProfileName: policiesBySite[key]?.payment ?? paymentProfile,
+      returnProfileName: policiesBySite[key]?.return ?? returnProfile,
+      shippingProfileName: policiesBySite[key]?.shipping ?? shippingProfile,
       // USは従来どおり換算しない(出品価格をそのまま使う)
       site: key === 'US' ? undefined : {
         siteId: site.siteId,
