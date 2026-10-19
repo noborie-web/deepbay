@@ -34,7 +34,7 @@ async function fetchOnce(url: string, options: ThrottledFetchOptions): Promise<s
       signal: controller.signal,
     })
     if (res.status === 429 || res.status === 503) throw new RateLimitedError(res.status)
-    if (!res.ok) throw new ScraperError(`HTTP ${res.status}: ${res.statusText}`, options.siteKey, url)
+    if (!res.ok) throw new ScraperError(`HTTP ${res.status}: ${res.statusText}`, options.siteKey, url, res.status)
     return await res.text()
   } finally {
     clearTimeout(timer)
