@@ -2,6 +2,7 @@ import { scrapeUrl } from '@/lib/scrapers'
 import { extractBrandsSafely, generateDescriptionsSafely, translateDescriptionsWithFailures, translateTitlesWithFailures } from '@/lib/translate'
 import { checkTranslatedDescription } from '@/lib/description-translation'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
+import { adjustedJpyRate, loadPricingModel } from '@/lib/inventory-pricing'
 import { calcProfit, DEFAULT_AUTO_PRICING, validateProfitParams } from '@/lib/pricing'
 import { matchesVeroBrandInTitle } from '@/lib/product-exclusion'
 import { buildExtractionName } from '@/lib/extraction-name'
@@ -460,9 +461,17 @@ export async function runScrape(
     const setting: any = bulkEditSetting
 
     // 為替レートは抽出1回につき1度だけ取得する。失敗時は価格未設定で抽出を継続する。
+    //
+    // 本番で確認した不具合(2026-10-20): 抽出だけレート調整(rate_adjustment_jpy)を
+    // 適用していなかった。仕入先チェックとCSV出力は adjustedJpyRate を通すので、
+    // 初回の仕入先チェックで「実際には起きていない為替変動」とみなされ、
+    // 全商品が約3.3%値上げされていた(US出品1,230件が比率1.033で一致)。
+    // 同じ調整を通して、出品時の価格と記録するレートをそろえる。
     let jpyPerUsd: number | null = null
     try {
-      jpyPerUsd = (await fetchUsdJpyRate()).rate
+      const raw = (await fetchUsdJpyRate()).rate
+      const pricingModel = await loadPricingModel(supabase, userId)
+      jpyPerUsd = pricingModel ? adjustedJpyRate(pricingModel, 'USD', raw, raw) : raw
     } catch (error) {
       console.warn('Exchange rate fetch failed; ebay_price remains unset:', error)
     }
