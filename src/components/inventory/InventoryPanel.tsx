@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { extractSourceLookupKeys } from '@/lib/inventory'
 import { RUN_TYPE_LABELS, availableRunCsvKinds, summarizeRun } from '@/lib/inventory-run-csv'
 import { formatSlotHours, slotsForRunCount } from '@/lib/inventory-schedule'
+import { itemIdsToRun, selectByPastedIds } from '@/lib/action-selection'
 
 interface InventoryRun {
   id: string; run_type: string; status: string
@@ -453,7 +454,16 @@ export default function InventoryPanel({ listings: initialListings, listingCount
 
   // アクション確認モーダル
   interface ActionPreviewItem { ebay_item_id: string; title?: string; old_price?: number | null; new_price?: number | null; diff?: number; new_source_url?: string | null }
-  const [actionModal, setActionModal] = useState<{ type: 'delist' | 'revise_price' | 'stack'; items: ActionPreviewItem[]; running: boolean } | null>(null)
+  // ユーザー要望(2026-10-20): プレビューの全件ではなく、確認した分だけ実行したい。
+  // 価格改定は対象が2,000件規模になることがあり、まとめて反映すると
+  // 仕入値が動いていない商品まで値上げしてしまう。
+  const [actionModal, setActionModal] = useState<{
+    type: 'delist' | 'revise_price' | 'stack'
+    items: ActionPreviewItem[]
+    selected: Set<string>
+    running: boolean
+  } | null>(null)
+  const [actionFilter, setActionFilter] = useState('')
 
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const showMsg = (type: 'success' | 'error', text: string) => {
@@ -1128,7 +1138,12 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     const res = await fetch('/api/inventory/actions/delist')
     if (!res.ok) { showMsg('error', '取得失敗'); return }
     const d = await res.json()
-    setActionModal({ type: 'delist', items: d.items ?? [], running: false })
+    setActionModal({
+      type: 'delist',
+      items: d.items ?? [],
+      selected: new Set<string>(((d.items ?? []) as ActionPreviewItem[]).map((i) => i.ebay_item_id)),
+      running: false,
+    })
   }
 
   // アクション: 価格改定プレビュー
@@ -1136,7 +1151,12 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     const res = await fetch('/api/inventory/actions/revise-price')
     if (!res.ok) { showMsg('error', '取得失敗'); return }
     const d = await res.json()
-    setActionModal({ type: 'revise_price', items: d.items ?? [], running: false })
+    setActionModal({
+      type: 'revise_price',
+      items: d.items ?? [],
+      selected: new Set<string>(((d.items ?? []) as ActionPreviewItem[]).map((i) => i.ebay_item_id)),
+      running: false,
+    })
   }
 
   // アクション: 積み上げプレビュー
@@ -1144,7 +1164,12 @@ export default function InventoryPanel({ listings: initialListings, listingCount
     const res = await fetch('/api/inventory/actions/stack')
     if (!res.ok) { showMsg('error', '取得失敗'); return }
     const d = await res.json()
-    setActionModal({ type: 'stack', items: d.items ?? [], running: false })
+    setActionModal({
+      type: 'stack',
+      items: d.items ?? [],
+      selected: new Set<string>(((d.items ?? []) as ActionPreviewItem[]).map((i) => i.ebay_item_id)),
+      running: false,
+    })
   }
 
   // アクション: 実行
@@ -1156,7 +1181,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item_ids: actionModal.items.map(item => item.ebay_item_id) }),
+        body: JSON.stringify({
+          item_ids: itemIdsToRun(actionModal.items.map(item => item.ebay_item_id), actionModal.selected),
+        }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? '実行失敗')
@@ -2482,11 +2509,50 @@ export default function InventoryPanel({ listings: initialListings, listingCount
             <p className="text-xs text-red-600 mb-3 font-medium">
               ⚠️ 実行するとeBayへ実際に変更が送信されます。内容を確認してから実行してください。
             </p>
-            <p className="text-xs text-gray-500 mb-3">対象: {actionModal.items.length}件</p>
+            <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-gray-500">
+                対象 {actionModal.items.length}件 / 実行 <strong className="text-gray-900">{actionModal.selected.size}</strong>件
+              </span>
+              {/* ItemIDを貼って対象を絞れるようにする(確認した分だけ実行するため) */}
+              <input
+                value={actionFilter}
+                onChange={(e) => setActionFilter(e.target.value)}
+                placeholder="アイテムIDで絞る（カンマ・改行区切り）"
+                aria-label="アイテムIDで絞る"
+                className="w-72 rounded border px-2 py-1"
+              />
+              <button
+                type="button"
+                onClick={() => setActionModal(prev => prev ? {
+                  ...prev,
+                  selected: selectByPastedIds(prev.items.map(i => i.ebay_item_id), actionFilter),
+                } : null)}
+                className="rounded border border-blue-400 px-2 py-1 text-blue-700 hover:bg-blue-50"
+              >
+                このIDだけ選ぶ
+              </button>
+              <button
+                type="button"
+                onClick={() => setActionModal(prev => prev ? {
+                  ...prev, selected: new Set(prev.items.map(i => i.ebay_item_id)),
+                } : null)}
+                className="text-blue-600 hover:underline"
+              >
+                すべて選ぶ
+              </button>
+              <button
+                type="button"
+                onClick={() => setActionModal(prev => prev ? { ...prev, selected: new Set<string>() } : null)}
+                className="text-blue-600 hover:underline"
+              >
+                選択を外す
+              </button>
+            </div>
             <div className="overflow-y-auto flex-1 border rounded mb-4">
               <table className="w-full text-xs">
                 <thead className="bg-gray-50 sticky top-0">
                   <tr>
+                    <th className="w-8 px-2 py-2"></th>
                     <th className="text-left px-3 py-2 font-medium text-gray-500">アイテムID</th>
                     <th className="text-left px-3 py-2 font-medium text-gray-500">タイトル</th>
                     {actionModal.type === 'revise_price' && <>
@@ -2499,9 +2565,23 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                 </thead>
                 <tbody>
                   {actionModal.items.length === 0 ? (
-                    <tr><td colSpan={5} className="px-3 py-6 text-center text-gray-400">対象商品がありません</td></tr>
+                    <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">対象商品がありません</td></tr>
                   ) : actionModal.items.map(item => (
                     <tr key={item.ebay_item_id} className="border-t">
+                      <td className="w-8 px-2 py-2">
+                        <input
+                          type="checkbox"
+                          aria-label={`${item.ebay_item_id}を実行対象にする`}
+                          checked={actionModal.selected.has(item.ebay_item_id)}
+                          onChange={() => setActionModal(prev => {
+                            if (!prev) return prev
+                            const next = new Set(prev.selected)
+                            if (next.has(item.ebay_item_id)) next.delete(item.ebay_item_id)
+                            else next.add(item.ebay_item_id)
+                            return { ...prev, selected: next }
+                          })}
+                        />
+                      </td>
                       <td className="px-3 py-2 text-blue-600">{item.ebay_item_id}</td>
                       <td className="px-3 py-2 text-gray-700 max-w-[200px] truncate">{item.title ?? '—'}</td>
                       {actionModal.type === 'revise_price' && <>
@@ -2520,9 +2600,9 @@ export default function InventoryPanel({ listings: initialListings, listingCount
               </table>
             </div>
             <div className="flex gap-3 justify-end">
-              <button onClick={handleRunAction} disabled={actionModal.running || actionModal.items.length === 0}
+              <button onClick={handleRunAction} disabled={actionModal.running || actionModal.selected.size === 0}
                 className="px-4 py-2 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:opacity-50">
-                {actionModal.running ? '実行中...' : `${actionModal.items.length}件を実行する`}
+                {actionModal.running ? '実行中...' : `${actionModal.selected.size}件を実行する`}
               </button>
               <button onClick={() => setActionModal(null)} disabled={actionModal.running}
                 className="px-4 py-2 border text-sm rounded hover:bg-gray-50 disabled:opacity-50">
