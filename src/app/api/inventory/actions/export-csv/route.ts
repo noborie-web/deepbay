@@ -5,6 +5,7 @@ import { buildEndCsvFiles, buildReviseCsvFiles } from '@/lib/inventory-action-cs
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricing'
+import { selectByIds } from '@/lib/db-chunk'
 
 // ユーザー要望(2026-09-27): APIの呼び出し上限に達すると価格改定も取り下げも
 // 実行できない。CSVを出してeBay(File Exchange)にアップロードすれば、
@@ -101,11 +102,12 @@ export async function GET(req: NextRequest) {
   const productIds = (listings ?? []).map(l => l.product_id as string)
   const productMap = new Map<string, { ebay_price: number | null; pricing_jpy_per_usd: number | null }>()
   if (productIds.length > 0) {
-    const { data: products } = await db
-      .from('products')
-      .select('id, ebay_price, pricing_jpy_per_usd')
-      .in('id', productIds)
-    for (const p of products ?? []) productMap.set(p.id, p)
+    // 1,000件超を .in(...) に渡すとURLが長すぎて400になる。分割して引き、
+    // エラーは投げる(握りつぶすと「対象0件」と区別がつかない)
+    const products = await selectByIds<{ id: string; ebay_price: number | null; pricing_jpy_per_usd: number | null }>(
+      db, 'products', 'id, ebay_price, pricing_jpy_per_usd', productIds,
+    )
+    for (const p of products) productMap.set(p.id, p)
   }
 
   const pricingModel = await loadPricingModel(db, user.id)

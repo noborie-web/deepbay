@@ -9,6 +9,7 @@ import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricin
 import { currencyForSite } from '@/lib/ebay-sites'
 import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
+import { selectByIds } from '@/lib/db-chunk'
 
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
@@ -105,8 +106,12 @@ export async function POST(req: NextRequest) {
   const productIds = (listings ?? []).map(l => l.product_id as string)
   const productMap = new Map<string, { ebay_price: number | null; pricing_jpy_per_usd: number | null }>()
   if (productIds.length > 0) {
-    const { data: products } = await db.from('products').select('id, ebay_price, pricing_jpy_per_usd').in('id', productIds)
-    for (const p of products ?? []) productMap.set(p.id, p)
+    // 1,000件超を .in(...) に渡すとURLが長すぎて400になる。分割して引き、
+    // エラーは投げる(握りつぶすと「対象0件」と区別がつかない)
+    const products = await selectByIds<{ id: string; ebay_price: number | null; pricing_jpy_per_usd: number | null }>(
+      db, 'products', 'id, ebay_price, pricing_jpy_per_usd', productIds,
+    )
+    for (const p of products) productMap.set(p.id, p)
   }
   // UK/AU出品はUSD価格を出品通貨へ換算する(維持している利益額はそのまま)
   const pricingModel = await loadPricingModel(db, user.id)

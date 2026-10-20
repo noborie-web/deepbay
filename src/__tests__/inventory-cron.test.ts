@@ -26,13 +26,18 @@ function listingQueryMock() {
   // 件数照会(select(_, {count:'exact', head:true}))のときは、セラーごとの
   // 出品件数を順に返す(同期の予算配分の検証用)。
   let counting = false
-  for (const method of ['select', 'eq', 'not', 'lte', 'is']) {
+  // 価格改定は1000行の上限を避けるため order+range でページ送りする(#db-chunk)
+  for (const method of ['select', 'eq', 'not', 'lte', 'is', 'order']) {
     chain[method] = vi.fn((...args: unknown[]) => {
       mockListingQueryCalls.push([method, ...args])
       if (method === 'select' && (args[1] as { head?: boolean } | undefined)?.head) counting = true
       return chain
     })
   }
+  chain.range = vi.fn((...args: unknown[]) => {
+    mockListingQueryCalls.push(['range', ...args])
+    return Promise.resolve({ data: [], error: null })
+  })
   chain.then = (resolve: (v: unknown) => void) => resolve(
     counting
       ? { data: null, error: null, count: mockSellerListingCounts.shift() ?? 0 }

@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { flushEbayCallCounts } from '@/lib/ebay-call-counter'
 import { endItem, reviseInventoryStatusBatch, addFixedPriceItem } from '@/lib/ebay-actions'
+import { selectAllRows, selectByIds } from '@/lib/db-chunk'
 import { resolveInventoryAccessToken, resolveSellerAccountAccessToken } from '@/lib/inventory-auth'
 import { listInventorySellerAccounts, sellerAccountLabel, type InventorySellerAccount } from '@/lib/inventory-seller-accounts'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
@@ -395,23 +396,38 @@ export async function GET(req: NextRequest) {
 
     // 価格改定
     if (settings.auto_revise_price && revisePriceThisSlot) {
-      const { data: listings } = await db
+      // 本番で確認した不具合(2026-10-20): 価格改定が一度も実行されていなかった。
+      // 出品2,632件のうち2,091件が対象なのに、記録は毎回 total: 0。
+      // 原因は下の2つ。どちらも「黙って0件になる」形だったので気づけなかった。
+      //   1. 出品の取得に上限を付けておらず、PostgRESTの既定(1000行)で
+      //      打ち切られていた
+      //   2. products を `.in('id', 1000件超)` で引いてURLが長すぎて400になり、
+      //      そのerrorを見ていなかった。商品が引けないと「目標価格が無い」と
+      //      みなされ、全件が黙って対象から外れる
+      type ReviseListing = {
+        ebay_item_id: string; current_price: number | null; product_id: string | null
+        seller_account_id: string | null; site_id: string | null; currency: string | null
+      }
+      const listings = await selectAllRows<ReviseListing>(() => db
         .from('inventory_active_listings')
         .select('ebay_item_id, current_price, product_id, seller_account_id, site_id, currency')
         .eq('user_id', userId)
         .not('product_id', 'is', null)
+        .order('ebay_item_id'))
 
-      const productIds = (listings ?? []).map(l => l.product_id as string)
+      const productIds = listings.map(l => l.product_id as string)
       const productMap = new Map<string, { ebay_price: number | null; pricing_jpy_per_usd: number | null }>()
       if (productIds.length > 0) {
-        const { data: products } = await db.from('products').select('id, ebay_price, pricing_jpy_per_usd').in('id', productIds)
-        for (const p of products ?? []) productMap.set(p.id, p)
+        const products = await selectByIds<{ id: string; ebay_price: number | null; pricing_jpy_per_usd: number | null }>(
+          db, 'products', 'id, ebay_price, pricing_jpy_per_usd', productIds,
+        )
+        for (const p of products) productMap.set(p.id, p)
       }
       // UK/AU出品はUSD価格を出品通貨へ換算して反映する(維持した利益額はそのまま)
       // 関税率を米国だけに適用する設定・為替の調整を、CSV出力と同じく効かせる
       const pricingModel = await loadPricingModel(db, userId)
       const rates = await loadJpyRates(
-        (listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')),
+        listings.map(l => ((l.currency as string | null) ?? 'USD')),
         (currency, rate, jpyPerUsd) => adjustedJpyRate(pricingModel, currency, rate, jpyPerUsd),
       )
 
@@ -427,7 +443,7 @@ export async function GET(req: NextRequest) {
       let reviseSkippedNoRate = 0
       let reviseGuarded = 0
       let reviseSkippedUnknownSeller = 0
-      for (const l of listings ?? []) {
+      for (const l of listings) {
         const p = productMap.get(l.product_id!)
         const currency = ((l.currency as string | null) ?? 'USD').toUpperCase()
         const decision = decideSiteRevisePrice({
