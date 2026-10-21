@@ -53,6 +53,8 @@ export interface YahooAuctionListingItem {
   seller?: { userId?: string }
   // 一覧にも商品カテゴリ名が入っている(抽出リスト名の自動入力に使う)
   category?: { id?: number; name?: string }
+  // 即決(定額)かどうか。即決価格が無いものは落札しないと買えない
+  isFixedPrice?: boolean
   // ユーザー報告(2026-10-19): ヤフオクのカテゴリ一覧には Yahoo!フリマ の出品が
   // 混ざって返る(実測: ファミコンのカテゴリは50件中43件がフリマだった)。
   // フリマの商品は商品ページのURLが別(paypayfleamarket.yahoo.co.jp/item/{id})
@@ -117,6 +119,23 @@ export function yahooAuctionTaxInPrice(item: any): number | null {
     if (typeof value === 'number' && value > 0) return value
   }
   return null
+}
+
+/**
+ * 仕入先の販売形式。即決価格(bidorbuy)があれば定額で買える。
+ *
+ * ユーザー報告(2026-10-20): 即決で仕入れるつもりの商品が、入札が入って
+ * 即決価格の無いオークションに変わっていた(g1248425199: 開始¥1,000 →
+ * 56件の入札で¥39,500、即決は消滅)。eBayでは$176で売れたのに仕入値は
+ * 約$258まで上がり、しかも落札できる保証が無い。
+ * ヤフオクは即決価格付きでも、入札が入ると即決が消えることがある。
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function yahooAuctionPriceType(item: any): 'fixed' | 'auction' {
+  const buyNow = [item?.taxinBidorbuy, item?.bidorbuy]
+    .map((value) => (typeof value === 'number' ? value : Number(value)))
+    .find((value) => Number.isFinite(value) && value > 0)
+  return buyNow ? 'fixed' : 'auction'
 }
 
 export function yahooAuctionItemCondition(code: string | undefined): string | null {
@@ -240,6 +259,10 @@ export class YahooAuctionScraper extends BaseScraper {
             category: item.category?.name?.trim() || null,
             // 抽出リスト名を決めるのに使う(保存はしない)
             categoryPath: searchData.categoryPath.length > 0 ? searchData.categoryPath : undefined,
+            // 即決で買えるか。フリマは常に定額
+            priceType: isFlea || item.isFixedPrice === true || (item.buyNowPrice ?? 0) > 0
+              ? 'fixed'
+              : 'auction',
             sellerRatingCount: null,
             shippingDays: null,
             sourceUpdatedAt: null,
@@ -605,6 +628,8 @@ export class YahooAuctionScraper extends BaseScraper {
         sourceUpdatedAt,
         availability,
         sellerUrl,
+        // 即決価格が無ければ落札しないと買えない。無在庫では仕入れられない
+        priceType: yahooAuctionPriceType(nextItem),
       }
     }
 

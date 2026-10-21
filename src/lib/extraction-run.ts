@@ -705,6 +705,13 @@ export async function runScrape(
         extraction_id: extractionId,
         source_url: scraped.sourceUrl,
         source_site: scraped.sourceSite,
+        // ユーザー報告(2026-10-20): 仕入先の販売形式を記録していなかったため、
+        // 即決で買えないオークションが混ざっても気づけなかった
+        // (ヤフオクの全3,125件が既定値 fixed のままだった)。
+        ...(() => {
+          const priceType = (scraped as { priceType?: 'fixed' | 'auction' }).priceType
+          return priceType ? { price_type: priceType } : {}
+        })(),
         source_item_id: scraped.sourceItemId,
         original_title: scraped.title,
         original_price: scraped.price,

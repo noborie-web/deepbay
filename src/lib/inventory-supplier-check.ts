@@ -143,6 +143,8 @@ export interface SupplierCheckResult {
   unverified_delisted: number
   // 仕入値が急落(30%超)したため価格追従を止めた件数(取り下げはしない)
   price_collapsed: number
+  // 即決価格が消えて落札しないと買えなくなった件数(売り切れと同じ扱い)
+  auction_only: number
   // 1商品ごとの結果(実行履歴のCSV出力用)
   items: SupplierCheckItemDetail[]
 }
@@ -150,7 +152,12 @@ export interface SupplierCheckResult {
 // ユーザー要望(2026-10-08): 仕入値の急落(30%超)は別商品への差し替えの疑いが
 // あるが、取り下げはタイトルが変わった場合だけにする。急落は価格追従を止める
 // だけなので、画面で気づけるよう差分の種類として記録する。
-export type SupplierDiffKind = 'title' | 'price' | 'reserved' | 'title_replaced' | 'price_collapsed'
+// ユーザー報告(2026-10-20): 即決で仕入れるつもりの商品が、入札が入って
+// 即決価格の無いオークションに変わっていた。eBayでは$176で売れたのに
+// 仕入値は約$258まで上がり、しかも落札できる保証が無い。
+// 落札しないと買えない状態は、無在庫では仕入れられないのと同じ。
+export type SupplierDiffKind =
+  | 'title' | 'price' | 'reserved' | 'title_replaced' | 'price_collapsed' | 'auction_only'
 
 // ユーザー要望: メルカリでは購入者に取り置きするためタイトルを
 // 「〇〇様専用」に変更する出品者がいる。この場合は他の人は買えないので
@@ -277,6 +284,7 @@ export async function checkSupplierListings(
     title_changed_delisted: 0,
     unverified_delisted: 0,
     price_collapsed: 0,
+    auction_only: 0,
     items: [],
   }
 
@@ -470,7 +478,10 @@ export async function checkSupplierListings(
       result.no_supplier += 1
     } else if (product?.source_site === 'amazon' || (sourceUrl && findScraper(sourceUrl))) {
       try {
-        let scraped: { availability?: string; price?: number | null; title?: string | null } | undefined
+        let scraped: {
+          availability?: string; price?: number | null; title?: string | null
+          priceType?: 'fixed' | 'auction'
+        } | undefined
         if (product?.source_site === 'amazon') {
           const asin = asinFromSourceUrl(sourceUrl)
           const status = asin ? amazonStatuses.get(asin) : undefined
@@ -499,6 +510,13 @@ export async function checkSupplierListings(
         if (scraped?.availability === 'sold_out') {
           outcome = 'unavailable'
           quantity = 0
+        } else if (scraped?.priceType === 'auction') {
+          // 即決価格が無い = 落札しないと買えない。無在庫では仕入れられないので
+          // 売り切れと同じ扱いにする(ヤフオクは入札が入ると即決が消えることがある)
+          supplierDiff = [...(supplierDiff ?? []), 'auction_only']
+          outcome = 'unavailable'
+          quantity = 0
+          result.auction_only += 1
         } else if (supplierDiff?.includes('reserved')) {
           // 「〇〇様専用」等の取り置き: 他の人は買えないので在庫切れと同じ扱い
           outcome = 'unavailable'
