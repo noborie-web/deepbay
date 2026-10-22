@@ -1,0 +1,179 @@
+{
+  "src/app/(dashboard)/categories/page.tsx": {
+    "ignored_error": 1
+  },
+  "src/app/(dashboard)/extraction/[id]/page.tsx": {
+    "ignored_error": 2,
+    "unbounded_select": 1
+  },
+  "src/app/(dashboard)/extraction/amazon/page.tsx": {
+    "ignored_error": 1
+  },
+  "src/app/(dashboard)/inventory/page.tsx": {
+    "ignored_error": 2,
+    "unbounded_select": 1
+  },
+  "src/app/api/bulk-edit-danger-sellers/route.ts": {
+    "ignored_error": 2
+  },
+  "src/app/api/cron/auto-extraction/route.ts": {
+    "unbounded_select": 1
+  },
+  "src/app/api/cron/inventory-auto/route.ts": {
+    "ignored_error": 6,
+    "unbounded_in": 2,
+    "unbounded_select": 4
+  },
+  "src/app/api/csv/route.ts": {
+    "ignored_error": 3,
+    "unbounded_select": 2
+  },
+  "src/app/api/csv/specifics/route.ts": {
+    "ignored_error": 2,
+    "unbounded_select": 1
+  },
+  "src/app/api/ebay/oauth/callback/route.ts": {
+    "ignored_error": 1
+  },
+  "src/app/api/ebay-categories/route.ts": {
+    "ignored_error": 1,
+    "unbounded_in": 1,
+    "unbounded_select": 3
+  },
+  "src/app/api/extract/amazon/route.ts": {
+    "ignored_error": 1
+  },
+  "src/app/api/extract/route.ts": {
+    "ignored_error": 1
+  },
+  "src/app/api/extraction-status/[id]/route.ts": {
+    "ignored_error": 2,
+    "unbounded_select": 1
+  },
+  "src/app/api/extractions/[id]/generate-descriptions/route.ts": {
+    "ignored_error": 1,
+    "unbounded_select": 1
+  },
+  "src/app/api/extractions/[id]/route.ts": {
+    "ignored_error": 1,
+    "unbounded_in": 2,
+    "unbounded_select": 1
+  },
+  "src/app/api/inventory/actions/delist/route.ts": {
+    "unbounded_in": 1,
+    "unbounded_select": 2
+  },
+  "src/app/api/inventory/actions/export-csv/route.ts": {
+    "ignored_error": 1,
+    "unbounded_select": 3
+  },
+  "src/app/api/inventory/actions/match-suppliers/route.ts": {
+    "unbounded_select": 1
+  },
+  "src/app/api/inventory/actions/recover-products/route.ts": {
+    "ignored_error": 4,
+    "unbounded_select": 2
+  },
+  "src/app/api/inventory/actions/revise-price/route.ts": {
+    "ignored_error": 1,
+    "unbounded_in": 1,
+    "unbounded_select": 2
+  },
+  "src/app/api/inventory/actions/stack/route.ts": {
+    "ignored_error": 6,
+    "unbounded_in": 4,
+    "unbounded_select": 3
+  },
+  "src/app/api/inventory/actions/translate-descriptions/route.ts": {
+    "ignored_error": 3,
+    "unbounded_in": 1,
+    "unbounded_select": 2
+  },
+  "src/app/api/inventory/actions/undo-delist/route.ts": {
+    "ignored_error": 3,
+    "unbounded_in": 1,
+    "unbounded_select": 1
+  },
+  "src/app/api/inventory/api-usage/route.ts": {
+    "unbounded_select": 1
+  },
+  "src/app/api/inventory/csv-listed-status/route.ts": {
+    "unbounded_in": 1,
+    "unbounded_select": 2
+  },
+  "src/app/api/inventory/duplicate-checks/[id]/run/route.ts": {
+    "ignored_error": 3,
+    "unbounded_in": 1,
+    "unbounded_select": 2
+  },
+  "src/app/api/inventory/listings/route.ts": {
+    "unbounded_select": 2
+  },
+  "src/app/api/inventory/lookup/route.ts": {
+    "ignored_error": 1
+  },
+  "src/app/api/inventory/matching/route.ts": {
+    "ignored_error": 1
+  },
+  "src/app/api/inventory/runs/download/route.ts": {
+    "ignored_error": 2,
+    "unbounded_in": 1,
+    "unbounded_select": 2
+  },
+  "src/app/api/inventory/stacking/route.ts": {
+    "ignored_error": 1,
+    "unbounded_in": 1,
+    "unbounded_select": 1
+  },
+  "src/app/api/inventory/upload/route.ts": {
+    "ignored_error": 1,
+    "unbounded_select": 3
+  },
+  "src/app/api/price-tier-presets/route.ts": {
+    "ignored_error": 1
+  },
+  "src/app/api/products/[extractionId]/classify/route.ts": {
+    "ignored_error": 1
+  },
+  "src/app/api/products/[extractionId]/route.ts": {
+    "unbounded_in": 2,
+    "unbounded_select": 2
+  },
+  "src/app/api/seller-accounts/route.ts": {
+    "ignored_error": 4
+  },
+  "src/lib/ebay-taxonomy.ts": {
+    "ignored_error": 1
+  },
+  "src/lib/enrich-details.ts": {
+    "ignored_error": 2
+  },
+  "src/lib/extraction-run.ts": {
+    "ignored_error": 2,
+    "unbounded_select": 2
+  },
+  "src/lib/html-template.ts": {
+    "ignored_error": 2
+  },
+  "src/lib/inventory-pricing.ts": {
+    "ignored_error": 1
+  },
+  "src/lib/inventory-quick-check.ts": {
+    "ignored_error": 2,
+    "unbounded_select": 1
+  },
+  "src/lib/inventory-supplier-check.ts": {
+    "unbounded_in": 3,
+    "ignored_error": 2,
+    "unbounded_select": 3
+  },
+  "src/lib/inventory-sync.ts": {
+    "unbounded_in": 6,
+    "ignored_error": 1,
+    "unbounded_select": 9
+  },
+  "src/lib/product-deletion.ts": {
+    "unbounded_in": 1,
+    "unbounded_select": 1
+  }
+}
