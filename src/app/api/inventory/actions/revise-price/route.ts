@@ -9,7 +9,8 @@ import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricin
 import { currencyForSite } from '@/lib/ebay-sites'
 import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
-import { selectByIds } from '@/lib/db-chunk'
+import { selectAllRows, selectByIds } from '@/lib/db-chunk'
+import { onlyLiveListings } from '@/lib/inventory-listing-filter'
 
 function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
@@ -22,32 +23,41 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const db = admin()
-  const { data: listings } = await db
+  // 本番で確認した不具合と同じ形がプレビューにも残っていた(2026-10-22):
+  //   1. 上限を付けずに引くとPostgRESTの既定(1,000行)で打ち切られる
+  //   2. .in('id', 1,000件超)はURLが長すぎて400になり、errorを見ていないと
+  //      「目標価格が無い」とみなされて全件が黙って対象から外れる
+  // どちらも「黙って0件/少なく見える」ので、実行用と同じ安全な引き方に揃える。
+  type ReviseListing = {
+    ebay_item_id: string; title: string | null; current_price: number | null
+    product_id: string | null; site_id: string | null; currency: string | null
+  }
+  const listings = await selectAllRows<ReviseListing>(() => onlyLiveListings(db
     .from('inventory_active_listings')
     .select('ebay_item_id, title, current_price, product_id, site_id, currency')
     .eq('user_id', user.id)
-    .not('product_id', 'is', null)
+    .not('product_id', 'is', null))
+    .order('ebay_item_id'))
 
-  const productIds = (listings ?? []).map(l => l.product_id as string)
+  const productIds = listings.map(l => l.product_id as string)
   const productMap = new Map<string, { ebay_price: number | null; pricing_jpy_per_usd: number | null }>()
 
   if (productIds.length > 0) {
-    const { data: products } = await db
-      .from('products')
-      .select('id, ebay_price, pricing_jpy_per_usd')
-      .in('id', productIds)
-    for (const p of products ?? []) productMap.set(p.id, p)
+    const products = await selectByIds<{ id: string; ebay_price: number | null; pricing_jpy_per_usd: number | null }>(
+      db, 'products', 'id, ebay_price, pricing_jpy_per_usd', productIds,
+    )
+    for (const p of products) productMap.set(p.id, p)
   }
 
   // UK/AU出品は、実行時と同じ換算(維持した利益額→出品通貨)でプレビューする。
   // ここでUSD価格のまま並べると、実行結果と食い違って確認の意味がなくなる。
   const pricingModel = await loadPricingModel(db, user.id)
   const rates = await loadJpyRates(
-    (listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')),
+    listings.map(l => ((l.currency as string | null) ?? 'USD')),
     (currency, rate, jpyPerUsd) => adjustedJpyRate(pricingModel, currency, rate, jpyPerUsd),
   )
 
-  const items = (listings ?? []).flatMap(l => {
+  const items = listings.flatMap(l => {
     const p = productMap.get(l.product_id!)
     const currency = ((l.currency as string | null) ?? 'USD').toUpperCase()
     const decision = decideSiteRevisePrice({
@@ -93,17 +103,21 @@ export async function POST(req: NextRequest) {
 
   const tokenResolver = await createInventoryTokenResolver(db, user.id, settings ?? {})
 
-  let query = db
-    .from('inventory_active_listings')
-    .select('ebay_item_id, current_price, product_id, seller_account_id, site_id, currency')
-    .eq('user_id', user.id)
-    .not('product_id', 'is', null)
+  type ReviseTarget = {
+    ebay_item_id: string; current_price: number | null; product_id: string | null
+    seller_account_id: string | null; site_id: string | null; currency: string | null
+  }
+  const listings = await selectAllRows<ReviseTarget>(() => {
+    let query = onlyLiveListings(db
+      .from('inventory_active_listings')
+      .select('ebay_item_id, current_price, product_id, seller_account_id, site_id, currency')
+      .eq('user_id', user.id)
+      .not('product_id', 'is', null))
+    if (itemIds) query = query.in('ebay_item_id', itemIds)
+    return query.order('ebay_item_id')
+  })
 
-  if (itemIds) query = query.in('ebay_item_id', itemIds)
-
-  const { data: listings } = await query
-
-  const productIds = (listings ?? []).map(l => l.product_id as string)
+  const productIds = listings.map(l => l.product_id as string)
   const productMap = new Map<string, { ebay_price: number | null; pricing_jpy_per_usd: number | null }>()
   if (productIds.length > 0) {
     // 1,000件超を .in(...) に渡すとURLが長すぎて400になる。分割して引き、
@@ -116,7 +130,7 @@ export async function POST(req: NextRequest) {
   // UK/AU出品はUSD価格を出品通貨へ換算する(維持している利益額はそのまま)
   const pricingModel = await loadPricingModel(db, user.id)
   const rates = await loadJpyRates(
-    (listings ?? []).map(l => ((l.currency as string | null) ?? 'USD')),
+    listings.map(l => ((l.currency as string | null) ?? 'USD')),
     (currency, rate, jpyPerUsd) => adjustedJpyRate(pricingModel, currency, rate, jpyPerUsd),
   )
 
@@ -126,7 +140,7 @@ export async function POST(req: NextRequest) {
   let skippedNoRate = 0
   let guarded = 0
   let skippedUnknownSeller = 0
-  for (const l of listings ?? []) {
+  for (const l of listings) {
     const p = productMap.get(l.product_id!)
     const currency = ((l.currency as string | null) ?? 'USD').toUpperCase()
     const decision = decideSiteRevisePrice({

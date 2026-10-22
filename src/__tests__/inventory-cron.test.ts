@@ -27,7 +27,7 @@ function listingQueryMock() {
   // 出品件数を順に返す(同期の予算配分の検証用)。
   let counting = false
   // 価格改定は1000行の上限を避けるため order+range でページ送りする(#db-chunk)
-  for (const method of ['select', 'eq', 'not', 'lte', 'is', 'order']) {
+  for (const method of ['select', 'eq', 'not', 'lte', 'is', 'or', 'order']) {
     chain[method] = vi.fn((...args: unknown[]) => {
       mockListingQueryCalls.push([method, ...args])
       if (method === 'select' && (args[1] as { head?: boolean } | undefined)?.head) counting = true
@@ -334,6 +334,28 @@ describe('GET /api/cron/inventory-auto', () => {
       const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=21', { headers: { authorization: 'Bearer cron-secret' } })
       await GET(req)
       expect(mockRunInsert.mock.calls.some(c => c[0].run_type === 'auto_revise_price')).toBe(true)
+    })
+
+    // 本番で確認した無駄(2026-10-22): 対象抽出に在庫数・取り下げ済みの絞り込みが
+    // 無く、既に取り下げた373件にもReviseを送っていた。240秒の時間予算を食って
+    // 本来直すべき出品が翌日に持ち越されるので、絞り込みを固定する。
+    it('価格改定の対象は取り下げ済み・在庫0を除いた生きている出品だけ', async () => {
+      const { GET } = await import('@/app/api/cron/inventory-auto/route')
+      mockSettings = [{ ...mockSettings[0], daily_run_count: 2, auto_revise_price: true, revise_price_schedule: 'every' }]
+      const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=21', { headers: { authorization: 'Bearer cron-secret' } })
+      await GET(req)
+      // 同じルートの取り下げ処理・仕入先チェックも delisted_at / quantity を
+      // 絞り込むため、「どこかで呼ばれた」では検証にならない。価格改定の
+      // クエリ(seller_account_idを含むselect)に続く呼び出しだけを見る。
+      const reviseSelect = 'ebay_item_id, current_price, product_id, seller_account_id, site_id, currency'
+      const start = mockListingQueryCalls.findIndex(c => c[0] === 'select' && c[1] === reviseSelect)
+      expect(start).toBeGreaterThanOrEqual(0)
+      const after = mockListingQueryCalls.slice(start + 1)
+      const end = after.findIndex(c => c[0] === 'select')
+      const reviseQuery = end === -1 ? after : after.slice(0, end)
+      expect(reviseQuery).toContainEqual(['is', 'delisted_at', null])
+      // 在庫数が不明(null)の出品はeBayに生きているので残す
+      expect(reviseQuery).toContainEqual(['or', 'quantity.gt.0,quantity.is.null'])
     })
   })
 
