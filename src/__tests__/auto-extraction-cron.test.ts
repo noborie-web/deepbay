@@ -121,6 +121,12 @@ function makeDatabase(options: {
           return query
         },
         eq(column: string, value: unknown) { state.filters.push([column, value]); return query },
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        order() { return query },
+        range(from: number) {
+          // 2ページ目以降は空を返して打ち切る(selectAllRowsの終了条件)
+          return from === 0 ? finish() : Promise.resolve({ data: [], error: null })
+        },
         single: finish,
         maybeSingle: finish,
         then(onFulfilled: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) {

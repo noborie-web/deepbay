@@ -64,3 +64,26 @@ export async function selectAllRows<Row>(
     if (page.length < pageSize) return rows
   }
 }
+
+/**
+ * 絞り込み条件を付けたまま、IDの配列で分割して引く。
+ *
+ * selectByIds はテーブルと列しか渡せないので、`.eq('user_id', ...)` のような
+ * 条件が要る場所では使えず、結局その場で `.in(...)` を書くことになっていた
+ * (在庫管理の積み上げなど)。条件はクエリを組み立てる関数として受け取る。
+ */
+export async function selectInChunks<Row>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  buildQuery: () => any,
+  idColumn: string,
+  ids: string[],
+): Promise<Row[]> {
+  const rows: Row[] = []
+  for (const chunk of chunkIds(ids)) {
+    const { data, error } = await buildQuery().in(idColumn, chunk)
+    // エラーは必ず投げる。握りつぶすと「0件」と区別がつかない。
+    if (error) throw new Error(`取得に失敗しました: ${error.message}`)
+    rows.push(...((data ?? []) as Row[]))
+  }
+  return rows
+}

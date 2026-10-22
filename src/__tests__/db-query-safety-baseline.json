@@ -10,19 +10,10 @@
     "ignored_error": 1
   },
   "src/app/(dashboard)/inventory/page.tsx": {
-    "ignored_error": 2,
-    "unbounded_select": 1
+    "ignored_error": 1
   },
   "src/app/api/bulk-edit-danger-sellers/route.ts": {
     "ignored_error": 2
-  },
-  "src/app/api/cron/auto-extraction/route.ts": {
-    "unbounded_select": 1
-  },
-  "src/app/api/cron/inventory-auto/route.ts": {
-    "ignored_error": 6,
-    "unbounded_in": 2,
-    "unbounded_select": 4
   },
   "src/app/api/csv/route.ts": {
     "ignored_error": 3,
@@ -76,8 +67,7 @@
   },
   "src/app/api/inventory/actions/revise-price/route.ts": {
     "ignored_error": 1,
-    "unbounded_in": 1,
-    "unbounded_select": 2
+    "unbounded_in": 1
   },
   "src/app/api/inventory/actions/stack/route.ts": {
     "ignored_error": 6,
@@ -173,7 +163,6 @@
     "unbounded_select": 9
   },
   "src/lib/product-deletion.ts": {
-    "unbounded_in": 1,
     "unbounded_select": 1
   }
 }

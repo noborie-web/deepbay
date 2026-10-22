@@ -5,6 +5,7 @@ import { findScraper } from '@/lib/scrapers'
 import { runScrape } from '@/lib/extraction-run'
 import { getDirectListingIssues } from '@/lib/listing-export'
 import type { Product } from '@/types/database'
+import { selectAllRows } from '@/lib/db-chunk'
 
 export const maxDuration = 300
 
@@ -90,12 +91,14 @@ async function summarizeExtraction(
     return { extracted: count ?? 0 }
   }
 
-  const { data: products, error: productsError } = await db
+  // 上限なしで引くと既定1,000行で黙って切られる(抽出は590件・286件など
+  // 1,000件に届きうる規模なので、超えた分が出品されないまま終わる)
+  const products = await selectAllRows<Product>(() => db
     .from('products')
     .select('*')
     .eq('extraction_id', extractionId)
     .eq('user_id', schedule.user_id)
-  if (productsError) throw new Error(productsError.message)
+    .order('id'))
 
   let fallbackCategoryId: string | null = null
   if (schedule.category_id) {
@@ -111,7 +114,7 @@ async function summarizeExtraction(
 
   let readyToList = 0
   let needsFix = 0
-  for (const product of (products ?? []) as Product[]) {
+  for (const product of products) {
     if (getDirectListingIssues(product, fallbackCategoryId).length === 0) readyToList += 1
     else needsFix += 1
   }
