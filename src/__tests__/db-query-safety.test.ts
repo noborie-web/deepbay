@@ -59,8 +59,17 @@ describe('DBクエリの安全性(ラチェット)', () => {
   })
 
   it('ベースラインの総数を記録しておく(減っていく想定)', () => {
-    // 2026-10-23 時点: 165件(error無視73 / 上限なし取得63 / 無制限.in 29)。
-    // 減らす方向にしか動かさない。
-    expect(totalFindings(baseline)).toBeLessThanOrEqual(165)
+    // 2026-10-23 時点: 147件(error無視66 / 上限なし取得55 / 無制限.in 26)。
+    // cron配下(無人で動くので誰も気づけない)は0件にした。減らす方向にしか動かさない。
+    expect(totalFindings(baseline)).toBeLessThanOrEqual(147)
+  })
+})
+
+describe('cron配下(無人で動く経路)', () => {
+  // 今回の事故はすべてcron配下で起き、誰も見ていないので数日〜1か月気づけ
+  // なかった。ここだけは0件を維持する。
+  it('「黙って0件になる」書き方が1つも無い', () => {
+    const counts = auditDbQueries('src/app/api/cron')
+    expect(counts).toEqual({})
   })
 })

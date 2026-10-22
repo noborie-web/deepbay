@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { flushEbayCallCounts } from '@/lib/ebay-call-counter'
 import { endItem, reviseInventoryStatusBatch, addFixedPriceItem } from '@/lib/ebay-actions'
-import { selectAllRows, selectByIds } from '@/lib/db-chunk'
+import { selectAllRows, selectByIds, selectInChunks } from '@/lib/db-chunk'
 import { onlyLiveListings } from '@/lib/inventory-listing-filter'
 import { resolveInventoryAccessToken, resolveSellerAccountAccessToken } from '@/lib/inventory-auth'
 import { listInventorySellerAccounts, sellerAccountLabel, type InventorySellerAccount } from '@/lib/inventory-seller-accounts'
@@ -73,7 +73,10 @@ export async function GET(req: NextRequest) {
     .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, ebay_auto_sync, auto_delist, auto_revise_price, auto_stack, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, delist_on_title_change, delist_on_unverified, unverified_delist_hours, sync_cursor_item_id, payment_profile_name, return_profile_name, shipping_profile_name, daily_run_count, revise_price_schedule')
     .eq('sync_enabled', true)
   if (onlyUserId) settingsQuery = settingsQuery.eq('user_id', onlyUserId)
-  const { data: allSettings } = await settingsQuery
+  // 失敗を黙って「対象0人」にしない。ここが0件になると、全ユーザーの
+  // 同期・取り下げ・価格改定がまるごと行われないまま正常終了してしまう。
+  const { data: allSettings, error: settingsError } = await settingsQuery
+  if (settingsError) throw new Error(`在庫管理の設定を取得できませんでした: ${settingsError.message}`)
 
   const results: Record<string, unknown>[] = []
 
@@ -93,7 +96,9 @@ export async function GET(req: NextRequest) {
     // 手動同期まで含めていたため、20時台に手動同期を実行したことで21時の
     // 自動実行が丸ごと(同期・仕入先チェック・取り下げ・価格改定とも)
     // スキップされていた。自動実行どうしの重なりだけを見る。
-    const { data: recentRun } = await db
+    // ここだけは取得に失敗しても止めない。失敗を「直近の実行なし」とみなすと
+    // 実行する側に倒れるので、取りこぼし(実行されない)にはならない。
+    const { data: recentRun, error: recentRunError } = await db
       .from('inventory_runs')
       .select('id')
       .eq('user_id', userId)
@@ -102,6 +107,7 @@ export async function GET(req: NextRequest) {
       .filter('result_summary->>slot', 'eq', String(slot))
       .limit(1)
       .maybeSingle()
+    if (recentRunError) console.warn('[inventory-auto] 直近実行の照会に失敗(実行side に倒す):', recentRunError.message)
     if (recentRun && !force) {
       userResult.skipped = 'recently_ran'
       results.push(userResult)
@@ -348,22 +354,28 @@ export async function GET(req: NextRequest) {
       // ユーザー要望: 他ツールで在庫管理中の出品を誤って取り下げないよう、
       // Kakehashiの商品に紐付いている出品だけを対象にする。
       // 取り下げ済み(delisted_at あり)は毎日繰り返さない。
-      let delistQuery = db
-        .from('inventory_active_listings')
-        .select('ebay_item_id, product_id, seller_account_id, site_id')
-        .eq('user_id', userId)
-        .not('product_id', 'is', null)
-        .eq('quantity', 0)
-        .is('delisted_at', null)
-      if (delistEligibility.cutoffIso) delistQuery = delistQuery.lte('start_time', delistEligibility.cutoffIso)
-      const { data: listings } = await delistQuery
+      // 上限なしで引くと既定1,000行で黙って切られ、超過分が取り下げられない
+      const listings = await selectAllRows<{
+        ebay_item_id: string; product_id: string | null
+        seller_account_id: string | null; site_id: string | null
+      }>(() => {
+        let delistQuery = db
+          .from('inventory_active_listings')
+          .select('ebay_item_id, product_id, seller_account_id, site_id')
+          .eq('user_id', userId)
+          .not('product_id', 'is', null)
+          .eq('quantity', 0)
+          .is('delisted_at', null)
+        if (delistEligibility.cutoffIso) delistQuery = delistQuery.lte('start_time', delistEligibility.cutoffIso)
+        return delistQuery.order('ebay_item_id')
+      })
 
       const delistResults = []
       const quantityZeroEntries: Array<{ itemId: string; quantity: number; siteId: string | null; sellerAccountId: string | null }> = []
       // 出品したセラーのトークンで、そのサイトのSiteIDで呼ぶ。どのセラーの
       // 出品か分からない行は触らない(他アカウントの出品を取り下げないため)。
       let delistSkippedUnknownSeller = 0
-      for (const l of listings ?? []) {
+      for (const l of listings) {
         const token = resolveListingToken(l.seller_account_id as string | null)
         if (!token) { delistSkippedUnknownSeller++; continue }
         const siteId = (l.site_id as string | null) ?? 'US'
@@ -539,31 +551,37 @@ export async function GET(req: NextRequest) {
 
     // 積み上げ
     if (settings.auto_stack && settings.payment_profile_name && settings.shipping_profile_name && settings.return_profile_name) {
-      const { data: stackingItems } = await db
+      const stackingItems = await selectAllRows<{ ebay_item_id: string; new_source_url: string | null }>(() => db
         .from('inventory_stacking')
         .select('ebay_item_id, new_source_url')
         .eq('user_id', userId)
         .eq('is_excluded', false)
         .not('new_source_url', 'is', null)
+        .order('ebay_item_id'))
 
-      const ebayItemIds = (stackingItems ?? []).map(s => s.ebay_item_id)
-      const { data: listings } = await db
+      const ebayItemIds = stackingItems.map(s => s.ebay_item_id)
+      // ItemIDを100件超まとめて .in() に渡すとURLが長すぎて400になる
+      const listings = await selectInChunks<{
+        ebay_item_id: string; title: string | null
+        current_price: number | null; product_id: string | null
+      }>(() => db
         .from('inventory_active_listings')
         .select('ebay_item_id, title, current_price, product_id')
         .eq('user_id', userId)
-        .in('ebay_item_id', ebayItemIds)
-        .eq('quantity', 0)
+        .eq('quantity', 0), 'ebay_item_id', ebayItemIds)
 
-      const listingMap = new Map((listings ?? []).map(l => [l.ebay_item_id, l]))
-      const productIds = (listings ?? []).filter(l => l.product_id).map(l => l.product_id as string)
+      const listingMap = new Map(listings.map(l => [l.ebay_item_id, l]))
+      const productIds = listings.filter(l => l.product_id).map(l => l.product_id as string)
       const productMap = new Map<string, { ebay_category_id: string | null; ebay_title: string | null; ebay_price: number | null; description: string | null }>()
       if (productIds.length > 0) {
-        const { data: products } = await db.from('products').select('id, ebay_category_id, ebay_title, ebay_price, description').in('id', productIds)
-        for (const p of products ?? []) productMap.set(p.id, p)
+        const products = await selectByIds<{ id: string; ebay_category_id: string | null; ebay_title: string | null; ebay_price: number | null; description: string | null }>(
+          db, 'products', 'id, ebay_category_id, ebay_title, ebay_price, description', productIds,
+        )
+        for (const p of products) productMap.set(p.id, p)
       }
 
       const stackResults = []
-      for (const s of stackingItems ?? []) {
+      for (const s of stackingItems) {
         const listing = listingMap.get(s.ebay_item_id)
         if (!listing) continue
         const product = listing.product_id ? productMap.get(listing.product_id) : null

@@ -80,6 +80,13 @@ export function auditDbQueries(root = 'src'): AuditCounts {
     let match: RegExpExecArray | null
     while ((match = chain.exec(src))) {
       const [, table, body] = match
+      // selectAllRows(() => db.from(...)) のように包む書き方は、ヘルパー名が
+      // .from( より**前**に出る。直前も見ないと、直した箇所を危険と数え続け、
+      // ベースラインが0に向かわない。
+      // 文の先頭(直前の空行)まで遡って探す。型引数が長いと固定幅では届かない。
+      const head = src.lastIndexOf('\n\n', match.index)
+      const before = src.slice(head === -1 ? Math.max(0, match.index - 600) : head, match.index)
+      if (/selectAllRows|selectByIds|selectInChunks/.test(before)) continue
       if (!(LARGE_TABLES as readonly string[]).includes(table)) continue
       if (!/\.select\(/.test(body)) continue
       if (/\.(range|limit|single|maybeSingle)\(/.test(body)) continue
