@@ -280,12 +280,19 @@ export async function GET(req: NextRequest) {
             processed: syncResult.processed, remaining: syncResult.nextCursorItemId ? syncResult.total - syncResult.processed : 0,
           }
           syncResults.push({ ...summary, total: syncResult.total, matched: syncResult.matched, unmanaged: syncResult.unmanaged })
-          // 途中で打ち切られても利用状況が残るよう、セラーごとに記録する
+          // 本番で確認した不具合(2026-10-22): 一覧取得が毎回時間切れし、残り時間が
+          // 足りず個別照会も走らず、1件も更新できないまま status:'completed' で
+          // 終わっていた。akebono-32 の479件が3日間更新されないまま誰も気づけ
+          // なかったので、「対象があるのに1件も取れなかった」は失敗として残す。
+          const fetchedNothing = syncResult.total > 0 && syncResult.matched === 0
           await flushEbayCallCounts(db, userId)
           await db.from('inventory_runs').insert({
             user_id: userId,
             run_type: 'sync',
-            status: 'completed',
+            status: fetchedNothing ? 'failed' : 'completed',
+            error_message: fetchedNothing
+              ? `${account?.seller_id ?? 'セラー不明'}: 対象${syncResult.total}件のうち1件も取得できなかった${syncResult.bulkError ? ` (${syncResult.bulkError})` : ''}`
+              : null,
             items_total: syncResult.total,
             items_matched: syncResult.matched,
             result_summary: summary,

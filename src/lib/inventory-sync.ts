@@ -695,6 +695,41 @@ const DEFAULT_MISSING_CHECKS_PER_RUN = 100
 // 一覧取得を飛ばす。件数が多いセラーは従来どおり一覧取得(約30回)を使う。
 const BULK_REFRESH_MIN_KNOWN_ITEMS = 300
 
+// 一覧取得(全件ダウンロード)に最低限必要な時間。これを割り込む予算で
+// 呼ぶと、必ず時間切れしたうえ個別照会の残り時間まで食い潰す。
+//
+// 本番で確認した不具合(2026-10-22): akebono-32 の出品が 2026-10-19 に
+// 300件を超え、上のしきい値で「一覧取得する」側に切り替わった。しかし
+// 同じセラーの取得予算は出品件数に比例配分され、下限の15秒に張り付いて
+// いた(350/2,732 → 10.2秒 → 下限15秒)。結果:
+//   1. 一覧取得が毎回15秒で時間切れ
+//   2. 残り時間が5秒を切り、個別照会(fallback)も実行されない
+//   3. 1件も取得できないまま status:'completed' で終わる
+// これが4回/日×3日間続き、akebono-32 の479件が 10/19 から更新停止していた。
+// 予算が足りないセラーは、以前と同じ個別照会だけで回す。
+const BULK_REFRESH_MIN_BUDGET_MS = 30_000
+
+/**
+ * このセラーで一覧取得(GetMyeBaySelling)を使うか。
+ *
+ * 使わない条件は2つ。どちらも「使うと却って遅い・取れない」場合:
+ *  - 把握している出品が少ない: 他ツールの出品まで全件落とすより、ItemIDを
+ *    名指しする個別照会の方が速い
+ *  - 取得予算が足りない: 時間切れ確定で、個別照会の分まで食い潰す
+ */
+export function shouldUseBulkRefresh(
+  knownCount: number,
+  options: { bulkRefresh?: boolean; preferItemLookupBelow?: number; fetchTotalTimeoutMs?: number },
+): boolean {
+  if (options.bulkRefresh !== true) return false
+  const preferItemLookup = knownCount > 0
+    && knownCount < (options.preferItemLookupBelow ?? BULK_REFRESH_MIN_KNOWN_ITEMS)
+  if (preferItemLookup) return false
+  const budget = options.fetchTotalTimeoutMs
+  if (budget !== undefined && budget < BULK_REFRESH_MIN_BUDGET_MS) return false
+  return true
+}
+
 // Kakehashiが出品したもの(CustomLabelが kakehashi_/deepbay_ 由来)かどうか。
 // 出品一覧には他ツールの出品も含まれるため、保存処理に回す前にここで絞る。
 function hasKakehashiLabel(customLabel: string | null | undefined): boolean {
@@ -1013,11 +1048,9 @@ export async function syncKnownInventoryListingBatch(
   let bulkError: string | undefined
   const fetchStartedAt = Date.now()
   let bulk: { map: Map<string, InventoryListingInput>; complete: boolean } | null = null
-  // 把握している出品が少ないセラーは、一覧取得(全件ダウンロード)より
-  // ItemIDを名指しする個別照会の方が速い。0件のときは発見のため一覧を使う。
-  const preferItemLookup = knownIds.length > 0
-    && knownIds.length < (options.preferItemLookupBelow ?? BULK_REFRESH_MIN_KNOWN_ITEMS)
-  if (options.bulkRefresh === true && batchIndex === 1 && !preferItemLookup) {
+  // 一覧取得を使うかは件数と取得予算で決める(shouldUseBulkRefresh)。
+  // 0件のときは発見のため一覧を使う。
+  if (batchIndex === 1 && shouldUseBulkRefresh(knownIds.length, options)) {
     try {
       bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
     } catch (error) {
@@ -1138,10 +1171,7 @@ export async function syncKnownInventoryListings(
   let callLimited = false
   let bulkError: string | undefined
   const fetchStartedAt = Date.now()
-  // 把握している出品が少ないセラーは個別照会の方が速い(上と同じ考え方)
-  const preferItemLookup = knownIds.length > 0
-    && knownIds.length < (options.preferItemLookupBelow ?? BULK_REFRESH_MIN_KNOWN_ITEMS)
-  if (options.bulkRefresh === true && !preferItemLookup) {
+  if (shouldUseBulkRefresh(knownIds.length, options)) {
     try {
       bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
     } catch (error) {
