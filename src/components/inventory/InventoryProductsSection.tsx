@@ -159,7 +159,10 @@ export default function InventoryProductsSection({ items, listings, listingCount
 
   return (
     <>
-      {/* 集計 */}
+      {/* 集計。ユーザー指摘(2026-10-22): 「出品中」と下の「内訳」の合計が
+          合わないと混乱する。前者はKakehashiの商品データ、後者はeBayの出品を
+          数えており単位が違うので、どちらも何を数えているか明記する。 */}
+      <p className="text-xs text-gray-500 mb-2">Kakehashiの商品データ</p>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         {FILTERS.map(({ key, label, color }) => (
           <button
@@ -176,11 +179,14 @@ export default function InventoryProductsSection({ items, listings, listingCount
         ))}
       </div>
 
-      {/* 出品中の内訳(出品アカウント × サイト)。UK/AUが混ざっていないかを
-          ひと目で確認できるようにする */}
+      {/* eBay出品の内訳(出品アカウント × サイト)。UK/AUが混ざっていないかを
+          ひと目で確認できるようにする。上の集計カード(商品データ)とは
+          数えているものが違う */}
       {siteBreakdown.length > 0 && (
         <div className="-mt-2 mb-6 flex flex-wrap items-center gap-2">
-          <span className="text-xs text-gray-500">在庫管理中の内訳</span>
+          <span className="text-xs text-gray-500">
+            eBay出品の内訳（取り下げ済みを除く・計{siteBreakdown.reduce((sum, row) => sum + row.count, 0)}件）
+          </span>
           {siteBreakdown.map(({ seller, site, count }) => (
             <span
               key={`${seller}-${site}`}
