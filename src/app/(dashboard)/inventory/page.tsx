@@ -4,6 +4,7 @@ import { createClient as createServiceClient } from '@supabase/supabase-js'
 import type { Product, InventoryActiveListing } from '@/types/database'
 import InventoryProductsSection from '@/components/inventory/InventoryProductsSection'
 import { hasInventoryAuthentication } from '@/lib/inventory-auth'
+import { selectAllRows } from '@/lib/db-chunk'
 
 function admin() {
   return createServiceClient(
@@ -38,11 +39,16 @@ export default async function InventoryPage() {
 
   // ユーザー要望(2026-09-26): UK/AUにも出品するので、出品中の内訳を
   // セラー×サイトで見たい。在庫一覧(取り下げ済みを除く)を集計する。
-  const { data: siteRows } = await db
+  // 本番で確認した不具合(2026-10-22): 上限を付けずに引いたため PostgREST の
+  // 既定(1,000行)で打ち切られ、内訳が 602+397+1 = ちょうど1,000件になって
+  // いた(実際は 1,607+479+1 = 2,087件)。合計が合わない形でしか現れないので
+  // 気づきにくい。
+  const siteRows = await selectAllRows<{ seller_account_id: string | null; site_id: string | null }>(() => db
     .from('inventory_active_listings')
     .select('seller_account_id, site_id')
     .eq('user_id', user.id)
     .is('delisted_at', null)
+    .order('ebay_item_id'))
   const { data: sellerRows } = await db
     .from('seller_accounts')
     .select('id, seller_id, display_name')
@@ -52,7 +58,7 @@ export default async function InventoryPage() {
     ((row.display_name as string | null)?.trim() || (row.seller_id as string)),
   ]))
   const siteBreakdownMap = new Map<string, number>()
-  for (const row of siteRows ?? []) {
+  for (const row of siteRows) {
     const seller = sellerNames.get(row.seller_account_id as string) ?? '（セラー不明）'
     const site = ((row.site_id as string | null) ?? 'US').toUpperCase()
     const key = `${seller}\u0000${site}`
