@@ -645,6 +645,29 @@ async function collectKnownItemIds(
   )
   for (const row of listings) if (row.ebay_item_id) ids.add(String(row.ebay_item_id))
 
+  // 本番で確認した不具合(2026-10-23): 商品データが失われた出品(product_id が
+  // null でも CustomLabel が kakehashi_ のもの)は、purgeUnmanagedListings が
+  // 「画面で気づけるように」意図的に残す一方、ここで集めていなかったため
+  // 一度も再照会されなかった。結果、eBay側で出品を終了させても Kakehashi は
+  // 気づかず、「商品データが失われている出品が196件あります」の表示が
+  // 永久に消えなかった(fetched_at が発見時の 2026-10-19 で止まっていた)。
+  // 仕入先チェックはできなくても、終了の検知だけは行えるようにする。
+  for (const pattern of ['kakehashi\\_%', 'deepbay\\_%']) {
+    // db-audit-ok: 下の selectAllRows でページ送りする(組み立てが別の文)
+    let orphanQuery = db
+      .from('inventory_active_listings')
+      .select('ebay_item_id')
+      .eq('user_id', userId)
+      .is('product_id', null)
+      .is('delisted_at', null)
+      .like('custom_label', pattern)
+    if (sellerAccountId) orphanQuery = orphanQuery.eq('seller_account_id', sellerAccountId)
+    const orphans = await selectAllRows<{ ebay_item_id: string | null }>(
+      () => orphanQuery.order('ebay_item_id'),
+    )
+    for (const row of orphans) if (row.ebay_item_id) ids.add(String(row.ebay_item_id))
+  }
+
   // まだ在庫一覧に入っていない出品(ダイレクト出品直後など)は、商品が属する
   // 抽出の出品セラーでこのセラーのものかを判定する。
   const extractionIds = sellerAccountId ? await extractionIdsForSeller(db, userId, sellerAccountId, options) : null
