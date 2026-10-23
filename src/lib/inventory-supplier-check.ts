@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { selectByIds } from '@/lib/db-chunk'
 import { findScraper, scrapeUrl } from '@/lib/scrapers'
 import { asinFromSourceUrl, fetchAmazonSupplierStatus } from '@/lib/amazon-extract'
 import { fetchUsdJpyRate } from '@/lib/exchange-rate'
@@ -290,6 +291,7 @@ export async function checkSupplierListings(
 
   // sourceSite 指定時は商品テーブルを内部結合して仕入先サイトで絞る
   const needsProductJoin = Boolean(options.sourceSite) || (options.excludeSourceSites?.length ?? 0) > 0
+  // db-audit-ok: 下で .order(...).limit(batchLimit) を付けて引く(組み立てが別の文)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let listingQuery: any = db
     .from('inventory_active_listings')
@@ -322,15 +324,14 @@ export async function checkSupplierListings(
   if (targets.length === 0) return result
 
   const productIds = Array.from(new Set(targets.map(listing => listing.product_id)))
-  const { data: products, error: productsError } = await db
-    .from('products')
-    .select('id, source_url, source_site, original_title, original_price, purchase_price_jpy, ebay_price, pricing_jpy_per_usd, extraction_id')
-    .eq('user_id', userId)
-    .in('id', productIds)
-
-  if (productsError) {
-    throw new Error(`Supplier product lookup failed: ${productsError.message}`)
-  }
+  // 今は batchLimit(40件)に収まるが、増やした途端に100件を超えて400になる。
+  // 件数に依存しない形にしておく。
+  const products = await selectByIds<Record<string, unknown>>(
+    db,
+    'products',
+    'id, source_url, source_site, original_title, original_price, purchase_price_jpy, ebay_price, pricing_jpy_per_usd, extraction_id',
+    productIds,
+  )
 
   // 本番で確認した不具合(2026-09-22): numeric 型の列(purchase_price_jpy /
   // ebay_price / pricing_jpy_per_usd)は PostgREST から文字列で返るため、
@@ -343,7 +344,7 @@ export async function checkSupplierListings(
     return typeof n === 'number' && Number.isFinite(n) ? n : null
   }
   const productMap = new Map(
-    ((products ?? []) as Array<Record<string, unknown>>).map(row => {
+    (products as Array<Record<string, unknown>>).map(row => {
       const product: SupplierProductRow = {
         id: String(row.id),
         source_url: (row.source_url as string | null) ?? null,
@@ -363,28 +364,28 @@ export async function checkSupplierListings(
   // 設定が見つからない商品はcalculateAutomaticEbayPrice側のデフォルト
   // 利益設定にフォールバックする。
   const extractionIds = Array.from(new Set(
-    ((products ?? []) as SupplierProductRow[])
+    (products as unknown as SupplierProductRow[])
       .map(p => p.extraction_id)
       .filter((id): id is string => Boolean(id)),
   ))
   const bulkSettingIdByExtractionId = new Map<string, string | null>()
   if (extractionIds.length > 0) {
-    const { data: extractions } = await db
-      .from('extractions')
-      .select('id, bulk_edit_setting_id')
-      .in('id', extractionIds)
-    for (const e of extractions ?? []) bulkSettingIdByExtractionId.set(e.id, e.bulk_edit_setting_id)
+    // error を握りつぶすと一括編集の利益設定が「無い」ことになり、価格の
+    // 再計算が別の式に落ちる(= 黙って違う価格になる)
+    const extractions = await selectByIds<{ id: string; bulk_edit_setting_id: string | null }>(
+      db, 'extractions', 'id, bulk_edit_setting_id', extractionIds,
+    )
+    for (const e of extractions) bulkSettingIdByExtractionId.set(e.id, e.bulk_edit_setting_id)
   }
   const bulkSettingIds = Array.from(new Set(
     Array.from(bulkSettingIdByExtractionId.values()).filter((id): id is string => Boolean(id)),
   ))
   const bulkSettingMap = new Map<string, BulkEditPricingSetting>()
   if (bulkSettingIds.length > 0) {
-    const { data: bulkSettings } = await db
-      .from('bulk_edit_settings')
-      .select('id, profit_rate, ebay_fee_rate, shipping_cost_jpy, fixed_cost_usd')
-      .in('id', bulkSettingIds)
-    for (const s of bulkSettings ?? []) bulkSettingMap.set(s.id, s)
+    const bulkSettings = await selectByIds<{ id: string } & BulkEditPricingSetting>(
+      db, 'bulk_edit_settings', 'id, profit_rate, ebay_fee_rate, shipping_cost_jpy, fixed_cost_usd', bulkSettingIds,
+    )
+    for (const s of bulkSettings) bulkSettingMap.set(s.id, s)
   }
 
   // ユーザーが価格一括編集で保存した段階利益設定があれば、それを価格

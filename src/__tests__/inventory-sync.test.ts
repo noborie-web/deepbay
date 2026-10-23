@@ -18,7 +18,11 @@ const { mockFetchActiveListingsBatch, mockFetchAllActiveListings, mockFetchListi
 // inventory_active_listings のモック。同期の最後に「紐付かない出品の掃除」
 // (delete().eq().is('product_id', null)) が走るため、そのチェーンも用意する。
 function listingTable() {
+  const chain: Record<string, unknown> = {}
+  for (const m of ['select', 'eq', 'not', 'is', 'in', 'order']) chain[m] = () => chain
+  chain.range = async () => ({ data: [], error: null })
   return {
+    ...chain,
     upsert: mockUpsert,
     delete: () => ({
       eq: () => ({
@@ -61,16 +65,29 @@ const productUpdateMock = {
   },
 }
 
+// extractions は selectAllRows でページ送りして引く
+function extractionsTable() {
+  const chain: Record<string, unknown> = {}
+  for (const m of ['select', 'eq', 'order']) chain[m] = () => chain
+  chain.range = async () => ({ data: [], error: null })
+  return chain
+}
+
 function productsTableFor(productIds: string[]) {
-  return {
+  const table: Record<string, unknown> = {
     select: vi.fn().mockReturnThis(),
     eq: vi.fn().mockReturnThis(),
+    not: vi.fn().mockReturnThis(),
+    // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+    order: vi.fn().mockReturnThis(),
+    range: vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null })),
     in: vi.fn(async (column: string, values: string[]) => ({
       data: column === 'id' ? values.filter(id => productIds.includes(id)).map(id => ({ id })) : [],
       error: null,
     })),
     ...productUpdateMock,
   }
+  return table
 }
 
 vi.mock('@/lib/ebay-inventory', () => ({
@@ -441,6 +458,9 @@ describe('syncKnownInventoryListings: 分割実行', () => {
           chain.eq = vi.fn(() => chain)
           chain.not = vi.fn(() => chain)
           chain.in = vi.fn(async () => ({ data: [], error: null }))
+          // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+          chain.order = vi.fn(() => chain)
+          chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
           chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
           return chain
         }
@@ -454,6 +474,9 @@ describe('syncKnownInventoryListings: 分割実行', () => {
           chain.is = vi.fn(() => chain)
           chain.in = vi.fn(() => chain)
           chain.upsert = vi.fn(async () => ({ error: null }))
+          // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+          chain.order = vi.fn(() => chain)
+          chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? known.map(id => ({ ebay_item_id: id })) : [], error: null }))
           chain.then = (resolve: (v: unknown) => void) => resolve({ data: known.map(id => ({ ebay_item_id: id })), error: null })
           return chain
         }
@@ -511,7 +534,7 @@ describe('新規出品の発見（サイト別）', () => {
           return chain
         }
         if (table === 'extractions') {
-          return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+          return extractionsTable()
         }
         if (table === 'products') return productsTableFor([])
         // inventory_active_listings: 既知ItemIDの照会・upsert・掃除に応える
@@ -523,6 +546,11 @@ describe('新規出品の発見（サイト別）', () => {
         chain.is = () => chain
         chain.in = () => chain
         chain.delete = () => chain
+        chain.order = () => chain
+        chain.range = async () => ({ data: [], error: null })
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        chain.order = vi.fn(() => chain)
+        chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
         chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
         return chain
       },
@@ -557,7 +585,7 @@ describe('新規出品の発見（サイト別）', () => {
           return chain
         }
         if (table === 'extractions') {
-          return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+          return extractionsTable()
         }
         if (table === 'products') return productsTableFor([])
         const chain: Record<string, unknown> = {}
@@ -568,6 +596,11 @@ describe('新規出品の発見（サイト別）', () => {
         chain.is = () => chain
         chain.in = () => chain
         chain.delete = () => chain
+        chain.order = () => chain
+        chain.range = async () => ({ data: [], error: null })
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        chain.order = vi.fn(() => chain)
+        chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
         chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
         return chain
       },
@@ -614,11 +647,14 @@ describe('eBayの呼び出し上限', () => {
           chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
           return chain
         }
-        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'extractions') return extractionsTable()
         if (table === 'products') return productsTableFor([kakehashiLabel(1).productId])
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
         for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        chain.order = vi.fn(() => chain)
+        chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
         chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
         return chain
       },
@@ -651,11 +687,14 @@ describe('既存出品の一括更新', () => {
           chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
           return chain
         }
-        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'extractions') return extractionsTable()
         if (table === 'products') return productsTableFor(productIds)
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
         for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        chain.order = () => chain
+        chain.range = async (from: number) => ({ data: from === 0 ? [{ ebay_item_id: 'item-1' }, { ebay_item_id: 'item-2' }] : [], error: null })
         chain.then = (resolve: (v: unknown) => void) => resolve({
           data: [{ ebay_item_id: 'item-1' }, { ebay_item_id: 'item-2' }],
           error: null,
@@ -731,11 +770,14 @@ describe('初回走査は新しい区間から読む', () => {
           chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
           return chain
         }
-        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'extractions') return extractionsTable()
         if (table === 'products') return productsTableFor([])
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
         for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        chain.order = vi.fn(() => chain)
+        chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
         chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
         return chain
       },
@@ -782,12 +824,15 @@ describe('出品一覧からの新規取り込み', () => {
           chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
           return chain
         }
-        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'extractions') return extractionsTable()
         if (table === 'products') return productsTableFor([productId])
         // 在庫一覧は空(このセラーはまだ1件も登録されていない)
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
         for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        chain.order = vi.fn(() => chain)
+        chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
         chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
         return chain
       },
@@ -828,11 +873,14 @@ describe('出品一覧の絞り込み', () => {
           chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
           return chain
         }
-        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'extractions') return extractionsTable()
         if (table === 'products') return productsTableFor([productId])
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
         for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        chain.order = vi.fn(() => chain)
+        chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
         chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
         return chain
       },
@@ -867,11 +915,14 @@ describe('出品一覧の取得予算', () => {
           chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
           return chain
         }
-        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'extractions') return extractionsTable()
         if (table === 'products') return productsTableFor([])
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
         for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        chain.order = vi.fn(() => chain)
+        chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
         chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
         return chain
       },
@@ -909,11 +960,14 @@ describe('出品一覧の1ページの上限', () => {
           chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
           return chain
         }
-        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'extractions') return extractionsTable()
         if (table === 'products') return productsTableFor([])
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
         for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        chain.order = vi.fn(() => chain)
+        chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
         chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
         return chain
       },
@@ -944,11 +998,16 @@ describe('少数セラーは個別照会を優先する', () => {
           chain.then = (resolve: (v: unknown) => void) => resolve({ error: null })
           return chain
         }
-        if (table === 'extractions') return { select: () => ({ eq: async () => ({ data: [], error: null }) }) }
+        if (table === 'extractions') return extractionsTable()
         if (table === 'products') return productsTableFor(productIds)
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
         for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        chain.order = () => chain
+        chain.range = async (from: number) => ({
+          data: from === 0 ? ids.map(id => ({ ebay_item_id: id })) : [], error: null,
+        })
         chain.then = (resolve: (v: unknown) => void) => resolve({
           data: ids.map(id => ({ ebay_item_id: id })), error: null,
         })

@@ -16,6 +16,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 export const ID_CHUNK_SIZE = 100
 /** 1回のselectで取る行数。PostgRESTの既定上限(1000)より小さくする */
 export const PAGE_SIZE = 500
+/** ページ送りの安全弁。これを超えたら range が効いていないとみなす */
+export const MAX_PAGED_ROWS = 100_000
 
 export function chunkIds<T>(ids: T[], size = ID_CHUNK_SIZE): T[][] {
   return Array.from(
@@ -52,9 +54,10 @@ export async function selectByIds<Row>(
 export async function selectAllRows<Row>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   buildQuery: () => any,
-  options: { pageSize?: number } = {},
+  options: { pageSize?: number; maxRows?: number } = {},
 ): Promise<Row[]> {
   const pageSize = options.pageSize ?? PAGE_SIZE
+  const maxRows = options.maxRows ?? MAX_PAGED_ROWS
   const rows: Row[] = []
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await buildQuery().range(from, from + pageSize - 1)
@@ -62,6 +65,11 @@ export async function selectAllRows<Row>(
     const page = (data ?? []) as Row[]
     rows.push(...page)
     if (page.length < pageSize) return rows
+    // range を無視して毎回同じ行を返す相手(モック・ビュー)に当たると、
+    // 終了条件が成立せず永久に回る。黙って回り続けるより落とす。
+    if (rows.length > maxRows) {
+      throw new Error(`ページ送りが${maxRows}行を超えました。range が効いていない可能性があります`)
+    }
   }
 }
 

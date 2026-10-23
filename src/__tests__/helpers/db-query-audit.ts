@@ -38,6 +38,18 @@ export type Finding =
 
 export type AuditCounts = Record<string, Partial<Record<Finding, number>>>
 
+/**
+ * 誤検知を黙って数え続けるとラチェットが信用されなくなるので、理由付きで
+ * 明示的に外せるようにする。該当行か直前の行に次を書く:
+ *   // db-audit-ok: 件数は batchLimit(40) に収まる
+ * 理由が空のものは外さない(「とりあえず黙らせる」を防ぐ)。
+ */
+const SUPPRESS = /\/\/\s*db-audit-ok:\s*\S/
+
+function isSuppressed(lines: string[], lineIndex: number): boolean {
+  return SUPPRESS.test(lines[lineIndex] ?? '') || SUPPRESS.test(lines[lineIndex - 1] ?? '')
+}
+
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     const path = join(dir, entry)
@@ -46,6 +58,11 @@ function walk(dir: string, out: string[] = []): string[] {
     } else if (/\.tsx?$/.test(path)) out.push(path)
   }
   return out
+}
+
+/** .in() に渡す配列の件数が読めるか(読めれば400にならず、結果も上限内) */
+function isBoundedIdList(arg: string): boolean {
+  return arg.startsWith('[') || /chunk/i.test(arg) || /\.slice\(/.test(arg)
 }
 
 function add(counts: AuditCounts, file: string, kind: Finding) {
@@ -61,14 +78,15 @@ export function auditDbQueries(root = 'src'): AuditCounts {
   for (const file of files) {
     const src = readFileSync(file, 'utf8')
 
-    for (const line of src.split('\n')) {
+    const lines = src.split('\n')
+    for (const [index, line] of lines.entries()) {
       if (/^\s*(\/\/|\*)/.test(line)) continue
+      if (isSuppressed(lines, index)) continue
       const inCall = line.match(/\.in\(\s*['"][^'"]+['"]\s*,\s*(.+?)\)\s*$/)
       if (inCall) {
-        const arg = inCall[1].trim()
-        // 固定の配列リテラル・分割済み(chunk / slice)は件数が読めるので安全
-        const bounded = arg.startsWith('[') || /\bchunk\b/.test(arg) || /\.slice\(/.test(arg)
-        if (!bounded) add(counts, file, 'unbounded_in')
+        // 固定の配列リテラル・分割済み(chunk / slice)は件数が読めるので安全。
+        // 変数名は sourceLookupKeyChunk のように複合語になるので部分一致で見る。
+        if (!isBoundedIdList(inCall[1].trim())) add(counts, file, 'unbounded_in')
       }
       // const { data } = await ... : error を捨てている
       if (/const\s*\{\s*data[^}]*\}\s*=\s*await/.test(line) && !/error/.test(line)) {
@@ -93,6 +111,13 @@ export function auditDbQueries(root = 'src'): AuditCounts {
       if (/head:\s*true/.test(body)) continue
       if (/\.(insert|update|upsert|delete)\(/.test(body)) continue
       if (/selectAllRows|selectByIds/.test(body)) continue
+      // 分割済みの .in(..., chunk) で絞っている取得は、その時点で100件以下に
+      // なるので1,000行の上限には当たらない。
+      const inArg = body.match(/\.in\(\s*['"][^'"]+['"]\s*,\s*(.+?)\)/)
+      if (inArg && isBoundedIdList(inArg[1].trim())) continue
+      // 抑制コメントは文の頭に書かれることが多いので、ヘルパー判定と同じ
+      // 範囲(文の先頭〜.from まで)を見る。行単位だと2行上に書かれて届かない。
+      if (SUPPRESS.test(before)) continue
       add(counts, file, 'unbounded_select')
     }
   }
