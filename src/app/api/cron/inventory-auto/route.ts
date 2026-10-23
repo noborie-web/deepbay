@@ -4,16 +4,12 @@ import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { flushEbayCallCounts } from '@/lib/ebay-call-counter'
 import { endItem, reviseInventoryStatusBatch, addFixedPriceItem } from '@/lib/ebay-actions'
 import { selectAllRows, selectByIds, selectInChunks } from '@/lib/db-chunk'
-import { onlyLiveListings } from '@/lib/inventory-listing-filter'
 import { resolveInventoryAccessToken, resolveSellerAccountAccessToken } from '@/lib/inventory-auth'
 import { listInventorySellerAccounts, sellerAccountLabel, type InventorySellerAccount } from '@/lib/inventory-seller-accounts'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
-import { isSlotActive, normalizeDailyRunCount, normalizeRevisePriceSchedule, resolveRunSlot, shouldRevisePriceInSlot, startOfJstDay } from '@/lib/inventory-schedule'
+import { isSlotActive, normalizeDailyRunCount, resolveRunSlot, startOfJstDay } from '@/lib/inventory-schedule'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
-import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricing'
-import { currencyForSite } from '@/lib/ebay-sites'
-import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
-import { applyRevisedPrices, markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
+import { markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
 import { allocateSyncBudgets } from '@/lib/inventory-sync-budget'
 import { checkSupplierListings, normalizePriceChangeFilter } from '@/lib/inventory-supplier-check'
 
@@ -24,7 +20,6 @@ export const maxDuration = 300
 
 // 価格改定(eBayへのRevise)に使う時間の上限。同期(約60秒)+仕入先チェック
 // (最大120秒)+取り下げの後に残る時間の範囲に収める。
-const REVISE_PRICE_TIME_BUDGET_MS = 45_000
 
 // 本番で確認した不具合(2026-10-01): 在庫が695→895件に増えたことで同期が長引き、
 // 実行時間の上限(300秒)に達して仕入先チェック・価格改定が実行されず、記録も
@@ -113,8 +108,6 @@ export async function GET(req: NextRequest) {
       results.push(userResult)
       continue
     }
-    // 価格改定を「朝のみ」にしている場合、朝以外の時間帯ではeBayへの反映を行わない
-    const revisePriceThisSlot = force || shouldRevisePriceInSlot(normalizeRevisePriceSchedule(settings.revise_price_schedule), slot)
     const runSupplierCheck = async () => {
       const startedAt = new Date().toISOString()
       try {
@@ -414,140 +407,14 @@ export async function GET(req: NextRequest) {
     // ignore log errors
     }
 
-    // 価格改定
-    if (settings.auto_revise_price && revisePriceThisSlot) {
-      // 本番で確認した不具合(2026-10-20): 価格改定が一度も実行されていなかった。
-      // 出品2,632件のうち2,091件が対象なのに、記録は毎回 total: 0。
-      // 原因は下の2つ。どちらも「黙って0件になる」形だったので気づけなかった。
-      //   1. 出品の取得に上限を付けておらず、PostgRESTの既定(1000行)で
-      //      打ち切られていた
-      //   2. products を `.in('id', 1000件超)` で引いてURLが長すぎて400になり、
-      //      そのerrorを見ていなかった。商品が引けないと「目標価格が無い」と
-      //      みなされ、全件が黙って対象から外れる
-      type ReviseListing = {
-        ebay_item_id: string; current_price: number | null; product_id: string | null
-        seller_account_id: string | null; site_id: string | null; currency: string | null
-      }
-      const listings = await selectAllRows<ReviseListing>(() => onlyLiveListings(db
-        .from('inventory_active_listings')
-        .select('ebay_item_id, current_price, product_id, seller_account_id, site_id, currency')
-        .eq('user_id', userId)
-        .not('product_id', 'is', null))
-        .order('ebay_item_id'))
-
-      const productIds = listings.map(l => l.product_id as string)
-      const productMap = new Map<string, { ebay_price: number | null; pricing_jpy_per_usd: number | null }>()
-      if (productIds.length > 0) {
-        const products = await selectByIds<{ id: string; ebay_price: number | null; pricing_jpy_per_usd: number | null }>(
-          db, 'products', 'id, ebay_price, pricing_jpy_per_usd', productIds,
-        )
-        for (const p of products) productMap.set(p.id, p)
-      }
-      // UK/AU出品はUSD価格を出品通貨へ換算して反映する(維持した利益額はそのまま)
-      // 関税率を米国だけに適用する設定・為替の調整を、CSV出力と同じく効かせる
-      const pricingModel = await loadPricingModel(db, userId)
-      const rates = await loadJpyRates(
-        listings.map(l => ((l.currency as string | null) ?? 'USD')),
-        (currency, rate, jpyPerUsd) => adjustedJpyRate(pricingModel, currency, rate, jpyPerUsd),
-      )
-
-      // 本番で確認した不具合: 価格改定が135件になった日に、Vercelの実行時間
-      // 上限(300秒)に達して途中で打ち切られ、実行ログも残らなかった。
-      // 時間予算内で処理し、残りは翌日に回す(ログは必ず残す)。
-      // 4件ずつまとめて並行に送り、時間予算内で処理し切れない分だけ翌日に回す。
-      const reviseStartedAt = Date.now()
-      const reviseEntries: Array<{ itemId: string; price: number; siteId: string | null; sellerAccountId: string | null }> = []
-      const beforePrices = new Map<string, number>()
-      // UK/AU出品は、維持している利益額(円)を出品通貨に換算した価格を送る。
-      // 換算できない(レート未取得)・不自然に大きく下がる場合は送らず件数を残す。
-      let reviseSkippedNoRate = 0
-      let reviseGuarded = 0
-      let reviseSkippedUnknownSeller = 0
-      for (const l of listings) {
-        const p = productMap.get(l.product_id!)
-        const currency = ((l.currency as string | null) ?? 'USD').toUpperCase()
-        const decision = decideSiteRevisePrice({
-          currentPrice: l.current_price as number | null,
-          usdPrice: p?.ebay_price ?? null,
-          jpyPerUsd: p?.pricing_jpy_per_usd ?? null,
-          siteId: (l.site_id as string | null) ?? 'US',
-          jpyPerCurrency: rates.get(currency) ?? null,
-          priceAdjustment: sitePriceAdjustment(pricingModel, (l.site_id as string | null) ?? 'US'),
-        })
-        if (decision.action === 'skip') {
-          if (decision.reason === 'no_rate') reviseSkippedNoRate++
-          if (decision.reason === 'guarded') {
-            reviseGuarded++
-            console.warn(`[inventory-auto] guarded: ${l.ebay_item_id} ${l.current_price} -> (${currency}) 計算結果が15%超の値下げ`)
-          }
-          continue
-        }
-        if (!resolveListingToken(l.seller_account_id as string | null)) { reviseSkippedUnknownSeller++; continue }
-        reviseEntries.push({
-          itemId: l.ebay_item_id as string,
-          price: decision.price,
-          siteId: (l.site_id as string | null) ?? 'US',
-          sellerAccountId: (l.seller_account_id as string | null) ?? null,
-        })
-        beforePrices.set(l.ebay_item_id as string, Number(l.current_price))
-      }
-      const reviseResults: Array<{ itemId: string; success: boolean; error?: string }> = []
-      let reviseDeferred = 0
-      // セラーごとにトークンを分けて送る(サイトの違いはバッチ側でまとめる)
-      for (const [accountId, entries] of groupEntriesBySeller(reviseEntries)) {
-        const token = resolveListingToken(accountId)
-        if (!token) { reviseSkippedUnknownSeller += entries.length; continue }
-        const batch = await reviseInventoryStatusBatch(
-          token, entries, { deadlineMs: reviseStartedAt + REVISE_PRICE_TIME_BUDGET_MS },
-        )
-        reviseResults.push(...batch.results)
-        reviseDeferred += batch.deferred
-      }
-      // 反映した価格を在庫一覧の現在価格にも書く(次回同期を待たずに差分が消える)
-      try {
-        await applyRevisedPrices(db, userId, reviseResults.filter(r => r.success).map(r => {
-          const entry = reviseEntries.find(e => e.itemId === r.itemId)
-          return {
-            ebay_item_id: r.itemId,
-            price: entry?.price ?? 0,
-            jpy_per_currency: entry ? rates.get(currencyForSite(entry.siteId)) ?? null : null,
-          }
-        }).filter(r => r.price > 0))
-      } catch (error) {
-        console.warn('[inventory-auto] revised price bookkeeping failed:', error instanceof Error ? error.message : error)
-      }
-      // 実行履歴のCSV出力用(公式ツールの revise ファイルと同じ内容)
-      const reviseItems = reviseResults.map(r => {
-        const after = reviseEntries.find(e => e.itemId === r.itemId)?.price ?? null
-        const before = beforePrices.get(r.itemId) ?? null
-        return {
-          ebay_item_id: r.itemId,
-          price_before: before,
-          price_after: after,
-          diff: after !== null && before !== null ? Math.round((after - before) * 100) / 100 : null,
-          success: r.success,
-          error: r.error ?? null,
-        }
-      })
-      userResult.revise_price = {
-        total: reviseResults.length,
-        succeeded: reviseResults.filter(r => r.success).length,
-        deferred: reviseDeferred,
-        skipped_no_rate: reviseSkippedNoRate,
-        guarded: reviseGuarded,
-        skipped_unknown_seller: reviseSkippedUnknownSeller,
-        items: reviseItems,
-      }
-      const reviseRun = summarizeInventoryActionRun(reviseResults)
-
-      await db.from('inventory_runs').insert({
-        user_id: userId, run_type: 'auto_revise_price', status: reviseRun.status,
-        error_message: reviseRun.errorMessage,
-        result_summary: userResult.revise_price,
-        started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
-      })
-    // ignore log errors
-    }
+    // 価格改定は別のcron(/api/cron/revise-price)が行う。
+    //
+    // 本番で確認した不具合(2026-10-23): ここに置いていたときは、上の
+    // 同期・仕入先チェック・取り下げで236〜275秒(実測4回)を使い切り、
+    // 300秒の上限に当たって記録を書く前に強制終了していた。
+    // 「価格改定を自動実行する」をONにしても auto_revise_price の記録が
+    // 1件も残らず、設定を見ても原因が分からない形だった。
+    // 工程の順番を入れ替えても時間の押し付け合いになるだけなので分離した。
 
     // 積み上げ
     if (settings.auto_stack && settings.payment_profile_name && settings.shipping_profile_name && settings.return_profile_name) {
