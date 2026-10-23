@@ -172,11 +172,17 @@ export interface Product {
   ebay_images: string[]
   // ユーザー要望(2026-10-18): タイトルと1枚目の画像で「本体か部品か」をAIが判定した結果。
   // 判定しただけでは何も消さない(画面で理由を確認してから削除する)。
+  // ユーザー要望(2026-10-23): その場で書いた指示(「ジャンク品を除外」など)でも
+  // 判定できるようにした。instruction があればそちらの判定(keep/exclude)。
   ai_classification?: {
-    verdict: 'main' | 'part' | 'unknown'
+    verdict: 'main' | 'part' | 'keep' | 'exclude' | 'unknown'
     reason: string
     model?: string
     at?: string
+    /** その場で書いた指示。null なら「本体か部品か」の判定 */
+    instruction?: string | null
+    /** 指示を変えたら判定し直すための目印 */
+    instruction_key?: string | null
   } | null
   ebay_item_specifics: Record<string, string[]>
   ebay_condition: string | null

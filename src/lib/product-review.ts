@@ -14,6 +14,7 @@ export type ReviewFlag =
   | 'no_brand'        // ブランド未設定
   | 'duplicate_title' // 同じタイトルが複数ある(重複出品の候補)
   | 'ai_part'         // AIが「本体ではなく部品・付属品」と判定した
+  | 'ai_exclude'      // AIがその場の指示に当てはまる(=除外したい)と判定した
 
 export const REVIEW_FLAG_LABELS: Record<ReviewFlag, string> = {
   few_images: '画像1枚以下',
@@ -23,12 +24,13 @@ export const REVIEW_FLAG_LABELS: Record<ReviewFlag, string> = {
   no_brand: 'ブランドなし',
   duplicate_title: 'タイトル重複',
   ai_part: 'AI判定: 部品',
+  ai_exclude: 'AI判定: 除外',
 }
 
 export interface ReviewItem {
   id: string
   /** AIの判定結果(未判定なら undefined) */
-  aiVerdict?: 'main' | 'part' | 'unknown'
+  aiVerdict?: 'main' | 'part' | 'keep' | 'exclude' | 'unknown'
   title: string
   brand: string
   description: string
@@ -67,6 +69,15 @@ export function findDuplicateTitleIds(items: ReviewItem[]): Set<string> {
   return duplicates
 }
 
+/**
+ * 画面で「除外候補」として扱う判定かどうか。
+ * product-classify.ts は openai SDK を読み込むので、画面から使う判定は
+ * こちら(純粋なライブラリ)に置く。
+ */
+export function isExcludeVerdict(verdict: string | null | undefined): boolean {
+  return verdict === 'part' || verdict === 'exclude'
+}
+
 export function productReviewFlags(item: ReviewItem, duplicateIds: Set<string>): ReviewFlag[] {
   const flags: ReviewFlag[] = []
   if (item.images.length <= 1) flags.push('few_images')
@@ -76,6 +87,7 @@ export function productReviewFlags(item: ReviewItem, duplicateIds: Set<string>):
   if (!item.brand.trim()) flags.push('no_brand')
   if (duplicateIds.has(item.id)) flags.push('duplicate_title')
   if (item.aiVerdict === 'part') flags.push('ai_part')
+  if (item.aiVerdict === 'exclude') flags.push('ai_exclude')
   return flags
 }
 

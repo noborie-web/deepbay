@@ -3,6 +3,7 @@ import OpenAI from 'openai'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { mapWithConcurrency } from '@/lib/async-pool'
+import { createHash } from 'crypto'
 import { CLASSIFY_CONCURRENCY, CLASSIFY_MODEL, classifyProduct } from '@/lib/product-classify'
 
 // ユーザー要望(2026-10-18): リールのカテゴリに混ざる部品をAIで見分けたい。
@@ -24,16 +25,36 @@ const BATCH = 100
 // (240 + 40 = 280 < 300)。超えると応答を返せず「Failed to fetch」になる。
 const TIME_BUDGET_MS = 240_000
 
+/**
+ * 指示を短いキーにする。
+ *
+ * 指示を変えたら全件を判定し直す必要がある(前の指示の結果が残っていると、
+ * 新しい指示を書いても「全部判定済み」として何も起きない)。指示そのもので
+ * 絞ると記号やカンマが PostgREST の or(...) を壊すので、16桁の英数字にする。
+ */
+export function instructionKeyOf(instruction: string | null): string | null {
+  const text = instruction?.trim()
+  if (!text) return null
+  return createHash('sha256').update(text).digest('hex').slice(0, 16)
+}
+
+/** まだこの指示で判定していない商品に絞る */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onlyPending(query: any, instructionKey: string | null): any {
+  if (!instructionKey) return query.is('ai_classification', null)
+  // 未判定 + 別の指示で判定済みのもの
+  return query.or(`ai_classification.is.null,ai_classification->>instruction_key.neq.${instructionKey}`)
+}
+
 /** まだ判定が付いていない(または「判断できない」で終わった)件数 */
 async function countPending(
-  db: ReturnType<typeof admin>, userId: string, extractionId: string,
+  db: ReturnType<typeof admin>, userId: string, extractionId: string, instructionKey: string | null,
 ): Promise<number> {
-  const { count } = await db
+  const { count } = await onlyPending(db
     .from('products')
     .select('id', { count: 'exact', head: true })
     .eq('user_id', userId)
-    .eq('extraction_id', extractionId)
-    .is('ai_classification', null)
+    .eq('extraction_id', extractionId), instructionKey)
   return count ?? 0
 }
 
@@ -68,7 +89,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
     recheck?: unknown
     /** 前回「判断できない」で終わった分だけを拾い直す(明示指定のときだけ) */
     retryUnknown?: unknown
+    /** その場で書いた除外指示。空なら従来どおり「本体か部品か」を判定する */
+    instruction?: unknown
   }
+  const instruction = typeof body.instruction === 'string' && body.instruction.trim()
+    ? body.instruction.trim().slice(0, 300)
+    : null
+  const instructionKey = instructionKeyOf(instruction)
   const db = admin()
 
   // 判定の基準にするカテゴリ(抽出リスト名。「ダイワ スピニングリール」など)
@@ -96,7 +123,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
   if (body.retryUnknown === true) {
     query = query.eq('ai_classification->>verdict', 'unknown')
   } else if (body.recheck !== true) {
-    query = query.is('ai_classification', null)
+    query = onlyPending(query, instructionKey)
   }
   const { data: rows, error } = await query
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -106,7 +133,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
     return NextResponse.json({
       ok: true,
       processed: 0,
-      pending: await countPending(db, user.id, extractionId),
+      pending: await countPending(db, user.id, extractionId, instructionKey),
       unknown: await countUnknown(db, user.id, extractionId),
     })
   }
@@ -127,13 +154,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
       originalTitle: (row.original_title as string | null) ?? '',
       // ユーザー案(2026-10-18): 画像は1枚目だけにして費用と時間を抑える
       imageUrl: images[0] ?? null,
-    }, { model, expectedCategory })
+    }, { model, expectedCategory, instruction })
     return { id: row.id as string, verdict }
   })
 
   const now = new Date().toISOString()
   // 内訳を返す。全件 unknown のような異常にその場で気づけるようにする
-  const counts = { main: 0, part: 0, unknown: 0 }
+  const counts: Record<string, number> = { main: 0, part: 0, keep: 0, exclude: 0, unknown: 0 }
   let processed = 0
   for (const result of results) {
     if (!result) continue
@@ -145,6 +172,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
           reason: result.verdict.reason,
           model: result.verdict.model,
           at: now,
+          // どの指示で判定したか。指示を変えたら判定し直せるように残す
+          instruction,
+          instruction_key: instructionKey,
         },
       })
       .eq('id', result.id)
@@ -158,7 +188,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ ext
   return NextResponse.json({
     ok: true,
     processed,
-    pending: await countPending(db, user.id, extractionId),
+    pending: await countPending(db, user.id, extractionId, instructionKey),
     unknown: await countUnknown(db, user.id, extractionId),
     model,
     counts,
