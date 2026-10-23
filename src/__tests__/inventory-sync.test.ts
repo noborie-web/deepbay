@@ -19,7 +19,7 @@ const { mockFetchActiveListingsBatch, mockFetchAllActiveListings, mockFetchListi
 // (delete().eq().is('product_id', null)) が走るため、そのチェーンも用意する。
 function listingTable() {
   const chain: Record<string, unknown> = {}
-  for (const m of ['select', 'eq', 'not', 'is', 'in', 'order']) chain[m] = () => chain
+  for (const m of ['select', 'eq', 'not', 'is', 'in', 'order', 'like']) chain[m] = () => chain
   chain.range = async () => ({ data: [], error: null })
   return {
     ...chain,
@@ -473,6 +473,7 @@ describe('syncKnownInventoryListings: 分割実行', () => {
           // 掃除は .is('product_id', null).not(...).not(...) と続くのでチェーンを返す
           chain.is = vi.fn(() => chain)
           chain.in = vi.fn(() => chain)
+          chain.like = vi.fn(() => chain)
           chain.upsert = vi.fn(async () => ({ error: null }))
           // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
           chain.order = vi.fn(() => chain)
@@ -545,6 +546,7 @@ describe('新規出品の発見（サイト別）', () => {
         chain.not = () => chain
         chain.is = () => chain
         chain.in = () => chain
+        chain.like = () => chain
         chain.delete = () => chain
         chain.order = () => chain
         chain.range = async () => ({ data: [], error: null })
@@ -595,6 +597,7 @@ describe('新規出品の発見（サイト別）', () => {
         chain.not = () => chain
         chain.is = () => chain
         chain.in = () => chain
+        chain.like = () => chain
         chain.delete = () => chain
         chain.order = () => chain
         chain.range = async () => ({ data: [], error: null })
@@ -651,7 +654,7 @@ describe('eBayの呼び出し上限', () => {
         if (table === 'products') return productsTableFor([kakehashiLabel(1).productId])
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
-        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt', 'like']) chain[m] = () => chain
         // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
         chain.order = vi.fn(() => chain)
         chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
@@ -691,7 +694,7 @@ describe('既存出品の一括更新', () => {
         if (table === 'products') return productsTableFor(productIds)
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
-        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt', 'like']) chain[m] = () => chain
         // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
         chain.order = () => chain
         chain.range = async (from: number) => ({ data: from === 0 ? [{ ebay_item_id: 'item-1' }, { ebay_item_id: 'item-2' }] : [], error: null })
@@ -774,7 +777,7 @@ describe('初回走査は新しい区間から読む', () => {
         if (table === 'products') return productsTableFor([])
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
-        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt', 'like']) chain[m] = () => chain
         // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
         chain.order = vi.fn(() => chain)
         chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
@@ -829,7 +832,7 @@ describe('出品一覧からの新規取り込み', () => {
         // 在庫一覧は空(このセラーはまだ1件も登録されていない)
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
-        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt', 'like']) chain[m] = () => chain
         // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
         chain.order = vi.fn(() => chain)
         chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
@@ -877,7 +880,7 @@ describe('出品一覧の絞り込み', () => {
         if (table === 'products') return productsTableFor([productId])
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
-        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt', 'like']) chain[m] = () => chain
         // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
         chain.order = vi.fn(() => chain)
         chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
@@ -919,7 +922,7 @@ describe('出品一覧の取得予算', () => {
         if (table === 'products') return productsTableFor([])
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
-        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt', 'like']) chain[m] = () => chain
         // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
         chain.order = vi.fn(() => chain)
         chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
@@ -964,7 +967,7 @@ describe('出品一覧の1ページの上限', () => {
         if (table === 'products') return productsTableFor([])
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
-        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt', 'like']) chain[m] = () => chain
         // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
         chain.order = vi.fn(() => chain)
         chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
@@ -1002,7 +1005,7 @@ describe('少数セラーは個別照会を優先する', () => {
         if (table === 'products') return productsTableFor(productIds)
         const chain: Record<string, unknown> = {}
         chain.upsert = mockUpsert
-        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt']) chain[m] = () => chain
+        for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt', 'like']) chain[m] = () => chain
         // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
         chain.order = () => chain
         chain.range = async (from: number) => ({
