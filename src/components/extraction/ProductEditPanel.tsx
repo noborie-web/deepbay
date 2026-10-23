@@ -10,6 +10,7 @@ import {
   sortDuplicatesTogether,
   type ReviewFlag,
   type ReviewItem,
+  isExcludeVerdict,
 } from '@/lib/product-review'
 import type { Product } from '@/types/database'
 import TitleEditModal, { applyOp } from './TitleEditModal'
@@ -126,6 +127,8 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   const [classifyError, setClassifyError] = useState<string | null>(null)
   // 前回「判断できない」で終わった件数(拾い直しのボタンに出す)
   const [classifyUnknown, setClassifyUnknown] = useState(0)
+  // ユーザー要望(2026-10-23): その場で書いた指示でAIに除外させたい
+  const [aiInstruction, setAiInstruction] = useState('')
 
   // Vero・危険セラー・危険単語は抽出設定(サーバー側)に依存するため、
   // 実行前の件数プレビューを表示するには先に設定を取得しておく必要がある。
@@ -867,12 +870,14 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
   async function runClassify() {
     setClassifying(true)
     setClassifyError(null)
+    // 空なら従来どおり「本体か部品か」。指示があればそちらで判定する
+    const instruction = aiInstruction.trim() || undefined
     try {
       // 残り件数を先に出す(1回目の応答を待つと約45秒ものあいだ何も出ない)
       const statusRes = await fetch(`/api/products/${extractionId}/classify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'status' }),
+        body: JSON.stringify({ mode: 'status', instruction }),
       })
       if (statusRes.ok) {
         const status = await statusRes.json() as { pending?: number; unknown?: number }
@@ -888,14 +893,14 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
           res = await fetch(`/api/products/${extractionId}/classify`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
+            body: JSON.stringify({ instruction }),
           })
         } catch {
           await reloadProducts().catch(() => {})
           res = await fetch(`/api/products/${extractionId}/classify`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
+            body: JSON.stringify({ instruction }),
           })
         }
         const json = await res.json() as {
@@ -1139,12 +1144,25 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                   onClick={() => void runClassify()}
                   disabled={classifying || products.length === 0}
                   className="rounded border border-purple-400 px-2 py-0.5 text-xs text-purple-700 hover:bg-purple-50 disabled:opacity-40"
-                  title="タイトルと1枚目の画像をAIが見て、本体か部品かを判定します。判定するだけで、商品は消しません。"
+                  title={aiInstruction.trim()
+                    ? `タイトルと1枚目の画像をAIが見て、指示に当てはまる商品に印を付けます（${aiInstruction.trim()}）。判定するだけで、商品は消しません。`
+                    : 'タイトルと1枚目の画像をAIが見て、本体か部品かを判定します。判定するだけで、商品は消しません。'}
                 >
                   {classifying
                     ? `AIで判定中...${classifyPending != null ? `（残り${classifyPending}件）` : ''}`
-                    : 'AIで部品を判定'}
+                    : (aiInstruction.trim() ? 'AIで除外を判定' : 'AIで部品を判定')}
                 </button>
+                {/* ユーザー要望(2026-10-23): キーワードでは言い表せない条件
+                    (「ジャンク品」「本体以外」など)をその場で指示したい。
+                    空のままなら従来どおり「本体か部品か」を判定する。 */}
+                <input
+                  value={aiInstruction}
+                  onChange={(e) => setAiInstruction(e.target.value)}
+                  disabled={classifying}
+                  placeholder="AIへの指示（例: ジャンク品・パーツ取りを除外）"
+                  aria-label="AIへの除外指示"
+                  className="w-80 rounded border px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-purple-300 disabled:bg-gray-50"
+                />
                 {classifyError && <span className="text-xs text-red-500">{classifyError}</span>}
                 {!classifying && classifyPending === 0 && (
                   <span className="text-xs text-green-700">判定が終わりました</span>
@@ -1936,17 +1954,21 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
                           <span
                             key={flag}
                             className={`rounded px-1 py-0.5 text-center text-[10px] leading-tight ${
-                              flag === 'ai_part'
+                              flag === 'ai_part' || flag === 'ai_exclude'
                                 ? 'bg-purple-100 text-purple-800'
                                 : 'bg-amber-100 text-amber-800'
                             }`}
-                            // AIの判定は理由も見せる(間違いに気づけるように)
-                            title={flag === 'ai_part' ? product.ai_classification?.reason ?? '' : undefined}
+                            // AIの判定は理由も見せる(間違いに気づけるように)。
+                            // その場の指示で判定したものは、何を指示したかも出す
+                            title={flag === 'ai_part' || flag === 'ai_exclude'
+                              ? [product.ai_classification?.instruction, product.ai_classification?.reason]
+                                .filter(Boolean).join(' / ')
+                              : undefined}
                           >
                             {REVIEW_FLAG_LABELS[flag]}
                           </span>
                         ))}
-                        {product.ai_classification?.verdict === 'part' && product.ai_classification.reason && (
+                        {isExcludeVerdict(product.ai_classification?.verdict) && product.ai_classification?.reason && (
                           <span className="max-w-[72px] text-center text-[10px] leading-tight text-purple-700">
                             {product.ai_classification.reason}
                           </span>
