@@ -18,6 +18,10 @@ interface SupplierListingRow {
   supplier_verified_at?: string | null
   supplier_checked_at?: string | null
   fetched_at?: string | null
+  // 未検証のまま取り下げられた出品を見分けるために使う(2026-10-23の事故の復旧)
+  delisted_at?: string | null
+  seller_account_id?: string | null
+  site_id?: string | null
 }
 
 // ユーザー要望: 公式ツールのように価格追従・差分検知の「結果」を実行ごとに
@@ -146,6 +150,10 @@ export interface SupplierCheckResult {
   price_collapsed: number
   // 即決価格が消えて落札しないと買えなくなった件数(売り切れと同じ扱い)
   auction_only: number
+  /** 未検証のまま取り下げられていたが、確認したら購入できたので戻した件数 */
+  restored: number
+  /** 上記のItemID(呼び出し側がeBayの在庫を1に戻す) */
+  restored_item_ids: string[]
   // 1商品ごとの結果(実行履歴のCSV出力用)
   items: SupplierCheckItemDetail[]
 }
@@ -286,6 +294,8 @@ export async function checkSupplierListings(
     unverified_delisted: 0,
     price_collapsed: 0,
     auction_only: 0,
+    restored: 0,
+    restored_item_ids: [],
     items: [],
   }
 
@@ -295,7 +305,7 @@ export async function checkSupplierListings(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let listingQuery: any = db
     .from('inventory_active_listings')
-    .select(needsProductJoin ? 'id, product_id, ebay_item_id, supplier_verified_at, supplier_checked_at, fetched_at, products!inner(source_site)' : 'id, product_id, ebay_item_id, supplier_verified_at, supplier_checked_at, fetched_at')
+    .select(needsProductJoin ? 'id, product_id, ebay_item_id, supplier_verified_at, supplier_checked_at, fetched_at, delisted_at, seller_account_id, site_id, products!inner(source_site)' : 'id, product_id, ebay_item_id, supplier_verified_at, supplier_checked_at, fetched_at, delisted_at, seller_account_id, site_id')
     .eq('user_id', userId)
     .not('product_id', 'is', null)
     // 本番で確認した不具合(2026-10-08): 在庫数が不明(null)の出品84件が、
@@ -306,7 +316,10 @@ export async function checkSupplierListings(
     // られず、在庫が無いまま売れてしまう。
     // 在庫数0(取り下げ済み)は従来どおり対象外、不明は「確認すべき」として
     // 対象に含める。
-    .or('quantity.gt.0,quantity.is.null')
+    // 本番で起きた事故(2026-10-23): 仕入先を確認しないまま656件が在庫0に
+    // された。在庫0は従来どおり対象外だが、「一度も確認していない」出品は
+    // 在庫0でも確認する(確認できて購入可能なら下で戻す)。
+    .or('quantity.gt.0,quantity.is.null,supplier_checked_at.is.null')
   if (options.sourceSite) listingQuery = listingQuery.eq('products.source_site', options.sourceSite)
   if (options.excludeSourceSites?.length) {
     listingQuery = listingQuery.not('products.source_site', 'in', `(${options.excludeSourceSites.join(',')})`)
@@ -672,6 +685,7 @@ export async function checkSupplierListings(
       supplier_checked_at: string
       supplier_verified_at?: string
       quantity?: number
+      delisted_at?: string | null
       supplier_title?: string | null
       supplier_price_jpy?: number | null
       supplier_diff?: SupplierDiffKind[]
@@ -687,7 +701,19 @@ export async function checkSupplierListings(
       result.skipped += 1
       continue
     }
-    if (quantity !== undefined) update.quantity = quantity
+    // 未検証のまま取り下げられていた出品が、確認したら購入できた場合は戻す。
+    // 本番で起きた事故(2026-10-23): eBayレポート取り込みで quantity=0 に
+    // なった656件が、仕入先を確認しないまま取り下げられた。抜き取り20件の
+    // うち13件(65%)はその時点でも即決価格で購入できた。
+    const wasDelistedUnverified = outcome === 'available'
+      && listing.delisted_at != null
+      && listing.supplier_checked_at == null
+    if (wasDelistedUnverified) {
+      update.quantity = 1
+      update.delisted_at = null
+      result.restored += 1
+      result.restored_item_ids.push(listing.ebay_item_id)
+    } else if (quantity !== undefined) update.quantity = quantity
     if (supplierDiff !== undefined) {
       update.supplier_title = supplierTitle ?? null
       update.supplier_price_jpy = supplierPriceJpy ?? null

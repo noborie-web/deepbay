@@ -349,9 +349,12 @@ describe('checkSupplierListings', () => {
     expect(listingQuery.filters).toEqual(expect.arrayContaining([
       ['user_id', 'user-1'],
       ['product_id', 'is', null],
-      ['quantity.gt.0,quantity.is.null', 'or', null],
+      // 一度も確認していない出品は在庫0でも対象にする。
+      // 本番で起きた事故(2026-10-23): 仕入先を確認しないまま656件が在庫0に
+      // され、従来の条件では永久に再確認されなかった。
+      ['quantity.gt.0,quantity.is.null,supplier_checked_at.is.null', 'or', null],
     ]))
-    // 在庫数0(取り下げ済み)まで拾ってしまわないこと
+    // null を取りこぼす書き方(.gt だけ)に戻っていないこと
     expect(listingQuery.filters).not.toContainEqual(['quantity', 'gt', 0])
     expect(listingQuery.order).toEqual({
       column: 'supplier_checked_at',
