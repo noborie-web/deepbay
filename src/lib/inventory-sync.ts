@@ -8,6 +8,7 @@ import {
   resolveInventoryProductId,
   type InventoryListingInput,
 } from './inventory'
+import { selectAllRows, selectByIds, selectInChunks } from './db-chunk'
 
 export interface InventorySyncResult {
   total: number
@@ -408,6 +409,7 @@ export async function markListingsDelisted(db: SupabaseClient, userId: string, i
       .from('products')
       .update({ listing_status: 'delisted', updated_at: now })
       .eq('user_id', userId)
+      // db-audit-ok: productIds は直前の chunk(最大100件)から出た分だけ
       .in('id', productIds)
     if (productError) throw new Error(`Product delisted state update failed: ${productError.message}`)
   }
@@ -457,6 +459,7 @@ export async function markListingsRestored(db: SupabaseClient, userId: string, i
       .from('products')
       .update({ listing_status: 'listed', updated_at: now })
       .eq('user_id', userId)
+      // db-audit-ok: productIds は直前の chunk(最大100件)から出た分だけ
       .in('id', productIds)
     if (productError) throw new Error(`Product restore state update failed: ${productError.message}`)
   }
@@ -620,6 +623,7 @@ async function collectKnownItemIds(
   const ids = new Set<string>()
   const sellerAccountId = options.sellerAccountId ?? null
 
+  // db-audit-ok: 下の selectAllRows でページ送りする(組み立てが別の文なので検知できない)
   let listingQuery = db
     .from('inventory_active_listings')
     .select('ebay_item_id, fetched_at')
@@ -632,9 +636,14 @@ async function collectKnownItemIds(
   if (options.skipFetchedWithinMs && options.skipFetchedWithinMs > 0) {
     listingQuery = listingQuery.lt('fetched_at', new Date(Date.now() - options.skipFetchedWithinMs).toISOString())
   }
-  const { data: listings, error: listingError } = await listingQuery
-  if (listingError) throw new Error(`Known listing lookup failed: ${listingError.message}`)
-  for (const row of listings ?? []) if (row.ebay_item_id) ids.add(String(row.ebay_item_id))
+  // 本番で確認した不具合(2026-10-23): 上限なしで引いていたため PostgREST の
+  // 既定(1,000行)で打ち切られ、同期の対象が1,000件で頭打ちになっていた。
+  // miyabi-24 は管理出品2,384件に対し items_total が 1,000〜1,051 で張り付き、
+  // 約1,330件(56%)が同期されないまま。在庫数も売り切れも終了も検知されない。
+  const listings = await selectAllRows<{ ebay_item_id: string | null }>(
+    () => listingQuery.order('ebay_item_id'),
+  )
+  for (const row of listings) if (row.ebay_item_id) ids.add(String(row.ebay_item_id))
 
   // まだ在庫一覧に入っていない出品(ダイレクト出品直後など)は、商品が属する
   // 抽出の出品セラーでこのセラーのものかを判定する。
@@ -643,15 +652,18 @@ async function collectKnownItemIds(
 
   const productIds = new Set<string>()
   for (const chunk of extractionIds ? chunked(extractionIds) : [null]) {
+    // db-audit-ok: 下の selectAllRows でページ送りする(組み立てが別の文なので検知できない)
     let productQuery = db
       .from('products')
       .select('ebay_item_id')
       .eq('user_id', userId)
       .not('ebay_item_id', 'is', null)
     if (chunk) productQuery = productQuery.in('extraction_id', chunk)
-    const { data: products, error: productError } = await productQuery
-    if (productError) throw new Error(`Product listing lookup failed: ${productError.message}`)
-    for (const row of products ?? []) if (row.ebay_item_id) productIds.add(String(row.ebay_item_id))
+    // ここも同じく1,000行で打ち切られる(商品は4,255件ある)
+    const products = await selectAllRows<{ ebay_item_id: string | null }>(
+      () => productQuery.order('id'),
+    )
+    for (const row of products) if (row.ebay_item_id) productIds.add(String(row.ebay_item_id))
   }
   for (const id of productIds) ids.add(id)
 
@@ -666,12 +678,12 @@ async function extractionIdsForSeller(
   sellerAccountId: string,
   options: InventorySyncOptions,
 ): Promise<string[]> {
-  const { data, error } = await db
+  const data = await selectAllRows<{ id: string; seller_account_id: string | null }>(() => db
     .from('extractions')
     .select('id, seller_account_id')
     .eq('user_id', userId)
-  if (error) throw new Error(`Extraction lookup failed: ${error.message}`)
-  return (data ?? [])
+    .order('id'))
+  return data
     .filter(row => row.seller_account_id === sellerAccountId
       || (row.seller_account_id === null && options.ownsUnassignedProducts === true))
     .map(row => row.id as string)
@@ -939,28 +951,36 @@ async function recordEndedListingHistory(
   endInfoById: Map<string, EndedListingInfo> | undefined,
   sellerAccountId?: string | null,
 ): Promise<void> {
-  let query = db
-    .from('inventory_active_listings')
-    .select('ebay_item_id, custom_label, product_id, title, site_id, currency, current_price, quantity, quantity_sold, seller_account_id')
-    .eq('user_id', userId)
-    .in('ebay_item_id', itemIds)
-  if (sellerAccountId) query = query.eq('seller_account_id', sellerAccountId)
-  const { data: rows, error } = await query
-  if (error) {
-    console.warn('[inventory] ended listing history lookup failed:', error.message)
+  // ItemIDを100件超まとめて .in() に渡すとURLが長すぎて400になる
+  type EndedRow = {
+    ebay_item_id: string; custom_label: string | null; product_id: string | null
+    title: string | null; site_id: string | null; currency: string | null
+    current_price: number | null; quantity: number | null; quantity_sold: number | null
+    seller_account_id: string | null
+  }
+  let rows: EndedRow[]
+  try {
+    rows = await selectInChunks<EndedRow>(() => {
+      const query = db
+        .from('inventory_active_listings')
+        .select('ebay_item_id, custom_label, product_id, title, site_id, currency, current_price, quantity, quantity_sold, seller_account_id')
+        .eq('user_id', userId)
+      return sellerAccountId ? query.eq('seller_account_id', sellerAccountId) : query
+    }, 'ebay_item_id', itemIds)
+  } catch (error) {
+    // 履歴が残らないだけで同期自体は続行する(従来どおり)
+    console.warn('[inventory] ended listing history lookup failed:', error instanceof Error ? error.message : String(error))
     return
   }
-  if (!rows || rows.length === 0) return
+  if (rows.length === 0) return
 
-  const productIds = rows.map((row) => row.product_id as string | null).filter((id): id is string => !!id)
+  const productIds = rows.map((row) => row.product_id).filter((id): id is string => !!id)
   const sourceUrlById = new Map<string, string | null>()
   if (productIds.length > 0) {
-    const { data: products } = await db
-      .from('products')
-      .select('id, source_url')
-      .eq('user_id', userId)
-      .in('id', productIds)
-    for (const product of products ?? []) sourceUrlById.set(product.id as string, (product.source_url as string | null) ?? null)
+    const products = await selectByIds<{ id: string; source_url: string | null }>(
+      db, 'products', 'id, source_url', productIds,
+    )
+    for (const product of products) sourceUrlById.set(product.id, product.source_url ?? null)
   }
 
   const now = new Date().toISOString()

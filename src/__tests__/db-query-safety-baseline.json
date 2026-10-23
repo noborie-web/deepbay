@@ -62,8 +62,7 @@
     "unbounded_select": 1
   },
   "src/app/api/inventory/actions/recover-products/route.ts": {
-    "ignored_error": 4,
-    "unbounded_select": 2
+    "ignored_error": 4
   },
   "src/app/api/inventory/actions/revise-price/route.ts": {
     "ignored_error": 1,
@@ -77,7 +76,7 @@
   "src/app/api/inventory/actions/translate-descriptions/route.ts": {
     "ignored_error": 3,
     "unbounded_in": 1,
-    "unbounded_select": 2
+    "unbounded_select": 1
   },
   "src/app/api/inventory/actions/undo-delist/route.ts": {
     "ignored_error": 3,
@@ -89,7 +88,7 @@
   },
   "src/app/api/inventory/csv-listed-status/route.ts": {
     "unbounded_in": 1,
-    "unbounded_select": 2
+    "unbounded_select": 1
   },
   "src/app/api/inventory/duplicate-checks/[id]/run/route.ts": {
     "ignored_error": 3,
@@ -116,8 +115,7 @@
     "unbounded_select": 1
   },
   "src/app/api/inventory/upload/route.ts": {
-    "ignored_error": 1,
-    "unbounded_select": 3
+    "ignored_error": 1
   },
   "src/app/api/price-tier-presets/route.ts": {
     "ignored_error": 1
@@ -147,22 +145,5 @@
   },
   "src/lib/inventory-pricing.ts": {
     "ignored_error": 1
-  },
-  "src/lib/inventory-quick-check.ts": {
-    "ignored_error": 2,
-    "unbounded_select": 1
-  },
-  "src/lib/inventory-supplier-check.ts": {
-    "unbounded_in": 3,
-    "ignored_error": 2,
-    "unbounded_select": 3
-  },
-  "src/lib/inventory-sync.ts": {
-    "unbounded_in": 6,
-    "ignored_error": 1,
-    "unbounded_select": 9
-  },
-  "src/lib/product-deletion.ts": {
-    "unbounded_select": 1
   }
 }

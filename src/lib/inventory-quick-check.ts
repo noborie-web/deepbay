@@ -6,6 +6,7 @@ import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { reviseInventoryStatusBatch } from '@/lib/ebay-actions'
 import { markListingsDelisted } from '@/lib/inventory-sync'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
+import { selectAllRows } from '@/lib/db-chunk'
 
 // ユーザー要望: 出品数が1,000件を超えても「売り切れを早く検知して取り下げる」を
 // 維持したい。日次の在庫管理(1回80秒・約65件)だけでは一巡に日数がかかるため、
@@ -35,10 +36,14 @@ export async function runQuickSupplierCheck(
   db: SupabaseClient,
   options: QuickCheckOptions,
 ): Promise<QuickCheckUserResult[]> {
-  const { data: allSettings } = await db
+  // 失敗を黙って「対象0人」にしない。0件になると売り切れ検知が
+  // まるごと行われないまま正常終了する(15分ごとに静かに何もしなくなる)。
+  const { data: allSettings, error: settingsError } = await db
     .from('inventory_settings')
     .select('user_id, ebay_token, ebay_refresh_token, ebay_token_expires_at, auto_delist, days_until_delist, delist_by_age_enabled, delist_on_sold_out, price_change_direction, price_change_threshold_rate, delist_on_title_change, delist_on_unverified, unverified_delist_hours')
     .eq('sync_enabled', true)
+
+  if (settingsError) throw new Error(`在庫管理の設定を取得できませんでした: ${settingsError.message}`)
 
   const results: QuickCheckUserResult[] = []
   for (const settings of allSettings ?? []) {
@@ -82,16 +87,20 @@ export async function runQuickSupplierCheck(
       const eligibility = resolveDelistEligibility(settings)
       if (check.unavailable > 0 && settings.auto_delist && eligibility.enabled && eligibility.immediate) {
         const tokenResolver = await createInventoryTokenResolver(db, userId, settings)
-        const { data: listings } = await db
+        // 上限なしで引くと既定1,000行で打ち切られ、超過分が取り下げられない
+        const listings = await selectAllRows<{
+          ebay_item_id: string; seller_account_id: string | null; site_id: string | null
+        }>(() => db
           .from('inventory_active_listings')
           .select('ebay_item_id, seller_account_id, site_id')
           .eq('user_id', userId)
           .not('product_id', 'is', null)
           .eq('quantity', 0)
           .is('delisted_at', null)
+          .order('ebay_item_id'))
         // 出品したセラーのトークン・サイトで取り下げる(他アカウントの出品は触らない)
         const entriesBySeller = new Map<string | null, Array<{ itemId: string; quantity: number; siteId: string | null }>>()
-        for (const l of listings ?? []) {
+        for (const l of listings) {
           const key = (l.seller_account_id as string | null) ?? null
           const list = entriesBySeller.get(key) ?? []
           list.push({ itemId: l.ebay_item_id as string, quantity: 0, siteId: (l.site_id as string | null) ?? 'US' })

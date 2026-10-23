@@ -33,7 +33,9 @@ vi.mock('@supabase/supabase-js', () => ({
       }
       if (table === 'inventory_active_listings') {
         const chain: Record<string, unknown> = {}
-        for (const m of ['select', 'eq', 'not', 'is']) chain[m] = vi.fn(() => chain)
+        for (const m of ['select', 'eq', 'not', 'is', 'order']) chain[m] = vi.fn(() => chain)
+        // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
+        chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? mocks.zeroListings : [], error: null }))
         chain.then = (resolve: (v: unknown) => void) => resolve({ data: mocks.zeroListings, error: null })
         return chain
       }
