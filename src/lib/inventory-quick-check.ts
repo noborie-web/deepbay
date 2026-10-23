@@ -4,9 +4,9 @@ import { createInventoryTokenResolver } from '@/lib/inventory-token-resolver'
 import { flushEbayCallCounts } from '@/lib/ebay-call-counter'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
 import { reviseInventoryStatusBatch } from '@/lib/ebay-actions'
-import { markListingsDelisted } from '@/lib/inventory-sync'
+import { markListingsDelisted, markListingsRestored } from '@/lib/inventory-sync'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
-import { selectAllRows } from '@/lib/db-chunk'
+import { selectAllRows, selectInChunks } from '@/lib/db-chunk'
 import { onlyVerifiedSoldOut } from '@/lib/inventory-listing-filter'
 
 // ユーザー要望: 出品数が1,000件を超えても「売り切れを早く検知して取り下げる」を
@@ -30,6 +30,8 @@ export interface QuickCheckUserResult {
   user_id: string
   check?: Partial<SupplierCheckResult>
   delist?: { total: number; succeeded: number }
+  /** 未検証のまま取り下げられていた出品を戻した件数 */
+  restored?: { total: number; succeeded: number }
   error?: string
 }
 
@@ -82,6 +84,51 @@ export async function runQuickSupplierCheck(
           started_at: startedAt,
           finished_at: new Date().toISOString(),
         })
+      }
+
+      // 未検証のまま取り下げられていた出品のうち、確認したら購入できたものを
+      // eBay側も在庫1に戻す(2026-10-23の事故の復旧)。
+      // 取り下げと違い設定に関係なく戻す: 誤って止めた出品を元に戻すだけなので。
+      const restoredIds = check.restored_item_ids ?? []
+      if (restoredIds.length > 0) {
+        const tokenResolver = await createInventoryTokenResolver(db, userId, settings)
+        const rows = await selectInChunks<{ ebay_item_id: string; seller_account_id: string | null; site_id: string | null }>(
+          () => db
+            .from('inventory_active_listings')
+            .select('ebay_item_id, seller_account_id, site_id')
+            .eq('user_id', userId),
+          'ebay_item_id',
+          restoredIds,
+        )
+        const bySeller = new Map<string | null, Array<{ itemId: string; quantity: number; siteId: string | null }>>()
+        for (const row of rows) {
+          const key = row.seller_account_id ?? null
+          const list = bySeller.get(key) ?? []
+          list.push({ itemId: row.ebay_item_id, quantity: 1, siteId: row.site_id ?? 'US' })
+          bySeller.set(key, list)
+        }
+        const restoreResults: Array<{ itemId: string; success: boolean; error?: string }> = []
+        for (const [sellerAccountId, entries] of bySeller) {
+          const token = tokenResolver.tokenFor(sellerAccountId)
+          if (!token) continue
+          restoreResults.push(...(await reviseInventoryStatusBatch(token, entries)).results)
+        }
+        const ok = restoreResults.filter(r => r.success).map(r => r.itemId)
+        if (ok.length > 0) await markListingsRestored(db, userId, ok)
+        await db.from('inventory_runs').insert({
+          user_id: userId,
+          run_type: 'undo_delist',
+          status: restoreResults.every(r => r.success) ? 'completed' : 'failed',
+          result_summary: {
+            total: restoreResults.length,
+            succeeded: ok.length,
+            reason: 'unverified_delist_recovered',
+            source: options.runType,
+            items: restoreResults.map(r => ({ ebay_item_id: r.itemId, success: r.success, error: r.error ?? null })),
+          },
+          started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
+        })
+        userResult.restored = { total: restoreResults.length, succeeded: ok.length }
       }
 
       // 売り切れ即取り下げ
