@@ -315,7 +315,7 @@ describe('GET /api/cron/inventory-auto', () => {
       expect(mockSyncInventoryListings).not.toHaveBeenCalled()
     })
 
-    it('稼働回数2回のユーザーは slot=21 でも処理し、価格改定が「朝のみ」なら価格改定だけ行わない', async () => {
+    it('稼働回数2回のユーザーは slot=21 でも同期と仕入先チェックを行う', async () => {
       const { GET } = await import('@/app/api/cron/inventory-auto/route')
       mockSettings = [{ ...mockSettings[0], daily_run_count: 2, auto_revise_price: true, revise_price_schedule: 'morning' }]
       const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=21', { headers: { authorization: 'Bearer cron-secret' } })
@@ -324,39 +324,24 @@ describe('GET /api/cron/inventory-auto', () => {
       expect(res.status).toBe(200)
       expect(mockSyncInventoryListings).toHaveBeenCalledOnce()
       expect(mockCheckSupplierListings).toHaveBeenCalledOnce()
-      expect(json.results[0].revise_price).toBeUndefined()
       expect(mockRunInsert.mock.calls.some(c => c[0].run_type === 'auto_revise_price')).toBe(false)
     })
 
-    it('価格改定が「毎回」なら slot=21 でも価格改定を行う', async () => {
+    // 本番で確認した不具合(2026-10-23): ここで価格改定まで行っていたときは、
+    // 同期・仕入先チェック・取り下げで236〜275秒(実測4回)を使い切り、300秒の
+    // 上限に当たって記録を書く前に強制終了していた。ONにしても
+    // auto_revise_price の記録が1件も残らない形だったので、別のcronに分けた。
+    it('価格改定はここでは行わない(/api/cron/revise-price が担当する)', async () => {
       const { GET } = await import('@/app/api/cron/inventory-auto/route')
-      mockSettings = [{ ...mockSettings[0], daily_run_count: 2, auto_revise_price: true, revise_price_schedule: 'every' }]
+      mockSettings = [{ ...mockSettings[0], daily_run_count: 2, auto_revise_price: true }]
       const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=21', { headers: { authorization: 'Bearer cron-secret' } })
       await GET(req)
-      expect(mockRunInsert.mock.calls.some(c => c[0].run_type === 'auto_revise_price')).toBe(true)
+      expect(mockRunInsert.mock.calls.some(c => c[0].run_type === 'auto_revise_price')).toBe(false)
+      // 価格改定用の取得(seller_account_id を含む select)も走らない
+      const reviseSelect = 'ebay_item_id, current_price, product_id, seller_account_id, site_id, currency'
+      expect(mockListingQueryCalls.some(c => c[0] === 'select' && c[1] === reviseSelect)).toBe(false)
     })
 
-    // 本番で確認した無駄(2026-10-22): 対象抽出に在庫数・取り下げ済みの絞り込みが
-    // 無く、既に取り下げた373件にもReviseを送っていた。240秒の時間予算を食って
-    // 本来直すべき出品が翌日に持ち越されるので、絞り込みを固定する。
-    it('価格改定の対象は取り下げ済み・在庫0を除いた生きている出品だけ', async () => {
-      const { GET } = await import('@/app/api/cron/inventory-auto/route')
-      mockSettings = [{ ...mockSettings[0], daily_run_count: 2, auto_revise_price: true, revise_price_schedule: 'every' }]
-      const req = new NextRequest('http://localhost/api/cron/inventory-auto?slot=21', { headers: { authorization: 'Bearer cron-secret' } })
-      await GET(req)
-      // 同じルートの取り下げ処理・仕入先チェックも delisted_at / quantity を
-      // 絞り込むため、「どこかで呼ばれた」では検証にならない。価格改定の
-      // クエリ(seller_account_idを含むselect)に続く呼び出しだけを見る。
-      const reviseSelect = 'ebay_item_id, current_price, product_id, seller_account_id, site_id, currency'
-      const start = mockListingQueryCalls.findIndex(c => c[0] === 'select' && c[1] === reviseSelect)
-      expect(start).toBeGreaterThanOrEqual(0)
-      const after = mockListingQueryCalls.slice(start + 1)
-      const end = after.findIndex(c => c[0] === 'select')
-      const reviseQuery = end === -1 ? after : after.slice(0, end)
-      expect(reviseQuery).toContainEqual(['is', 'delisted_at', null])
-      // 在庫数が不明(null)の出品はeBayに生きているので残す
-      expect(reviseQuery).toContainEqual(['or', 'quantity.gt.0,quantity.is.null'])
-    })
   })
 
   // ユーザー要望: 「全体在庫管理を今すぐ実行」。user_id で対象を絞り、force=1 なら
