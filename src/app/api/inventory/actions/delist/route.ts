@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { onlyVerifiedSoldOut } from '@/lib/inventory-listing-filter'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { flushEbayCallCounts } from '@/lib/ebay-call-counter'
@@ -33,12 +34,13 @@ export async function GET() {
     return NextResponse.json({ items: [], count: 0, disabled: true })
   }
 
-  let query = db
+  // 仕入先を実際に確認した結果の在庫0だけを対象にする(2026-10-23の事故)
+  let query = onlyVerifiedSoldOut(db
     .from('inventory_active_listings')
     .select('ebay_item_id, title, current_price, quantity, product_id, start_time')
     .eq('user_id', user.id)
     .eq('quantity', 0)
-    .is('delisted_at', null)
+    .is('delisted_at', null))
   if (eligibility.cutoffIso) query = query.lte('start_time', eligibility.cutoffIso)
   const { data: listings, error: listingsError } = await query
 
@@ -79,12 +81,12 @@ export async function POST(req: NextRequest) {
   if (!eligibility.enabled) {
     return NextResponse.json({ error: 'N日経過取り下げがOFFのため取り下げは実行できません' }, { status: 409 })
   }
-  let query = db
+  let query = onlyVerifiedSoldOut(db
     .from('inventory_active_listings')
     .select('ebay_item_id, product_id, quantity, start_time, seller_account_id, site_id')
     .eq('user_id', user.id)
     .eq('quantity', 0)
-    .is('delisted_at', null)
+    .is('delisted_at', null))
     .in('ebay_item_id', itemIds)
   if (eligibility.cutoffIso) query = query.lte('start_time', eligibility.cutoffIso)
   const { data: listings, error: listingsError } = await query

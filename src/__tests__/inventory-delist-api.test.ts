@@ -32,6 +32,8 @@ vi.mock('@supabase/supabase-js', () => ({
         const query: Record<string, unknown> = {
           select: vi.fn().mockReturnThis(),
           eq: vi.fn().mockReturnThis(),
+          // 売り切れ取り下げは supplier_checked_at の確認を必須にした(2026-10-23)
+          not: vi.fn().mockReturnThis(),
           in: mockIn.mockReturnThis(),
           is: mockIs.mockReturnThis(),
           lte: mockLte.mockReturnThis(),

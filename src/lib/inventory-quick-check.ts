@@ -7,6 +7,7 @@ import { reviseInventoryStatusBatch } from '@/lib/ebay-actions'
 import { markListingsDelisted } from '@/lib/inventory-sync'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { selectAllRows } from '@/lib/db-chunk'
+import { onlyVerifiedSoldOut } from '@/lib/inventory-listing-filter'
 
 // ユーザー要望: 出品数が1,000件を超えても「売り切れを早く検知して取り下げる」を
 // 維持したい。日次の在庫管理(1回80秒・約65件)だけでは一巡に日数がかかるため、
@@ -90,13 +91,13 @@ export async function runQuickSupplierCheck(
         // 上限なしで引くと既定1,000行で打ち切られ、超過分が取り下げられない
         const listings = await selectAllRows<{
           ebay_item_id: string; seller_account_id: string | null; site_id: string | null
-        }>(() => db
+        }>(() => onlyVerifiedSoldOut(db
           .from('inventory_active_listings')
           .select('ebay_item_id, seller_account_id, site_id')
           .eq('user_id', userId)
           .not('product_id', 'is', null)
           .eq('quantity', 0)
-          .is('delisted_at', null)
+          .is('delisted_at', null))
           .order('ebay_item_id'))
         // 出品したセラーのトークン・サイトで取り下げる(他アカウントの出品は触らない)
         const entriesBySeller = new Map<string | null, Array<{ itemId: string; quantity: number; siteId: string | null }>>()
