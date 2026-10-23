@@ -4,6 +4,7 @@ import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { flushEbayCallCounts } from '@/lib/ebay-call-counter'
 import { endItem, reviseInventoryStatusBatch, addFixedPriceItem } from '@/lib/ebay-actions'
 import { selectAllRows, selectByIds, selectInChunks } from '@/lib/db-chunk'
+import { onlyVerifiedSoldOut } from '@/lib/inventory-listing-filter'
 import { resolveInventoryAccessToken, resolveSellerAccountAccessToken } from '@/lib/inventory-auth'
 import { listInventorySellerAccounts, sellerAccountLabel, type InventorySellerAccount } from '@/lib/inventory-seller-accounts'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
@@ -352,13 +353,13 @@ export async function GET(req: NextRequest) {
         ebay_item_id: string; product_id: string | null
         seller_account_id: string | null; site_id: string | null
       }>(() => {
-        let delistQuery = db
+        let delistQuery = onlyVerifiedSoldOut(db
           .from('inventory_active_listings')
           .select('ebay_item_id, product_id, seller_account_id, site_id')
           .eq('user_id', userId)
           .not('product_id', 'is', null)
           .eq('quantity', 0)
-          .is('delisted_at', null)
+          .is('delisted_at', null))
         if (delistEligibility.cutoffIso) delistQuery = delistQuery.lte('start_time', delistEligibility.cutoffIso)
         return delistQuery.order('ebay_item_id')
       })

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { onlyVerifiedSoldOut } from '@/lib/inventory-listing-filter'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
 import { buildEndCsvFiles, buildReviseCsvFiles } from '@/lib/inventory-action-csv'
@@ -70,13 +71,14 @@ export async function GET(req: NextRequest) {
     const eligibility = resolveDelistEligibility(settings)
     if (!eligibility.enabled) return NextResponse.json({ files: [], count: 0, disabled: true })
 
-    let query = db
+    // 仕入先を実際に確認した結果の在庫0だけを対象にする(2026-10-23の事故)
+    let query = onlyVerifiedSoldOut(db
       .from('inventory_active_listings')
       .select('ebay_item_id, site_id, seller_account_id')
       .eq('user_id', user.id)
       .not('product_id', 'is', null)
       .eq('quantity', 0)
-      .is('delisted_at', null)
+      .is('delisted_at', null))
     if (eligibility.cutoffIso) query = query.lte('start_time', eligibility.cutoffIso)
     const { data: listings, error } = await query
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
