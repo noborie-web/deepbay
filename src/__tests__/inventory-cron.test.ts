@@ -159,8 +159,10 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(res.status).toBe(200)
     expect(json).toMatchObject({ ok: true, processed: 1 })
     expect(mockResolveAccessToken).toHaveBeenCalledOnce()
-    // active出品が数十ページあるため、cronでは取得タイムアウトを引き上げて渡す
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 80_000, discoveryTimeBudgetMs: 15_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true })
+    // active出品が数十ページあるため、cronでは取得タイムアウトを引き上げて渡す。
+    // eBayの1日の上限(5,000回)を超えた事故(2026-10-24)を受けて、直近5時間に
+    // 取得済みの出品は再照会しない・個別確認は60件までに抑える。
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 80_000, discoveryTimeBudgetMs: 15_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true, skipFetchedWithinMs: 5 * 60 * 60 * 1000, maxMissingChecksPerRun: 60 })
     expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 60_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 }, delistOnTitleChange: true, delistOnUnverified: true, unverifiedDelistHours: 24 })
     expect(mockSyncInventoryListings.mock.invocationCallOrder[0]).toBeLessThan(
       mockCheckSupplierListings.mock.invocationCallOrder[0],
@@ -213,7 +215,7 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 2 })
     expect(json.results[0].auth).toEqual({ error: 'refresh failed' })
     expect(mockSyncInventoryListings).toHaveBeenCalledTimes(1)
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 80_000, discoveryTimeBudgetMs: 15_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 80_000, discoveryTimeBudgetMs: 15_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true, skipFetchedWithinMs: 5 * 60 * 60 * 1000, maxMissingChecksPerRun: 60 })
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       user_id: 'user-1',
       status: 'failed',

@@ -27,7 +27,7 @@ function db() {
   return {
     from: vi.fn(() => {
       const chain: Record<string, unknown> = {}
-      for (const m of ['select', 'eq', 'not', 'is', 'or', 'order', 'in']) {
+      for (const m of ['select', 'eq', 'not', 'is', 'or', 'order', 'in', 'limit']) {
         chain[m] = vi.fn((...args: unknown[]) => { mocks.calls.push([m, ...args]); return chain })
       }
       chain.range = vi.fn(async () => ({ data: [], error: null }))

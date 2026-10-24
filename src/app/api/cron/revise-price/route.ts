@@ -49,32 +49,39 @@ export async function GET(req: NextRequest) {
   for (const settings of allSettings ?? []) {
     const userId = settings.user_id as string
     const startedAt = new Date().toISOString()
+    // 本番で確認した不具合(2026-10-24): cronは4回発火したのに記録は1回しか
+    // 残らなかった。300秒の上限で関数ごと強制終了されると、最後に書く形では
+    // 記録自体が残らない。先に running で作っておき、終わったら更新する。
+    // こうすれば「落ちた」ことが running のまま残って分かる。
+    const { data: runRow, error: runInsertError } = await db.from('inventory_runs').insert({
+      user_id: userId,
+      run_type: 'auto_revise_price',
+      status: 'running',
+      started_at: startedAt,
+    }).select('id').maybeSingle()
+    // 記録を作れなかったら、その旨をログに残す(黙って記録なしにしない)
+    if (runInsertError) console.warn('[revise-price] 実行記録を作れませんでした:', runInsertError.message)
+    const runId = runRow?.id as string | undefined
+    const finish = async (row: Record<string, unknown>) => {
+      if (runId) await db.from('inventory_runs').update(row).eq('id', runId)
+      else await db.from('inventory_runs').insert({ user_id: userId, run_type: 'auto_revise_price', started_at: startedAt, ...row })
+    }
     try {
       const { summary, status, errorMessage } = await runRevisePriceForUser(db, userId, settings, {
         timeBudgetMs: USER_TIME_BUDGET_MS,
       })
       await flushEbayCallCounts(db, userId)
-      await db.from('inventory_runs').insert({
-        user_id: userId,
-        run_type: 'auto_revise_price',
+      await finish({
         status,
         error_message: errorMessage,
         result_summary: summary,
-        started_at: startedAt,
         finished_at: new Date().toISOString(),
       })
       results.push({ user_id: userId, ...summary, items: undefined })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       // 失敗も必ず残す。記録が無いと「動いていない」ことに気づけない
-      await db.from('inventory_runs').insert({
-        user_id: userId,
-        run_type: 'auto_revise_price',
-        status: 'failed',
-        error_message: message,
-        started_at: startedAt,
-        finished_at: new Date().toISOString(),
-      })
+      await finish({ status: 'failed', error_message: message, finished_at: new Date().toISOString() })
       results.push({ user_id: userId, error: message })
     }
   }
