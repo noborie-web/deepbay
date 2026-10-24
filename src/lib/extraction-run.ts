@@ -104,6 +104,19 @@ export function mergeExclusionSummaries(
   return merged
 }
 
+/**
+ * 抽出時点の情報だけでは足りず、商品ページからの補完が要るか。
+ *
+ * 説明文が無い、または写真が1枚しか無いものは検索結果の情報しか持っていない。
+ * サイトごとに決め打ちすると、新しい仕入先を足したときに同じ取りこぼしが起きる。
+ */
+export function needsDetailEnrichment(
+  scraped: { description?: string | null; images?: string[] | null },
+): boolean {
+  if (!scraped.description?.trim()) return true
+  return (scraped.images?.length ?? 0) <= 1
+}
+
 export async function runScrape(
   userId: string,
   extractionId: string,
@@ -732,9 +745,17 @@ export async function runScrape(
         source_updated_at: scraped.sourceUpdatedAt,
         raw_source_data: scraped.rawData ?? null,
         ai_description_generated_at: aiGeneratedIndexes.has(idx) ? new Date().toISOString() : null,
-        // 抽出中に商品ページの詳細を取れなかった(説明文が空の)ヤフオク・Yahoo!フリマ
-        // 商品は、抽出完了後に /api/extractions/[id]/enrich-details で補完する
-        detail_enriched_at: (scraped.sourceSite === 'yahoo_flea' || scraped.sourceSite === 'yahoo_auction') && !scraped.description
+        // 抽出中に商品ページの詳細を取れなかった商品は、抽出完了後に
+        // /api/extractions/[id]/enrich-details で補完する。
+        //
+        // ユーザー報告(2026-10-24): メルカリで同じ画像が2枚だけ取得される。
+        // 原因はここでサイト名を決め打ちしていたこと。ヤフオク・Yahoo!フリマ
+        // 以外は無条件に「取得済み」として保存していたため、検索結果の情報
+        // しか無いメルカリ商品が補完されないまま残っていた
+        // (実測: メルカリ407件のうち357件(88%)が画像2枚以下、331件(81%)が
+        //  説明文なし。ヤフオクは平均5.1枚、Yahoo!フリマは8.5枚)。
+        // サイトではなく「詳細が実際に取れたか」で判断する。
+        detail_enriched_at: needsDetailEnrichment(scraped)
           ? null
           : new Date().toISOString(),
       }
