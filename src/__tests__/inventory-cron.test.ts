@@ -384,7 +384,9 @@ describe('GET /api/cron/inventory-auto', () => {
     const firstOptions = mockSyncInventoryListings.mock.calls[0][3] as { fetchTotalTimeoutMs: number; maxItemsPerRun: number }
     const secondOptions = mockSyncInventoryListings.mock.calls[1][3] as { fetchTotalTimeoutMs: number; maxItemsPerRun: number }
     expect(firstOptions).toMatchObject({ fetchTotalTimeoutMs: 80_000, maxItemsPerRun: 800 })
-    expect(secondOptions).toMatchObject({ fetchTotalTimeoutMs: 15_000, maxItemsPerRun: 50 })
+    // 件数の少ないセラーにも一覧取得(GetMyeBaySelling)が終わる予算を与える。
+    // 15秒だとガードに掛かって全件を個別照会(GetItem)していた(2026-10-24の事故)
+    expect(secondOptions).toMatchObject({ fetchTotalTimeoutMs: 40_000, maxItemsPerRun: 50 })
     // 従来の単一トークンには一度もフォールバックしない
     expect(mockResolveAccessToken).not.toHaveBeenCalled()
     // カーソルはセラーごとに記録する

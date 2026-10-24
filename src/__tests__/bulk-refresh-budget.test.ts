@@ -38,18 +38,47 @@ describe('一覧取得(GetMyeBaySelling)を使うかの判定', () => {
   })
 })
 
-describe('本番の配分で akebono-32 が一覧取得に入らないこと', () => {
-  // 2026-10-22時点の実数。akebono-32 は比例配分だと10.2秒で、下限の15秒に
-  // 張り付く。この組み合わせが3日間の更新停止を起こしたので、配分と判定を
-  // つないだ形で固定する。
-  const AKEBONO = 350
-  const MIYABI = 2382
+describe('本番の配分でも両方のセラーが一覧取得を使えること', () => {
+  // 本番で起きた事故(2026-10-24): eBayの1日の上限(5,000回)を超えた。
+  // 原因は akebono-32 が cron 4回・手動9回のすべてで一覧取得を使えず、
+  // 全件を個別照会(GetItem)していたこと。予算が比例配分の下限15秒に
+  // 張り付き、一覧取得のガード(30秒)に毎回掛かっていた。
+  // 一覧取得は1回200件なので、使えないと呼び出し回数が桁違いに増える。
+  const AKEBONO = 546
+  const MIYABI = 2966
 
-  it('akebono-32の予算は下限の15秒で、一覧取得には足りない', () => {
+  it('件数の少ないセラーにも一覧取得が終わる予算を与える', () => {
     const [akebono, miyabi] = allocateSyncBudgets([AKEBONO, MIYABI], { maxItems: 800, fetchMs: 80_000 })
-    expect(akebono.fetchTotalTimeoutMs).toBe(15_000)
-    expect(shouldUseBulkRefresh(AKEBONO, { bulkRefresh: true, fetchTotalTimeoutMs: akebono.fetchTotalTimeoutMs })).toBe(false)
-    // 件数の多いmiyabi-24は従来どおり一覧取得で回る
+    expect(akebono.fetchTotalTimeoutMs).toBeGreaterThanOrEqual(30_000)
+    expect(shouldUseBulkRefresh(AKEBONO, { bulkRefresh: true, fetchTotalTimeoutMs: akebono.fetchTotalTimeoutMs })).toBe(true)
     expect(shouldUseBulkRefresh(MIYABI, { bulkRefresh: true, fetchTotalTimeoutMs: miyabi.fetchTotalTimeoutMs })).toBe(true)
+  })
+
+  it('下限の合計が予算を超えない(セラーが増えても破綻しない)', () => {
+    const budgets = allocateSyncBudgets([100, 100, 100, 100], { maxItems: 800, fetchMs: 80_000 })
+    const total = budgets.reduce((sum, b) => sum + b.fetchTotalTimeoutMs, 0)
+    expect(total).toBeLessThanOrEqual(80_000)
+  })
+})
+
+describe('手動同期も一覧取得を使えること', () => {
+  // 本番で起きた事故(2026-10-24): 手動同期は取得予算が22秒で、一覧取得の
+  // ガード(30秒)に毎回掛かっていた。akebono-32 の手動9回はすべて個別照会。
+  it('取得予算が一覧取得の必要時間を上回る', async () => {
+    const { readFileSync } = await import('fs')
+    const src = readFileSync('src/app/api/inventory/sync/route.ts', 'utf8')
+    const budget = Number(src.match(/const FETCH_BUDGET_MS = ([\d_]+)/)?.[1]?.replace(/_/g, ''))
+    expect(budget).toBeGreaterThanOrEqual(30_000)
+    expect(shouldUseBulkRefresh(2966, { bulkRefresh: true, fetchTotalTimeoutMs: budget })).toBe(true)
+  })
+
+  it('取得予算はルートの打ち切りより短い(先に打ち切られない)', async () => {
+    const { readFileSync } = await import('fs')
+    const src = readFileSync('src/app/api/inventory/sync/route.ts', 'utf8')
+    const budget = Number(src.match(/const FETCH_BUDGET_MS = ([\d_]+)/)?.[1]?.replace(/_/g, ''))
+    const routeTimeout = Number(src.match(/const ROUTE_TIMEOUT_MS = ([\d_]+)/)?.[1]?.replace(/_/g, ''))
+    const maxDuration = Number(src.match(/export const maxDuration = (\d+)/)?.[1])
+    expect(budget).toBeLessThan(routeTimeout)
+    expect(routeTimeout).toBeLessThan(maxDuration * 1000)
   })
 })
