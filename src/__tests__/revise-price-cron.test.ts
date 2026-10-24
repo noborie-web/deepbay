@@ -18,7 +18,21 @@ vi.mock('@supabase/supabase-js', () => ({
   createClient: vi.fn(() => ({
     from: vi.fn((table: string) => {
       if (table === 'inventory_runs') {
-        return { insert: vi.fn(async (row: Record<string, unknown>) => { mocks.inserts.push(row); return { error: null } }) }
+        // 記録は開始時に insert().select() で作り、完了時に update() する
+        return {
+          insert: vi.fn((row: Record<string, unknown>) => {
+            const saved = { ...row }
+            mocks.inserts.push(saved)
+            const res = {
+              select: () => ({ maybeSingle: async () => ({ data: { id: 'run-1' }, error: null }) }),
+              then: (resolve: (v: unknown) => void) => resolve({ error: null }),
+            }
+            return res
+          }),
+          update: vi.fn((row: Record<string, unknown>) => ({
+            eq: async () => { Object.assign(mocks.inserts[mocks.inserts.length - 1], row); return { error: null } },
+          })),
+        }
       }
       const chain: Record<string, unknown> = {}
       for (const m of ['select', 'eq']) {

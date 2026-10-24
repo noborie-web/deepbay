@@ -257,6 +257,15 @@ export async function GET(req: NextRequest) {
             cursorItemId: account ? account.inventory_sync_cursor_item_id : (settings.sync_cursor_item_id ?? null),
             sellerAccountId: account?.id ?? null,
             sellerSiteIds: account?.listing_site_ids ?? null,
+            // 本番で起きた事故(2026-10-24): eBayの1日の上限(5,000回)を超え、
+            // 価格改定1,282件のうち954件が失敗した。その日の GetItem は3,520回。
+            // 手動同期には入っていた「直近に取得済みの出品は再照会しない」が
+            // cronには無く、6時間ごとに毎回ぜんぶ引き直していた。
+            // 実行枠は6時間おきなので、5時間以内に取得済みのものは飛ばす
+            // (手動同期を挟んだときの二重取得も防げる)。
+            skipFetchedWithinMs: 5 * 60 * 60 * 1000,
+            // 一覧に無かった出品の個別確認は、手動同期と同じ件数に抑える
+            maxMissingChecksPerRun: 60,
             // GetMyeBaySelling(1回200件)でまとめて更新し、eBayの呼び出し回数を抑える
             bulkRefresh: true,
             // 出品セラー未設定の古い抽出は、最初に接続したセラーのものとして扱う

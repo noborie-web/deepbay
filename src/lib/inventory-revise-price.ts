@@ -9,6 +9,7 @@ import { currencyForSite } from '@/lib/ebay-sites'
 import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { applyRevisedPrices } from '@/lib/inventory-sync'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
+import { EBAY_RESERVED_CALLS, remainingEbayCalls } from '@/lib/ebay-call-counter'
 
 // ---------------------------------------------------------------------------
 // 価格改定。
@@ -42,6 +43,8 @@ export interface RevisePriceSummary {
   skipped_unknown_seller: number
   /** 目標価格と現在価格の差が小さく、送る必要が無かった件数 */
   unchanged: number
+  /** eBayの1日の呼び出し枠が足りず、翌日に回した件数 */
+  deferred_daily_limit: number
   items: Array<{
     ebay_item_id: string
     price_before: number | null
@@ -75,7 +78,7 @@ export async function runRevisePriceForUser(
   db: SupabaseClient,
   userId: string,
   settings: InventoryAuthSettings,
-  options: { timeBudgetMs?: number; startedAt?: number } = {},
+  options: { timeBudgetMs?: number; startedAt?: number; maxCalls?: number } = {},
 ): Promise<RevisePriceResult> {
   const timeBudgetMs = options.timeBudgetMs ?? REVISE_PRICE_TIME_BUDGET_MS
   const startedAt = options.startedAt ?? Date.now()
@@ -147,9 +150,20 @@ export async function runRevisePriceForUser(
     beforePrices.set(l.ebay_item_id, Number(l.current_price))
   }
 
+  // eBayの1日の枠に収まる分だけ送る。使い切ってから失敗すると、その日の
+  // 同期・取り下げ(売り切れ検知)まで道連れになる。
+  const budget = options.maxCalls ?? await remainingEbayCalls(db, userId, { reserved: EBAY_RESERVED_CALLS })
+  let deferredDailyLimit = 0
+  let sendable = entries
+  if (entries.length > budget) {
+    deferredDailyLimit = entries.length - budget
+    sendable = entries.slice(0, Math.max(0, budget))
+    console.warn(`[revise-price] eBayの1日の枠が残り${budget}件。${deferredDailyLimit}件は翌日に回す`)
+  }
+
   const results: Array<{ itemId: string; success: boolean; error?: string }> = []
   let deferred = 0
-  for (const [accountId, sellerEntries] of groupEntriesBySeller(entries)) {
+  for (const [accountId, sellerEntries] of groupEntriesBySeller(sendable)) {
     const token = tokenResolver.tokenFor(accountId)
     if (!token) { skippedUnknownSeller += sellerEntries.length; continue }
     const batch = await reviseInventoryStatusBatch(
@@ -196,6 +210,7 @@ export async function runRevisePriceForUser(
       guarded,
       skipped_unknown_seller: skippedUnknownSeller,
       unchanged,
+      deferred_daily_limit: deferredDailyLimit,
       items,
     },
     status: run.status,
