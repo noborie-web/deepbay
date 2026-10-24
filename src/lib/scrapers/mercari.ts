@@ -105,6 +105,41 @@ function getMetaContent(html: string, key: string): string {
   return content ? decodeHtml(content) : ''
 }
 
+// ユーザー報告(2026-10-24): 同じ画像が2枚取得されている。
+//
+// メルカリは1枚の写真を複数のサイズで配信しており、URLだけが違う:
+//   https://static.mercdn.net/item/detail/orig/photos/{id}_1.jpg?ts  (原寸)
+//   https://static.mercdn.net/item/detail/webp/photos/{id}_1.jpg?ts  (詳細)
+//   https://static.mercdn.net/thumb/item/webp/{id}_1.jpg?ts          (サムネ)
+// URL文字列で重複排除すると、同じ写真が別物として3枚並ぶ。
+// 写真の番号({id}_{n})で同一性を判定し、いちばん大きいものを残す。
+const MERCARI_PHOTO_KEY = /\/([0-9a-zA-Z]+_\d+)\.(?:jpg|jpeg|png|webp)(?:\?|$)/i
+
+/** 大きいほど優先。原寸 > 詳細 > サムネイル */
+function mercariImageRank(url: string): number {
+  if (url.includes('/item/detail/orig/')) return 3
+  if (url.includes('/item/detail/')) return 2
+  if (url.includes('/thumb/')) return 1
+  return 0
+}
+
+export function dedupeMercariImages(urls: string[]): string[] {
+  const best = new Map<string, string>()
+  const order: string[] = []
+  for (const url of urls) {
+    // 写真番号が読めないURLはそのまま残す(別サイトのCDN等)
+    const key = url.match(MERCARI_PHOTO_KEY)?.[1] ?? url
+    const current = best.get(key)
+    if (current === undefined) {
+      best.set(key, url)
+      order.push(key)
+    } else if (mercariImageRank(url) > mercariImageRank(current)) {
+      best.set(key, url)
+    }
+  }
+  return order.map(key => best.get(key)!)
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function extractImages(item: any): string[] {
   const candidates = [
@@ -113,7 +148,7 @@ function extractImages(item: any): string[] {
     ...(Array.isArray(item.thumbnails) ? item.thumbnails : []),
   ]
 
-  return [...new Set(candidates
+  return dedupeMercariImages([...new Set(candidates
     .map((image: string | {
       imageUrl?: string
       image_url?: string
@@ -131,7 +166,7 @@ function extractImages(item: any): string[] {
         ?? image.url
         ?? ''
     })
-    .filter((image: string) => /^https?:\/\//.test(image)))]
+    .filter((image: string) => /^https?:\/\//.test(image)))])
 }
 
 // メルカリShops(法人/ショップ出品)商品の判定。実データ確認:

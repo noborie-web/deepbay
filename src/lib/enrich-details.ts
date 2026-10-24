@@ -32,6 +32,9 @@ const SITE_PACING: Record<EnrichableSite, { concurrency: number; intervalMs: num
   // フリマは1つのIPから約15件/15分しか見せないため据え置き
   yahoo_flea: { concurrency: 1, intervalMs: 1000, retries: 0, maxPerRun: FLEA_DETAIL_PER_RUN },
   yahoo_auction: { concurrency: 4, intervalMs: 250, retries: 2, maxPerRun: BATCH },
+  // メルカリは商品ページ1件につき連番画像の存在確認(最大12回のHEAD)が走るので、
+  // ヤフオクより控えめにする
+  mercari: { concurrency: 2, intervalMs: 500, retries: 1, maxPerRun: BATCH },
 }
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
