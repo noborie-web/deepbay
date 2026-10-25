@@ -2,6 +2,7 @@ import * as cheerio from 'cheerio'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { YahooFleaScraper, FLEA_DETAIL_PER_RUN, FLEA_RATE_LIMIT_WINDOW_MS } from '@/lib/scrapers/yahoo_flea'
 import { YahooAuctionScraper } from '@/lib/scrapers/yahoo_auction'
+import { MercariScraper } from '@/lib/scrapers/mercari'
 import { fetchWithRetry, mapThrottled, RateLimitedError } from '@/lib/scrapers/throttled-fetch'
 import { generateDescriptionsSafely, normalizeAiDescriptionMode, translateDescriptionsWithFailures } from '@/lib/translate'
 import { ScraperError, type ScrapedProduct } from '@/lib/scrapers/types'
@@ -139,6 +140,15 @@ export async function runEnrichDetailsBatch(
 
   const flea = new YahooFleaScraper()
   const auction = new YahooAuctionScraper()
+  const mercari = new MercariScraper()
+  // サイトとパーサーの対応。ENRICHABLE_SITES に足したのにここへ足し忘れると、
+  // 別サイトのパーサーで解析して「空の成功」になる(2026-10-25のメルカリ)。
+  // 未対応のサイトは黙って他のパーサーに回さず、はっきり失敗させる。
+  const parseFetchedDetail = ($: cheerio.CheerioAPI, site: EnrichableSite, url: string): ScrapedProduct => {
+    if (site === 'yahoo_flea') return flea.parse($, url)
+    if (site === 'yahoo_auction') return auction.parse($, url)
+    throw new Error(`補完のパーサーが未対応のサイト: ${site}`)
+  }
   const startedAt = Date.now()
   let failed = 0
   let fleaRateLimited = false
@@ -161,11 +171,30 @@ export async function runEnrichDetailsBatch(
     const { results } = await mapThrottled(siteTargets.map(t => ({ target: t, detail: null as ScrapedProduct | null, failed: false, gone: false })), async (entry) => {
       if (stop) return entry
       try {
-        const html = await fetchWithRetry(entry.target.source_url, {
-          userAgent: USER_AGENT, timeoutMs: 15000, intervalMs: pacing.intervalMs, retries: pacing.retries, siteKey: site,
-        })
-        const $ = cheerio.load(html)
-        const detail = site === 'yahoo_flea' ? flea.parse($, entry.target.source_url) : auction.parse($, entry.target.source_url)
+        // 本番で確認した不具合(2026-10-25): メルカリを補完対象に加えた際、
+        // ここにメルカリの分岐を足し忘れていた。メルカリのHTMLをヤフオクの
+        // パーサーに渡していたため、画像0枚・説明文なしの「空の成功」が
+        // 返り、detail_enriched_at だけが付いて補完済みになっていた。
+        // 389件が検索結果のサムネ1枚のまま固定されていた。
+        //
+        // メルカリの単品ページはSPAでHTMLに中身が無く、専用の取得経路
+        // (items/get、失敗時は画像の連番確認)が要る。スクレイパーに任せる。
+        const detail = site === 'mercari'
+          ? (await mercari.scrape(entry.target.source_url, { limit: 1 }))[0]
+          : parseFetchedDetail(
+            cheerio.load(await fetchWithRetry(entry.target.source_url, {
+              userAgent: USER_AGENT, timeoutMs: 15000, intervalMs: pacing.intervalMs, retries: pacing.retries, siteKey: site,
+            })),
+            site,
+            entry.target.source_url,
+          )
+        // 取れていないのに「補完済み」にしない。説明文も画像も無い結果は、
+        // パーサーの取り違えやページ構造の変更で中身を拾えていない状態なので、
+        // 失敗として扱って再試行に回す(上の取り違えを二度と黙って通さない)。
+        if (!detail || (!detail.description?.trim() && detail.images.length === 0)) {
+          console.error('[enrich-details] empty detail for', entry.target.id, site)
+          return { ...entry, failed: true, gone: false }
+        }
         return { ...entry, detail }
       } catch (err) {
         if (err instanceof RateLimitedError) {
