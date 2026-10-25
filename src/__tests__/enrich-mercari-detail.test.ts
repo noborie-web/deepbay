@@ -12,6 +12,9 @@ const mocks = vi.hoisted(() => ({
   auctionParse: vi.fn(),
   fleaParse: vi.fn(),
   fetchWithRetry: vi.fn(),
+  fetchShopProductDetail: vi.fn(),
+  launchHeadlessBrowser: vi.fn(),
+  browserClose: vi.fn(),
   updates: [] as Array<Record<string, unknown>>,
   rows: [] as Array<Record<string, unknown>>,
 }))
@@ -26,6 +29,12 @@ vi.mock('@/lib/scrapers/yahoo_flea', () => ({
   YahooFleaScraper: class { parse = mocks.fleaParse },
   FLEA_DETAIL_PER_RUN: 20,
   FLEA_RATE_LIMIT_WINDOW_MS: 1000,
+}))
+vi.mock('@/lib/scrapers/mercari_shops', () => ({
+  fetchShopProductDetail: mocks.fetchShopProductDetail,
+}))
+vi.mock('@/lib/scrapers/headless-browser', () => ({
+  launchHeadlessBrowser: mocks.launchHeadlessBrowser,
 }))
 vi.mock('@/lib/scrapers/throttled-fetch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/scrapers/throttled-fetch')>()),
@@ -73,6 +82,9 @@ describe('補完のサイト分岐', () => {
     mocks.auctionParse.mockReset().mockReturnValue(detail())
     mocks.fleaParse.mockReset().mockReturnValue(detail())
     mocks.fetchWithRetry.mockReset().mockResolvedValue('<html></html>')
+    mocks.fetchShopProductDetail.mockReset()
+    mocks.browserClose.mockReset().mockResolvedValue(undefined)
+    mocks.launchHeadlessBrowser.mockReset().mockResolvedValue({ close: mocks.browserClose })
     mocks.rows = [{
       id: 'p1', source_url: 'https://jp.mercari.com/item/m87277851844', source_site: 'mercari',
       original_description: null, ebay_description: null,
@@ -111,5 +123,62 @@ describe('補完のサイト分岐', () => {
     // detail_enriched_at を付けてしまうと二度と補完されない
     expect(mocks.updates.some(u => 'detail_enriched_at' in u)).toBe(false)
     expect(mocks.updates.some(u => 'detail_retry_after' in u)).toBe(true)
+  })
+
+  describe('メルカリShops', () => {
+    // 本番で確認した不具合(2026-10-25): Shopsの商品URLは /shops/product/{id} で、
+    // MercariScraper はこれを受け取れず毎回「Invalid Mercari URL」を投げていた。
+    // 19件が補完できないまま再試行を繰り返し、補完cronが「いちばん古い抽出」を
+    // 毎回この抽出に取られて、ほかの192件の補完まで止まっていた。
+    beforeEach(() => {
+      mocks.rows = [{
+        id: 'p1', source_url: 'https://jp.mercari.com/shops/product/8f2R5vq5zTYKDvicmALP7P',
+        source_site: 'mercari',
+        original_description: null, ebay_description: null, original_images: [],
+        detail_attempts: 0, detail_retry_after: null,
+      }]
+    })
+
+    it('Shopsの商品はShops専用の取得経路を使う(通常のメルカリに回さない)', async () => {
+      mocks.fetchShopProductDetail.mockResolvedValue(detail({
+        description: 'Shopsの商品説明', images: ['s_1.jpg'], condition: '中古',
+      }))
+
+      const result = await runEnrichDetailsBatch(makeDb(), { id: 'user-1' }, 'extraction-1')
+
+      expect(mocks.fetchShopProductDetail).toHaveBeenCalledTimes(1)
+      expect(mocks.fetchShopProductDetail.mock.calls[0][1]).toBe('8f2R5vq5zTYKDvicmALP7P')
+      // 通常のメルカリの経路に回すと例外になる
+      expect(mocks.mercariScrape).not.toHaveBeenCalled()
+      expect(result.processed).toBe(1)
+      expect(mocks.updates.find(u => 'original_description' in u)?.original_description).toBe('Shopsの商品説明')
+    })
+
+    it('ブラウザを使い回す(1件ごとに起動しない)', async () => {
+      mocks.rows = [1, 2, 3].map(n => ({
+        id: `p${n}`, source_url: `https://jp.mercari.com/shops/product/shop${n}`,
+        source_site: 'mercari',
+        original_description: null, ebay_description: null, original_images: [],
+        detail_attempts: 0, detail_retry_after: null,
+      }))
+      mocks.fetchShopProductDetail.mockResolvedValue(detail({ description: 'あり', images: ['s_1.jpg'] }))
+
+      await runEnrichDetailsBatch(makeDb(), { id: 'user-1' }, 'extraction-1')
+
+      expect(mocks.launchHeadlessBrowser).toHaveBeenCalledTimes(1)
+      expect(mocks.fetchShopProductDetail).toHaveBeenCalledTimes(3)
+      expect(mocks.browserClose).toHaveBeenCalledTimes(1)
+    })
+
+    it('ブラウザを起動できないときは「補完済み」にせず次回に回す', async () => {
+      mocks.launchHeadlessBrowser.mockRejectedValue(new Error('chromium not found'))
+
+      const result = await runEnrichDetailsBatch(makeDb(), { id: 'user-1' }, 'extraction-1')
+
+      expect(result.processed).toBe(0)
+      // 失敗回数も増やさない(環境の問題で5回使い切らせない)
+      expect(mocks.updates.some(u => 'detail_enriched_at' in u)).toBe(false)
+      expect(mocks.updates.some(u => 'detail_attempts' in u)).toBe(false)
+    })
   })
 })
