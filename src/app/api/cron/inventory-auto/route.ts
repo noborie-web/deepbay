@@ -8,7 +8,7 @@ import { onlyVerifiedSoldOut } from '@/lib/inventory-listing-filter'
 import { resolveInventoryAccessToken, resolveSellerAccountAccessToken } from '@/lib/inventory-auth'
 import { listInventorySellerAccounts, sellerAccountLabel, type InventorySellerAccount } from '@/lib/inventory-seller-accounts'
 import { resolveDelistEligibility } from '@/lib/inventory-delist'
-import { isSlotActive, normalizeDailyRunCount, resolveRunSlot, startOfJstDay } from '@/lib/inventory-schedule'
+import { RUN_SLOT_HOURS_JST, isSlotActive, normalizeDailyRunCount, resolveRunSlot, startOfJstDay } from '@/lib/inventory-schedule'
 import { summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { markListingsDelisted, syncKnownInventoryListings } from '@/lib/inventory-sync'
 import { allocateSyncBudgets } from '@/lib/inventory-sync-budget'
@@ -28,6 +28,18 @@ export const maxDuration = 300
 const SYNC_FETCH_BUDGET_MS = 80_000
 const SYNC_DISCOVERY_BUDGET_MS = 15_000
 const SUPPLIER_CHECK_BUDGET_MS = 60_000
+
+// 本番で確認した不具合(2026-10-25): 同期の工程に実時間の上限が無く、1人目の
+// セラー(miyabi-24)が1回で269〜284秒を使い切っていた。2人目(akebono-32・399件)
+// は実行時間の上限(300秒)で関数が落とされてから順番が来るため、同期されない
+// まま25時間が過ぎていた。しかも実行記録を「同期が終わってから」作っていたので、
+// 失敗としても残らず、記録上は存在しないまま消えていた。
+//
+// 同期全体に実時間の締め切りを設け、残り時間が足りなければ次のセラーは
+// 開始せずに「時間切れ」として記録する(黙って消えるのをやめる)。
+const SYNC_WALL_CLOCK_BUDGET_MS = 200_000
+// このくらい残っていないとセラー1件分の同期は実質進まない
+const SYNC_SELLER_MIN_WALL_MS = 35_000
 
 // セラーごとにまとめる(トークンがセラー単位のため、1リクエストに混ぜられない)
 function groupEntriesBySeller<T extends { sellerAccountId?: string | null }>(
@@ -233,6 +245,15 @@ export async function GET(req: NextRequest) {
       }
       const budgets = allocateSyncBudgets(listingCounts, { maxItems: 800, fetchMs: SYNC_FETCH_BUDGET_MS })
       const share = syncTargets.length
+      // 本番で確認した不具合(2026-10-25): 常に同じ順番で回していたため、
+      // 時間切れになるのはいつも最後のセラー(akebono-32)だった。時間帯ごとに
+      // 先頭を入れ替えて、取りこぼしが1つのセラーに集中しないようにする。
+      // ただし「セラー未設定の古い抽出を誰のものとして扱うか」は順番で変えては
+      // いけない(実行ごとに持ち主が入れ替わってしまう)ので、元の添字で判定する。
+      const plan = syncTargets.map((account, index) => ({ account, budget: budgets[index], ownsUnassigned: index === 0 }))
+      const rotation = plan.length > 0 ? RUN_SLOT_HOURS_JST.indexOf(slot) % plan.length : 0
+      const orderedPlan = rotation > 0 ? [...plan.slice(rotation), ...plan.slice(0, rotation)] : plan
+      const syncDeadline = Date.now() + SYNC_WALL_CLOCK_BUDGET_MS
       const syncResults: Record<string, unknown>[] = []
       try {
         // ユーザー要望: Kakehashiが出品したItemIDだけをGetItemで個別照会する。
@@ -246,14 +267,54 @@ export async function GET(req: NextRequest) {
         // 止まり、2人目(akebono-32)の新規出品の発見まで進まなかった。
         // セラーごとに失敗を閉じ込めて、他のセラーは続行する。
         let lastError: string | null = null
-        for (const [index, account] of syncTargets.entries()) {
+        for (const { account, budget, ownsUnassigned } of orderedPlan) {
+          const sellerLabel = account?.seller_id ?? 'セラー不明'
+          const sellerStartedAt = new Date().toISOString()
+          // 残り時間が足りないセラーは開始しない。黙って飛ばすと「同期されて
+          // いないこと」に誰も気づけないため、必ず失敗として記録する。
+          const remainingWallMs = syncDeadline - Date.now()
+          if (remainingWallMs < SYNC_SELLER_MIN_WALL_MS) {
+            const message = `${sellerLabel}: 同期の時間切れ(残り${Math.max(0, Math.round(remainingWallMs / 1000))}秒)で開始できなかった`
+            lastError = message
+            syncResults.push({ seller_id: account?.seller_id ?? null, skipped: 'no_time' })
+            await db.from('inventory_runs').insert({
+              user_id: userId,
+              run_type: 'sync',
+              status: 'failed',
+              error_message: message,
+              result_summary: { slot, seller_id: account?.seller_id ?? null, skipped: 'no_time' },
+              started_at: sellerStartedAt,
+              finished_at: new Date().toISOString(),
+            })
+            continue
+          }
+          // 実行記録を「開始時」に作る。同期の途中で実行時間の上限に達して
+          // 関数が落とされても status:'running' の行が残り、消えずに見える。
+          const { data: runRow, error: runInsertError } = await db
+            .from('inventory_runs')
+            .insert({
+              user_id: userId,
+              run_type: 'sync',
+              status: 'running',
+              result_summary: { slot, seller_id: account?.seller_id ?? null },
+              started_at: sellerStartedAt,
+            })
+            .select('id')
+            .maybeSingle()
+          if (runInsertError) console.warn('[inventory-auto] 同期の実行記録を作れませんでした:', runInsertError.message)
+          const runId = runRow?.id as string | undefined
+          // 開始時の行が作れていればそれを更新し、作れていなければ改めて記録する
+          const finishSyncRun = async (row: Record<string, unknown>) => {
+            if (runId) await db.from('inventory_runs').update({ ...row, finished_at: new Date().toISOString() }).eq('id', runId)
+            else await db.from('inventory_runs').insert({ user_id: userId, run_type: 'sync', started_at: sellerStartedAt, finished_at: new Date().toISOString(), ...row })
+          }
           try {
           const syncResult = await syncKnownInventoryListings(db, userId, tokenFor(account), {
-            fetchTotalTimeoutMs: budgets[index].fetchTotalTimeoutMs,
+            fetchTotalTimeoutMs: budget.fetchTotalTimeoutMs,
             // 新規出品の発見はどのセラーでも必要なので、ここは均等に分ける
             discoveryTimeBudgetMs: Math.floor(SYNC_DISCOVERY_BUDGET_MS / share),
             getItemConcurrency: 8,
-            maxItemsPerRun: budgets[index].maxItemsPerRun,
+            maxItemsPerRun: budget.maxItemsPerRun,
             cursorItemId: account ? account.inventory_sync_cursor_item_id : (settings.sync_cursor_item_id ?? null),
             sellerAccountId: account?.id ?? null,
             sellerSiteIds: account?.listing_site_ids ?? null,
@@ -269,7 +330,7 @@ export async function GET(req: NextRequest) {
             // GetMyeBaySelling(1回200件)でまとめて更新し、eBayの呼び出し回数を抑える
             bulkRefresh: true,
             // 出品セラー未設定の古い抽出は、最初に接続したセラーのものとして扱う
-            ownsUnassignedProducts: index === 0,
+            ownsUnassignedProducts: ownsUnassigned,
           })
           if (account) {
             await db.from('seller_accounts').update({ inventory_sync_cursor_item_id: syncResult.nextCursorItemId }).eq('id', account.id)
@@ -295,31 +356,23 @@ export async function GET(req: NextRequest) {
           // なかったので、「対象があるのに1件も取れなかった」は失敗として残す。
           const fetchedNothing = syncResult.total > 0 && syncResult.matched === 0
           await flushEbayCallCounts(db, userId)
-          await db.from('inventory_runs').insert({
-            user_id: userId,
-            run_type: 'sync',
+          await finishSyncRun({
             status: fetchedNothing ? 'failed' : 'completed',
             error_message: fetchedNothing
-              ? `${account?.seller_id ?? 'セラー不明'}: 対象${syncResult.total}件のうち1件も取得できなかった${syncResult.bulkError ? ` (${syncResult.bulkError})` : ''}`
+              ? `${sellerLabel}: 対象${syncResult.total}件のうち1件も取得できなかった${syncResult.bulkError ? ` (${syncResult.bulkError})` : ''}`
               : null,
             items_total: syncResult.total,
             items_matched: syncResult.matched,
             result_summary: summary,
-            started_at: startedAt,
-            finished_at: new Date().toISOString(),
           })
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             lastError = message
             syncResults.push({ seller_id: account?.seller_id ?? null, error: message })
-            await db.from('inventory_runs').insert({
-              user_id: userId,
-              run_type: 'sync',
+            await finishSyncRun({
               status: 'failed',
-              error_message: `${account?.seller_id ?? 'セラー不明'}: ${message}`,
-              result_summary: { seller_id: account?.seller_id ?? null, error: message },
-              started_at: startedAt,
-              finished_at: new Date().toISOString(),
+              error_message: `${sellerLabel}: ${message}`,
+              result_summary: { slot, seller_id: account?.seller_id ?? null, error: message },
             })
           }
         }

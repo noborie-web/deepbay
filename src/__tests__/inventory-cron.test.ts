@@ -8,6 +8,7 @@ const mockResolveSellerAccountToken = vi.fn()
 const mockSyncInventoryListings = vi.fn()
 const mockCheckSupplierListings = vi.fn()
 const mockRunInsert = vi.fn()
+const mockRunUpdate = vi.fn()
 const mockListingQueryCalls: Array<[string, ...unknown[]]> = []
 let mockSettings: Array<Record<string, unknown>> = []
 // 在庫管理の対象セラー(出品アカウント)。既定は「出品アカウント経由の接続なし」
@@ -67,7 +68,22 @@ vi.mock('@supabase/supabase-js', () => ({
           limit: vi.fn(() => recent),
           maybeSingle: vi.fn(async () => ({ data: null, error: null })),
         }
-        return { ...recent, insert: mockRunInsert.mockImplementation(async () => ({ error: null })) }
+        // 実行記録は「開始時にinsertしてidを受け取り、終了時にupdateで仕上げる」
+        // 形になったので、insert(...).select('id').maybeSingle() と update(...).eq()
+        // の両方に応えられるようにする
+        let runSeq = 0
+        const inserted: Record<string, unknown> = {
+          select: vi.fn(() => inserted),
+          maybeSingle: vi.fn(async () => ({ data: { id: `run-${++runSeq}` }, error: null })),
+        }
+        inserted.then = (resolve: (v: unknown) => void) => resolve({ data: null, error: null })
+        const updated: Record<string, unknown> = { eq: vi.fn(() => updated) }
+        updated.then = (resolve: (v: unknown) => void) => resolve({ error: null })
+        return {
+          ...recent,
+          insert: mockRunInsert.mockImplementation(() => inserted),
+          update: mockRunUpdate.mockImplementation(() => updated),
+        }
       }
       if (table === 'seller_accounts') {
         const chain: Record<string, unknown> = {}
@@ -141,6 +157,7 @@ describe('GET /api/cron/inventory-auto', () => {
       failed: 0,
     })
     mockRunInsert.mockClear()
+    mockRunUpdate.mockClear()
     mockListingQueryCalls.length = 0
   })
 
@@ -168,8 +185,14 @@ describe('GET /api/cron/inventory-auto', () => {
       mockCheckSupplierListings.mock.invocationCallOrder[0],
     )
     expect(json.results[0].supplier_check).toMatchObject({ total: 2, unavailable: 1 })
+    // 本番で確認した不具合(2026-10-25): 実行記録を同期の「あと」に作っていたため、
+    // 実行時間の上限で関数が落とされると記録が1行も残らず、同期されていないこと
+    // に誰も気づけなかった。開始時に running を残し、終了時に仕上げる。
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       run_type: 'sync',
+      status: 'running',
+    }))
+    expect(mockRunUpdate).toHaveBeenCalledWith(expect.objectContaining({
       status: 'completed',
       items_total: 12,
       items_matched: 8,
@@ -375,20 +398,32 @@ describe('GET /api/cron/inventory-auto', () => {
 
     expect(res.status).toBe(200)
     expect(mockSyncInventoryListings).toHaveBeenCalledTimes(2)
+    // 時間帯ごとに順番が入れ替わるので、呼ばれた順ではなくトークンで引き当てる
+    const callFor = (token: string) => {
+      const call = mockSyncInventoryListings.mock.calls.find(c => c[2] === token)
+      if (!call) throw new Error(`${token} で同期していない`)
+      return call[3] as { fetchTotalTimeoutMs: number; maxItemsPerRun: number; sellerAccountId: string | null; cursorItemId: string | null; ownsUnassignedProducts: boolean }
+    }
     // セラーAは自分のトークン・自分のカーソル・自分のseller_account_idで同期する
-    expect(mockSyncInventoryListings).toHaveBeenNthCalledWith(1, expect.anything(), 'user-1', 'token-seller-a', expect.objectContaining({
-      sellerAccountId: 'seller-a', cursorItemId: 'item-100', ownsUnassignedProducts: true,
-    }))
-    expect(mockSyncInventoryListings).toHaveBeenNthCalledWith(2, expect.anything(), 'user-1', 'token-seller-b', expect.objectContaining({
+    expect(callFor('token-seller-a')).toMatchObject({
+      sellerAccountId: 'seller-a', cursorItemId: 'item-100',
+      // 「セラー未設定の古い抽出の持ち主」は順番を入れ替えても変わってはいけない
+      ownsUnassignedProducts: true,
+    })
+    expect(callFor('token-seller-b')).toMatchObject({
       sellerAccountId: 'seller-b', cursorItemId: null, ownsUnassignedProducts: false,
-    }))
-    // 実行時間は出品件数の比率で分ける(出品0件のセラーには最低限だけ)
-    const firstOptions = mockSyncInventoryListings.mock.calls[0][3] as { fetchTotalTimeoutMs: number; maxItemsPerRun: number }
-    const secondOptions = mockSyncInventoryListings.mock.calls[1][3] as { fetchTotalTimeoutMs: number; maxItemsPerRun: number }
-    expect(firstOptions).toMatchObject({ fetchTotalTimeoutMs: 80_000, maxItemsPerRun: 800 })
+    })
+    // 実行時間は出品件数の比率で分けるが、合計は予算(80秒)を超えない。
+    // 本番で確認した不具合(2026-10-25): 下限を後から効かせていたため
+    // 68.6秒 + 40秒 = 108.6秒 を配ってしまい、1人目が時間を使い切って
+    // 2人目(akebono-32)が同期されないまま25時間が過ぎた。
+    expect(callFor('token-seller-a')).toMatchObject({ fetchTotalTimeoutMs: 40_000, maxItemsPerRun: 800 })
     // 件数の少ないセラーにも一覧取得(GetMyeBaySelling)が終わる予算を与える。
     // 15秒だとガードに掛かって全件を個別照会(GetItem)していた(2026-10-24の事故)
-    expect(secondOptions).toMatchObject({ fetchTotalTimeoutMs: 40_000, maxItemsPerRun: 50 })
+    expect(callFor('token-seller-b')).toMatchObject({ fetchTotalTimeoutMs: 40_000, maxItemsPerRun: 50 })
+    const totalFetchMs = mockSyncInventoryListings.mock.calls
+      .reduce((sum, c) => sum + (c[3] as { fetchTotalTimeoutMs: number }).fetchTotalTimeoutMs, 0)
+    expect(totalFetchMs).toBeLessThanOrEqual(80_000)
     // 従来の単一トークンには一度もフォールバックしない
     expect(mockResolveAccessToken).not.toHaveBeenCalled()
     // カーソルはセラーごとに記録する
@@ -396,6 +431,67 @@ describe('GET /api/cron/inventory-auto', () => {
       { inventory_sync_cursor_item_id: null },
       { inventory_sync_cursor_item_id: null },
     ])
+  })
+
+  // 本番で確認した不具合(2026-10-25): 常に同じ順番でセラーを回していたため、
+  // 1人目(miyabi-24)が実行時間を使い切り、時間切れになるのはいつも
+  // akebono-32 だった。399件が25時間更新されないまま誰も気づけなかった。
+  it('セラーを回す順番は時間帯ごとに入れ替える', async () => {
+    mockSellerAccounts = [
+      { id: 'seller-a', seller_id: 'miyabi-24', display_name: null, ebay_marketplace_id: 'EBAY_US', inventory_enabled: true, ebay_connected_at: '2026-07-26T00:00:00Z', inventory_discovery_scanned_until: null, inventory_sync_cursor_item_id: null },
+      { id: 'seller-b', seller_id: 'akebono-32', display_name: null, ebay_marketplace_id: 'EBAY_AU', inventory_enabled: true, ebay_connected_at: '2026-09-25T00:00:00Z', inventory_discovery_scanned_until: null, inventory_sync_cursor_item_id: null },
+    ]
+    const { GET } = await import('@/app/api/cron/inventory-auto/route')
+    const firstTokens: string[] = []
+    // 稼働回数4回ぶんの時間帯(3/9/15/21時)をそれぞれ実行する
+    for (const slot of [3, 9, 15, 21]) {
+      mockSyncInventoryListings.mockClear()
+      mockSellerListingCounts = [2388, 399]
+      mockSettings = [{ ...mockSettings[0], daily_run_count: 4 }]
+      await GET(new NextRequest(`http://localhost/api/cron/inventory-auto?slot=${slot}`, {
+        headers: { authorization: 'Bearer cron-secret' },
+      }))
+      expect(mockSyncInventoryListings).toHaveBeenCalledTimes(2)
+      firstTokens.push(mockSyncInventoryListings.mock.calls[0][2] as string)
+    }
+    // どちらのセラーも先頭に立つ(取りこぼしが片方に集中しない)
+    expect(new Set(firstTokens)).toEqual(new Set(['token-seller-a', 'token-seller-b']))
+  })
+
+  // 本番で確認した不具合(2026-10-25): 1人目のセラーが実行時間を使い切ると、
+  // 2人目は同期されないうえ実行記録も残らず、記録上は存在しないまま消えていた。
+  it('残り時間が足りないセラーは、黙って飛ばさず失敗として記録する', async () => {
+    mockSellerAccounts = [
+      { id: 'seller-a', seller_id: 'miyabi-24', display_name: null, ebay_marketplace_id: 'EBAY_US', inventory_enabled: true, ebay_connected_at: '2026-07-26T00:00:00Z', inventory_discovery_scanned_until: null, inventory_sync_cursor_item_id: null },
+      { id: 'seller-b', seller_id: 'akebono-32', display_name: null, ebay_marketplace_id: 'EBAY_AU', inventory_enabled: true, ebay_connected_at: '2026-09-25T00:00:00Z', inventory_discovery_scanned_until: null, inventory_sync_cursor_item_id: null },
+    ]
+    mockSellerListingCounts = [2388, 399]
+    // 1人目の同期が実時間の予算(200秒)を使い切った状況を作る
+    const realNow = Date.now
+    let elapsed = 0
+    mockSyncInventoryListings.mockImplementation(async () => {
+      elapsed += 200_000
+      return { total: 12, matched: 8, unmanaged: 0, ended: 0, discovered: 0, processed: 12, nextCursorItemId: null }
+    })
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + elapsed)
+    try {
+      const { GET } = await import('@/app/api/cron/inventory-auto/route')
+      const res = await GET(new NextRequest('http://localhost/api/cron/inventory-auto?slot=9', {
+        headers: { authorization: 'Bearer cron-secret' },
+      }))
+      expect(res.status).toBe(200)
+      // 同期できたのは1セラーだけ
+      expect(mockSyncInventoryListings).toHaveBeenCalledTimes(1)
+      // 開始できなかったセラーは「時間切れ」として必ず記録する
+      const skipped = mockRunInsert.mock.calls
+        .map(call => call[0] as Record<string, unknown>)
+        .find(row => row.run_type === 'sync' && row.status === 'failed')
+      expect(skipped).toBeDefined()
+      expect(skipped?.error_message).toContain('時間切れ')
+      expect((skipped?.result_summary as Record<string, unknown>).skipped).toBe('no_time')
+    } finally {
+      vi.mocked(Date.now).mockRestore()
+    }
   })
 
   // 本番で確認した不具合(2026-09-30): 二重起動防止が「90分以内の同期」を

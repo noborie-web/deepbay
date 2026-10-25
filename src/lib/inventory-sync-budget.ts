@@ -49,11 +49,22 @@ export function allocateSyncBudgets(counts: number[], limits: SyncBudgetLimits):
       fetchTotalTimeoutMs: Math.max(fetchFloor, Math.floor(limits.fetchMs / counts.length)),
     }))
   }
+  // 本番で確認した不具合(2026-10-25): 下限(40秒)を Math.max で後から効かせて
+  // いたため、配った合計が予算を超えていた。出品2,388件と399件では
+  // 68.6秒 + 40秒 = 108.6秒 で、80秒の予算に対して1.36倍になる。
+  // 1人目が予算を食い切り、2人目(akebono-32)は実行時間の上限(300秒)に達して
+  // 同期されないまま終わっていた。
+  //
+  // 先に全セラーへ下限を確保し、残りだけを出品件数で比例配分する。これなら
+  // 合計は必ず予算に収まり、かつどのセラーも一覧取得のガード(30秒)を超える。
+  const reserved = Math.min(limits.fetchMs, fetchFloor * counts.length)
+  const remainder = Math.max(0, limits.fetchMs - reserved)
+  const floorEach = Math.floor(reserved / counts.length)
   return counts.map(count => {
     const share = Math.max(0, count) / total
     return {
       maxItemsPerRun: Math.max(MIN_ITEMS, Math.round(limits.maxItems * share)),
-      fetchTotalTimeoutMs: Math.max(fetchFloor, Math.round(limits.fetchMs * share)),
+      fetchTotalTimeoutMs: floorEach + Math.floor(remainder * share),
     }
   })
 }
