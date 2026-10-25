@@ -53,7 +53,13 @@ const MERCARI_SHOPS_URL = /\/shops\/product\/([a-zA-Z0-9]+)/
 // 実測(2026-10-25): 起動に約2秒、1件あたり約2.4秒。cronの実行時間上限(60秒)と
 // 時間予算(42秒)に収まる件数に抑える。残りは次の回に回る。
 const MERCARI_SHOPS_PER_RUN = 8
-const MERCARI_SHOPS_ITEM_MS = 20_000
+// 1件あたりの上限。実測2.4秒なので、これに当たるのは開かないページだけ。
+const MERCARI_SHOPS_ITEM_MS = 10_000
+// 時間予算(42秒)のうちShopsに回す上限。残りは通常の取得に渡す。
+const MERCARI_SHOPS_BUDGET_MS = 24_000
+// 次の1件に入るかどうかの判断に使う見積もり。ここに上限(10秒)を使うと
+// 実測2.4秒の処理が1回あたり2件しか進まなくなるため、実測に余裕を足した値にする。
+const MERCARI_SHOPS_ITEM_ESTIMATE_MS = 6_000
 
 interface PendingProduct {
   id: string
@@ -181,6 +187,48 @@ export async function runEnrichDetailsBatch(
   const shopsTargets = targets.filter(t => t.source_site === 'mercari' && MERCARI_SHOPS_URL.test(t.source_url))
   const shopsIds = new Set(shopsTargets.map(t => t.id))
 
+  // メルカリShopsの補完。1件ごとにブラウザを起動すると遅すぎるので、
+  // この回のぶんをまとめて1つのブラウザで処理する。
+  //
+  // 本番で確認した不具合(2026-10-25): この処理を通常のサイト取得の「あと」に
+  // 置いていたため、一度も動かなかった。通常のメルカリの取得だけで時間予算
+  // (42秒)を使い切るので(実行の終了時刻が毎回開始から52秒)、残り時間はいつも
+  // 0だった。Shopsは件数が少なく放っておくと永久に補完されないため、先に
+  // 専用の予算ぶんだけ処理してから、残りを通常の取得に渡す。
+  const shopsDeadline = startedAt + MERCARI_SHOPS_BUDGET_MS
+  if (shopsTargets.length > 0) {
+    const batch = shopsTargets.slice(0, MERCARI_SHOPS_PER_RUN)
+    let browser: Awaited<ReturnType<typeof launchHeadlessBrowser>> | undefined
+    try {
+      browser = await launchHeadlessBrowser()
+      for (const target of batch) {
+        if (shopsDeadline - Date.now() < MERCARI_SHOPS_ITEM_ESTIMATE_MS) break
+        const itemId = target.source_url.match(MERCARI_SHOPS_URL)?.[1]
+        if (!itemId) { failed += 1; failedIds.push(target.id); continue }
+        try {
+          const detail = await fetchShopProductDetail(browser, itemId, { userAgent: USER_AGENT, timeoutMs: MERCARI_SHOPS_ITEM_MS })
+          // 取れていないのに「補完済み」にしない(通常の経路と同じ扱い)
+          if (!detail || (!detail.description?.trim() && detail.images.length === 0)) {
+            console.error('[enrich-details] empty detail for', target.id, 'mercari_shops')
+            failed += 1
+            failedIds.push(target.id)
+            continue
+          }
+          enriched.push({ product: target, detail })
+        } catch (err) {
+          console.error('[enrich-details] failed for', target.id, err instanceof Error ? err.message : err)
+          failed += 1
+          failedIds.push(target.id)
+        }
+      }
+    } catch (err) {
+      // ブラウザを起動できない環境では、黙って「補完済み」にせず次回に回す
+      console.error('[enrich-details] headless browser unavailable:', err instanceof Error ? err.message : err)
+    } finally {
+      await browser?.close().catch(() => {})
+    }
+  }
+
   // サイトごとにアクセス間隔を分けて取得する
   for (const site of ENRICHABLE_SITES) {
     const pacing = SITE_PACING[site]
@@ -238,41 +286,6 @@ export async function runEnrichDetailsBatch(
       else if (r.gone) { failed += 1; goneIds.push(r.target.id) }
       else if (r.failed) { failed += 1; failedIds.push(r.target.id) }
       // 時間切れで未処理のものは detail_enriched_at を付けず次回に回す
-    }
-  }
-
-  // メルカリShopsの補完。1件ごとにブラウザを起動すると遅すぎるので、
-  // この回のぶんをまとめて1つのブラウザで処理する。
-  if (shopsTargets.length > 0 && TIME_BUDGET_MS - (Date.now() - startedAt) > 0) {
-    const batch = shopsTargets.slice(0, MERCARI_SHOPS_PER_RUN)
-    let browser: Awaited<ReturnType<typeof launchHeadlessBrowser>> | undefined
-    try {
-      browser = await launchHeadlessBrowser()
-      for (const target of batch) {
-        if (TIME_BUDGET_MS - (Date.now() - startedAt) < MERCARI_SHOPS_ITEM_MS) break
-        const itemId = target.source_url.match(MERCARI_SHOPS_URL)?.[1]
-        if (!itemId) { failed += 1; failedIds.push(target.id); continue }
-        try {
-          const detail = await fetchShopProductDetail(browser, itemId, { userAgent: USER_AGENT, timeoutMs: MERCARI_SHOPS_ITEM_MS })
-          // 取れていないのに「補完済み」にしない(通常の経路と同じ扱い)
-          if (!detail || (!detail.description?.trim() && detail.images.length === 0)) {
-            console.error('[enrich-details] empty detail for', target.id, 'mercari_shops')
-            failed += 1
-            failedIds.push(target.id)
-            continue
-          }
-          enriched.push({ product: target, detail })
-        } catch (err) {
-          console.error('[enrich-details] failed for', target.id, err instanceof Error ? err.message : err)
-          failed += 1
-          failedIds.push(target.id)
-        }
-      }
-    } catch (err) {
-      // ブラウザを起動できない環境では、黙って「補完済み」にせず次回に回す
-      console.error('[enrich-details] headless browser unavailable:', err instanceof Error ? err.message : err)
-    } finally {
-      await browser?.close().catch(() => {})
     }
   }
 

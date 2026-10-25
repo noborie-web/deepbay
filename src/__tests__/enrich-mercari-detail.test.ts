@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   fetchShopProductDetail: vi.fn(),
   launchHeadlessBrowser: vi.fn(),
   browserClose: vi.fn(),
+  callOrder: [] as string[],
   updates: [] as Array<Record<string, unknown>>,
   rows: [] as Array<Record<string, unknown>>,
 }))
@@ -82,6 +83,7 @@ describe('補完のサイト分岐', () => {
     mocks.auctionParse.mockReset().mockReturnValue(detail())
     mocks.fleaParse.mockReset().mockReturnValue(detail())
     mocks.fetchWithRetry.mockReset().mockResolvedValue('<html></html>')
+    mocks.callOrder.length = 0
     mocks.fetchShopProductDetail.mockReset()
     mocks.browserClose.mockReset().mockResolvedValue(undefined)
     mocks.launchHeadlessBrowser.mockReset().mockResolvedValue({ close: mocks.browserClose })
@@ -179,6 +181,37 @@ describe('補完のサイト分岐', () => {
       // 失敗回数も増やさない(環境の問題で5回使い切らせない)
       expect(mocks.updates.some(u => 'detail_enriched_at' in u)).toBe(false)
       expect(mocks.updates.some(u => 'detail_attempts' in u)).toBe(false)
+    })
+
+    it('通常のメルカリの取得より先にShopsを処理する', async () => {
+      // 本番で確認した不具合(2026-10-25): Shopsの処理を通常のサイト取得の「あと」に
+      // 置いていたため、一度も動かなかった。通常のメルカリの取得だけで時間予算
+      // (42秒)を使い切るので、残り時間はいつも0だった。
+      mocks.rows = [
+        {
+          id: 'shop1', source_url: 'https://jp.mercari.com/shops/product/shop1', source_site: 'mercari',
+          original_description: null, ebay_description: null, original_images: [],
+          detail_attempts: 0, detail_retry_after: null,
+        },
+        {
+          id: 'item1', source_url: 'https://jp.mercari.com/item/m87277851844', source_site: 'mercari',
+          original_description: null, ebay_description: null, original_images: [],
+          detail_attempts: 0, detail_retry_after: null,
+        },
+      ]
+      mocks.fetchShopProductDetail.mockImplementation(async () => {
+        mocks.callOrder.push('shops')
+        return detail({ description: 'Shopsの説明', images: ['s_1.jpg'] })
+      })
+      mocks.mercariScrape.mockImplementation(async () => {
+        mocks.callOrder.push('item')
+        return [detail({ description: '通常の説明', images: ['i_1.jpg'] })]
+      })
+
+      const result = await runEnrichDetailsBatch(makeDb(), { id: 'user-1' }, 'extraction-1')
+
+      expect(mocks.callOrder).toEqual(['shops', 'item'])
+      expect(result.processed).toBe(2)
     })
   })
 })
