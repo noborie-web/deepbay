@@ -56,6 +56,15 @@ export interface InventorySyncOptions {
   bulkRefresh?: boolean
   // 一覧に無かった出品を個別確認する上限(残りは次回に回す)
   maxMissingChecksPerRun?: number
+  // 本番で確認した不具合(2026-10-31): 一覧取得(GetMyeBaySelling)で落ちてきた
+  // 出品のうち「今回の照会対象に入っていないもの」を毎回ぜんぶ保存していた。
+  // miyabi-24 は照会対象614件に対し2,033件を書き戻しており、同期1回に250秒
+  // (全体予算200秒)を使って2人目(akebono-32)の同期を毎回押し出していた。
+  // 直近に取得済みの出品は書き戻さない。
+  skipItemIds?: Set<string>
+  // 複数サイト(UK/AU)のセラーは、残り時間を先頭のサイトから使い切るため
+  // 後ろのサイトがいつまでも取得されない。実行ごとに先頭を入れ替える。
+  siteStartIndex?: number
 }
 
 export interface InventorySyncBatchResult extends InventorySyncResult {
@@ -614,6 +623,33 @@ export interface KnownInventorySyncResult {
   nextCursorItemId: string | null
 }
 
+// 直近に取得済みで、今回は再照会しない出品のItemID。
+//
+// 本番で確認した不具合(2026-10-31): 「直近に取得済みは再照会しない」は照会対象
+// (collectKnownItemIds)からは除いていたが、一覧取得(GetMyeBaySelling)で落ちて
+// きた分はそのまま全件書き戻していたため、節約がまるごと打ち消されていた。
+// miyabi-24 は照会対象614件に対して2,033件を保存し、同期1回で250秒を使っていた。
+async function collectRecentlyFetchedItemIds(
+  db: SupabaseClient,
+  userId: string,
+  options: InventorySyncOptions = {},
+): Promise<Set<string>> {
+  const ids = new Set<string>()
+  const skipWithinMs = options.skipFetchedWithinMs ?? 0
+  if (skipWithinMs <= 0) return ids
+  // db-audit-ok: 下の selectAllRows でページ送りする(組み立てが別の文)
+  let query = db
+    .from('inventory_active_listings')
+    .select('ebay_item_id')
+    .eq('user_id', userId)
+    .not('product_id', 'is', null)
+    .gte('fetched_at', new Date(Date.now() - skipWithinMs).toISOString())
+  if (options.sellerAccountId) query = query.eq('seller_account_id', options.sellerAccountId)
+  const rows = await selectAllRows<{ ebay_item_id: string | null }>(() => query.order('ebay_item_id'))
+  for (const row of rows) if (row.ebay_item_id) ids.add(String(row.ebay_item_id))
+  return ids
+}
+
 // Kakehashiが把握しているeBay ItemIDを集める(在庫一覧 + 商品テーブル)。
 async function collectKnownItemIds(
   db: SupabaseClient,
@@ -780,7 +816,14 @@ async function fetchActiveListingMap(
 ): Promise<{ map: Map<string, InventoryListingInput>; complete: boolean }> {
   const map = new Map<string, InventoryListingInput>()
   let complete = true
-  const sites = siteIds.length > 0 ? siteIds : [null]
+  const allSites: Array<string | null> = siteIds.length > 0 ? [...siteIds] : [null]
+  // 本番で確認した不具合(2026-10-31): 残り時間を先頭のサイトから使い切る作りの
+  // ため、akebono-32 の2つ目のサイト(AU)は一度も取得されていなかった。
+  // 実行ごとに先頭を入れ替えて、どのサイトにも順番が回るようにする。
+  const rotation = allSites.length > 1
+    ? ((options.siteStartIndex ?? 0) % allSites.length + allSites.length) % allSites.length
+    : 0
+  const sites = rotation > 0 ? [...allSites.slice(rotation), ...allSites.slice(0, rotation)] : allSites
   // 本番で確認した不具合(2026-09-28): 予算をサイト数で均等割りした結果、
   // 応答の遅いセラー(akebono-32)は12.5秒では1ページも取れず
   // 「exceeded 12500ms」で毎回失敗していた。均等割りをやめ、先頭のサイトから
@@ -1128,8 +1171,12 @@ export async function syncKnownInventoryListingBatch(
     // 本番で確認した不具合(2026-09-28): 出品一覧の全件(他ツールの出品を含めて
     // 約5,400件)を保存処理に回したため、商品照会が膨大になり45秒で打ち切られた。
     // 在庫一覧に未登録の分は、Kakehashiのラベルが付いた出品だけに絞る。
+    const skipItemIds = options.skipItemIds ?? await collectRecentlyFetchedItemIds(db, userId, options)
     for (const [itemId, item] of bulk.map) {
       if (known.has(itemId)) continue
+      // 直近に取得済みの出品は書き戻さない(ここを素通りさせると
+      // skipFetchedWithinMs の節約が打ち消され、同期1回が何倍も長くなる)
+      if (skipItemIds.has(itemId)) continue
       if (!hasKakehashiLabel(item.customLabel)) continue
       found.push(item)
     }
@@ -1232,6 +1279,9 @@ export async function syncKnownInventoryListings(
   const canFetchItems = remainingFetchMs === undefined || remainingFetchMs > 5_000
 
   let fetched: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [], endedListings: [] }
+  // 今回の照会対象(targetIds)のうち、実際に状態を確認できた件数。
+  // カーソルを進めてよいかの判定に使う(0件なら進めない)。
+  let confirmedTargets = 0
   if (bulk) {
     // 本番で確認した不具合(2026-09-28): 新しいセラー(akebono-32)は
     // GetSellerListの走査が毎回時間切れになり、UKに出品した127件をいつまでも
@@ -1245,11 +1295,16 @@ export async function syncKnownInventoryListings(
       if (item) found.push(item)
       else missing.push(id)
     }
+    confirmedTargets = found.length
     // 本番で確認した不具合(2026-09-28): 出品一覧の全件(他ツールの出品を含めて
     // 約5,400件)を保存処理に回したため、商品照会が膨大になり45秒で打ち切られた。
     // 在庫一覧に未登録の分は、Kakehashiのラベルが付いた出品だけに絞る。
+    const skipItemIds = options.skipItemIds ?? await collectRecentlyFetchedItemIds(db, userId, options)
     for (const [itemId, item] of bulk.map) {
       if (known.has(itemId)) continue
+      // 直近に取得済みの出品は書き戻さない(ここを素通りさせると
+      // skipFetchedWithinMs の節約が打ち消され、同期1回が何倍も長くなる)
+      if (skipItemIds.has(itemId)) continue
       if (!hasKakehashiLabel(item.customLabel)) continue
       found.push(item)
     }
@@ -1270,6 +1325,7 @@ export async function syncKnownInventoryListings(
         callLimited = true
       }
     }
+    confirmedTargets += checked.items.length + checked.endedItemIds.length
     fetched = { items: [...found, ...checked.items], endedItemIds: checked.endedItemIds, endedListings: checked.endedListings }
   } else if (!callLimited && canFetchItems) {
     try {
@@ -1278,6 +1334,7 @@ export async function syncKnownInventoryListings(
         targetIds,
         { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs, concurrency: options.getItemConcurrency },
       )
+      confirmedTargets = fetched.items.length + fetched.endedItemIds.length
     } catch (error) {
       if (!(error instanceof EbayCallLimitError)) throw error
       callLimited = true
@@ -1288,6 +1345,12 @@ export async function syncKnownInventoryListings(
   // 途中までしか照会していない回では、紐付かない出品の掃除は行わない
   // (未照会の出品を誤って消さないため)
   if (finishedAll && !callLimited) await purgeUnmanagedListings(db, userId, options.sellerAccountId)
+
+  // 本番で確認した不具合(2026-10-31): 一覧取得が時間切れして1件も取得できなかった
+  // 回でも、照会位置(カーソル)だけは進めていた。akebono-32 は4回/日すべてがこの
+  // 状態で、進めた分の出品は次の一巡まで確認されないまま飛ばされ続けていた。
+  // 1件も確認できなかった回はカーソルを進めない(同じ範囲を次回やり直す)。
+  const confirmedNothing = targetIds.length > 0 && confirmedTargets === 0
 
   return {
     total: knownIds.length,
@@ -1302,7 +1365,7 @@ export async function syncKnownInventoryListings(
     bulkItems: bulk?.map.size,
     bulkComplete: bulk?.complete,
     bulkError,
-    processed: callLimited ? 0 : targetIds.length,
-    nextCursorItemId,
+    processed: callLimited || confirmedNothing ? 0 : targetIds.length,
+    nextCursorItemId: confirmedNothing ? (options.cursorItemId ?? null) : nextCursorItemId,
   }
 }

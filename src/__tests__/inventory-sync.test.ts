@@ -494,7 +494,11 @@ describe('syncKnownInventoryListings: 分割実行', () => {
       }),
     } as unknown as SupabaseClient
 
-    mockFetchListingsByItemIds.mockReset().mockResolvedValue({ items: [], endedItemIds: [] })
+    // 照会できた体にする。1件も確認できなかった回はカーソルを進めない仕様
+    // (2026-10-31)なので、空を返すモックでは位置の前進を確かめられない。
+    mockFetchListingsByItemIds.mockReset().mockImplementation(async (_tokens: unknown, ids: string[]) => ({
+      items: ids.map(id => ({ ebayItemId: id })), endedItemIds: [],
+    }))
     mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: false, pagesFetched: 1, totalPages: 1 })
 
     const first = await syncKnownInventoryListings(db, 'user-1', 'token', { maxItemsPerRun: 2 })

@@ -33,7 +33,10 @@ const MIN_ITEMS = 50
 // 個別照会は1件1回。方向が逆だったので、下限を一括取得が終わる長さにする
 // (下限はセラー数で等分した値を超えないようにして、セラーが増えても
 //  合計が予算を超えないようにする)。
-const MIN_FETCH_MS = 40_000
+//
+// 本番で確認した不具合(2026-10-31): 40秒では akebono-32(UK/AU)の一覧取得が
+// 一度も終わらず、9日間ずっと「exceeded 40000ms」だった。60秒に伸ばす。
+const MIN_FETCH_MS = 60_000
 
 export function allocateSyncBudgets(counts: number[], limits: SyncBudgetLimits): SyncBudget[] {
   if (counts.length <= 1) {
