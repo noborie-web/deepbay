@@ -182,7 +182,10 @@ export async function runEnrichDetailsBatch(
   let failed = 0
   let fleaRateLimited = false
   let auctionRateLimited = false
-  const failedIds: string[] = []
+  // 補完が失敗した理由は、これまでどこにも残らなかった。本番のログは手元から
+  // 読めないため、何が起きているのか商品を見ても分からない(2026-10-25の
+  // メルカリShopsで、原因の切り分けに丸一日かかった)。理由を商品に残す。
+  const failedIds: Array<{ id: string; error: string }> = []
   // 出品が終了して消えたページ(404)は、何度試しても成功しない。
   // 再試行せずその場で打ち切る(ユーザー報告 2026-10-19: 終了した出品を
   // 5回・最大2.5時間かけて再試行し、補完がいつまでも終わらなかった)。
@@ -211,21 +214,22 @@ export async function runEnrichDetailsBatch(
       for (const target of batch) {
         if (shopsDeadline - Date.now() < MERCARI_SHOPS_ITEM_ESTIMATE_MS) break
         const itemId = target.source_url.match(MERCARI_SHOPS_URL)?.[1]
-        if (!itemId) { failed += 1; failedIds.push(target.id); continue }
+        if (!itemId) { failed += 1; failedIds.push({ id: target.id, error: 'Shopsの商品IDをURLから読み取れない' }); continue }
         try {
           const detail = await fetchShopProductDetail(browser, itemId, { userAgent: USER_AGENT, timeoutMs: MERCARI_SHOPS_ITEM_MS })
           // 取れていないのに「補完済み」にしない(通常の経路と同じ扱い)
           if (!detail || (!detail.description?.trim() && detail.images.length === 0)) {
             console.error('[enrich-details] empty detail for', target.id, 'mercari_shops')
             failed += 1
-            failedIds.push(target.id)
+            failedIds.push({ id: target.id, error: '説明文も画像も取れなかった(ページが開けていない可能性)' })
             continue
           }
           enriched.push({ product: target, detail })
         } catch (err) {
-          console.error('[enrich-details] failed for', target.id, err instanceof Error ? err.message : err)
+          const message = err instanceof Error ? err.message : String(err)
+          console.error('[enrich-details] failed for', target.id, message)
           failed += 1
-          failedIds.push(target.id)
+          failedIds.push({ id: target.id, error: message })
         }
       }
     } catch (err) {
@@ -244,7 +248,7 @@ export async function runEnrichDetailsBatch(
     const remainingBudget = TIME_BUDGET_MS - (Date.now() - startedAt)
     if (remainingBudget <= 0) break
     let stop = false
-    const { results } = await mapThrottled(siteTargets.map(t => ({ target: t, detail: null as ScrapedProduct | null, failed: false, gone: false })), async (entry) => {
+    const { results } = await mapThrottled(siteTargets.map(t => ({ target: t, detail: null as ScrapedProduct | null, failed: false, gone: false, error: '' })), async (entry) => {
       if (stop) return entry
       try {
         // 本番で確認した不具合(2026-10-25): メルカリを補完対象に加えた際、
@@ -269,7 +273,7 @@ export async function runEnrichDetailsBatch(
         // 失敗として扱って再試行に回す(上の取り違えを二度と黙って通さない)。
         if (!detail || (!detail.description?.trim() && detail.images.length === 0)) {
           console.error('[enrich-details] empty detail for', entry.target.id, site)
-          return { ...entry, failed: true, gone: false }
+          return { ...entry, failed: true, gone: false, error: '説明文も画像も取れなかった(パーサーの取り違えやページ構造の変更の可能性)' }
         }
         return { ...entry, detail }
       } catch (err) {
@@ -285,13 +289,13 @@ export async function runEnrichDetailsBatch(
         if (!gone) {
           console.error('[enrich-details] failed for', entry.target.id, err instanceof Error ? err.message : err)
         }
-        return { ...entry, failed: true, gone }
+        return { ...entry, failed: true, gone, error: err instanceof Error ? err.message : String(err) }
       }
     }, { concurrency: pacing.concurrency, intervalMs: pacing.intervalMs, timeBudgetMs: remainingBudget })
     for (const r of results) {
       if (r.detail) enriched.push({ product: r.target, detail: r.detail })
       else if (r.gone) { failed += 1; goneIds.push(r.target.id) }
-      else if (r.failed) { failed += 1; failedIds.push(r.target.id) }
+      else if (r.failed) { failed += 1; failedIds.push({ id: r.target.id, error: r.error }) }
       // 時間切れで未処理のものは detail_enriched_at を付けず次回に回す
     }
   }
@@ -329,7 +333,7 @@ export async function runEnrichDetailsBatch(
   let processed = 0
   for (let i = 0; i < enriched.length; i++) {
     const { product, detail } = enriched[i]
-    const update: Record<string, unknown> = { detail_enriched_at: now }
+    const update: Record<string, unknown> = { detail_enriched_at: now, detail_error: null }
     if (detail.description && !product.original_description) {
       update.original_description = detail.description
       // 抽出時にAIで仮生成した説明文があっても、本物の説明文(翻訳/生成)で置き換える
@@ -359,13 +363,13 @@ export async function runEnrichDetailsBatch(
     }).eq('id', id).eq('user_id', user.id)
   }
 
-  for (const id of failedIds) {
+  for (const { id, error: reason } of failedIds) {
     const target = targets.find(t => t.id === id)
     const attempts = (target?.detail_attempts ?? 0) + 1
     await db.from('products').update(
       attempts >= MAX_DETAIL_ATTEMPTS
-        ? { detail_enriched_at: now, detail_attempts: attempts }
-        : { detail_attempts: attempts, detail_retry_after: new Date(Date.now() + RETRY_BASE_MS * attempts).toISOString() },
+        ? { detail_enriched_at: now, detail_attempts: attempts, detail_error: reason }
+        : { detail_attempts: attempts, detail_retry_after: new Date(Date.now() + RETRY_BASE_MS * attempts).toISOString(), detail_error: reason },
     ).eq('id', id).eq('user_id', user.id)
   }
 
