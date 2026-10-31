@@ -25,7 +25,12 @@ export const maxDuration = 300
 // 本番で確認した不具合(2026-10-01): 在庫が695→895件に増えたことで同期が長引き、
 // 実行時間の上限(300秒)に達して仕入先チェック・価格改定が実行されず、記録も
 // 残らなかった。各工程の合計を上限より十分手前(約210秒)に収める。
-const SYNC_FETCH_BUDGET_MS = 80_000
+// 本番で確認した不具合(2026-10-31): 2セラーで80秒を分けると1人あたり40秒。
+// akebono-32(UK/AU)は一覧取得の1ページが遅く、4回/日×9日間すべてで
+// 「exceeded 40000ms」となり在庫が10/22から更新されていなかった。
+// 下の「直近に取得済みは書き戻さない」でmiyabi-24の保存時間が大幅に減るので、
+// その分を取得に回す(1人あたり60秒)。
+const SYNC_FETCH_BUDGET_MS = 120_000
 const SYNC_DISCOVERY_BUDGET_MS = 15_000
 const SUPPLIER_CHECK_BUDGET_MS = 60_000
 
@@ -67,6 +72,29 @@ export async function GET(req: NextRequest) {
   }
 
   const db = admin()
+
+  // 本番で確認した不具合(2026-10-31): 実行記録を「開始時」に作るようにした結果、
+  // 実行時間の上限(300秒)で関数が落とされた回は status:'running' の行が残り
+  // 続け、3日で8件たまっていた。誰も片付けないので「実行中」のまま永久に
+  // 残る。前の回の running は、この回が始まった時点で必ず終わっている。
+  {
+    // 手動同期の記録も run_type:'sync' で status:'running' を使う(ブラウザから
+    // 続きを進める作りなので、途中で止まっているのが正常)。自動実行の目印
+    // (result_summary.slot)がある行だけを閉じる。
+    const staleBefore = new Date(Date.now() - (maxDuration + 60) * 1000).toISOString()
+    const { error } = await db
+      .from('inventory_runs')
+      .update({
+        status: 'failed',
+        error_message: '実行時間の上限に達して途中で終了した(記録を後片付け)',
+        finished_at: new Date().toISOString(),
+      })
+      .eq('run_type', 'sync')
+      .eq('status', 'running')
+      .not('result_summary->>slot', 'is', null)
+      .lt('started_at', staleBefore)
+    if (error) console.warn('[inventory-auto] 「実行中」のまま残った記録を片付けられませんでした:', error.message)
+  }
 
   // ユーザー要望: 1日最大4回(03/09/15/21 JST)。pg_cron からは ?slot=JST時 で呼ばれ、
   // Vercel cron(朝のみ・時刻不定)からは現在時刻から時間帯を求める。
@@ -331,6 +359,9 @@ export async function GET(req: NextRequest) {
             bulkRefresh: true,
             // 出品セラー未設定の古い抽出は、最初に接続したセラーのものとして扱う
             ownsUnassignedProducts: ownsUnassigned,
+            // 複数サイトのセラー(akebono-32=UK/AU)は、残り時間を先頭のサイトから
+            // 使い切るため後ろのサイトが取得されない。時間帯ごとに先頭を入れ替える。
+            siteStartIndex: Math.max(0, RUN_SLOT_HOURS_JST.indexOf(slot)),
           })
           if (account) {
             await db.from('seller_accounts').update({ inventory_sync_cursor_item_id: syncResult.nextCursorItemId }).eq('id', account.id)

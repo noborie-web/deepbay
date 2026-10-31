@@ -18,22 +18,32 @@ describe('同期の予算配分', () => {
     ])
   })
 
-  it('出品0件のセラーには最低限だけ残し、残りを出品のあるセラーに回す', () => {
+  it('出品0件のセラーにも一覧取得が終わる長さは確保し、照会件数だけ比率で配る', () => {
     const [miyabi, akebono] = allocateSyncBudgets([695, 0], LIMITS)
-    // 下限(40秒)を2セラー分先に確保し、残り30秒を出品件数で配る
-    expect(miyabi).toEqual({ maxItemsPerRun: 800, fetchTotalTimeoutMs: 70_000 })
+    // 個別照会(GetItem)の件数は、その セラーが持っている出品の比率どおりに配る
+    expect(miyabi.maxItemsPerRun).toBe(800)
+    expect(akebono.maxItemsPerRun).toBe(50)
     // 出品0件でも一覧取得が終わる長さは確保する(新規出品の発見に要る)
-    expect(akebono).toEqual({ maxItemsPerRun: 50, fetchTotalTimeoutMs: 40_000 })
+    expect(akebono.fetchTotalTimeoutMs).toBeGreaterThanOrEqual(40_000)
   })
 
-  it('両方に出品があれば件数の比率で分ける', () => {
+  it('一覧取得の時間は比率で削らず、どのセラーにも下限(60秒)を確保する', () => {
+    // 一覧取得(GetMyeBaySelling)に掛かる時間は、そのセラーのアカウント全体の
+    // 出品数で決まる。Kakehashiが持っている件数の比率で削ると、件数の少ない
+    // セラーが毎回時間切れになる(akebono-32 が9日間更新されなかった原因)。
     const [a, b] = allocateSyncBudgets([600, 200], LIMITS)
     expect(a.maxItemsPerRun).toBe(600)
     expect(b.maxItemsPerRun).toBe(200)
-    expect(a.fetchTotalTimeoutMs).toBe(62_500)
-    // 件数の少ないセラーも、一覧取得のガード(30秒)を超える長さは必ず確保する
-    expect(b.fetchTotalTimeoutMs).toBe(47_500)
-    expect(b.fetchTotalTimeoutMs).toBeGreaterThan(30_000)
+    expect(a.fetchTotalTimeoutMs).toBe(55_000)
+    expect(b.fetchTotalTimeoutMs).toBe(55_000)
+  })
+
+  // 本番で確認した不具合(2026-10-31): 2セラーで80秒だと1人40秒。akebono-32
+  // (UK/AU)の一覧取得は40秒では一度も終わらず、4回/日×9日間すべてが
+  // 「exceeded 40000ms」だった。本番と同じ120秒なら1人60秒になる。
+  it('本番の予算(120秒・2セラー)なら1人60秒になる', () => {
+    const budgets = allocateSyncBudgets([3370, 1023], { maxItems: 800, fetchMs: 120_000 })
+    for (const budget of budgets) expect(budget.fetchTotalTimeoutMs).toBe(60_000)
   })
 
   // 本番で確認した不具合(2026-10-25): 下限を Math.max で後から効かせていたため

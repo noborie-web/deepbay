@@ -77,7 +77,8 @@ vi.mock('@supabase/supabase-js', () => ({
           maybeSingle: vi.fn(async () => ({ data: { id: `run-${++runSeq}` }, error: null })),
         }
         inserted.then = (resolve: (v: unknown) => void) => resolve({ data: null, error: null })
-        const updated: Record<string, unknown> = { eq: vi.fn(() => updated) }
+        // 「実行中」のまま残った記録の後片付けは update(...).eq('status','running').lt('started_at', ...)
+        const updated: Record<string, unknown> = { eq: vi.fn(() => updated), not: vi.fn(() => updated), lt: vi.fn(() => updated) }
         updated.then = (resolve: (v: unknown) => void) => resolve({ error: null })
         return {
           ...recent,
@@ -179,7 +180,7 @@ describe('GET /api/cron/inventory-auto', () => {
     // active出品が数十ページあるため、cronでは取得タイムアウトを引き上げて渡す。
     // eBayの1日の上限(5,000回)を超えた事故(2026-10-24)を受けて、直近5時間に
     // 取得済みの出品は再照会しない・個別確認は60件までに抑える。
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 80_000, discoveryTimeBudgetMs: 15_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true, skipFetchedWithinMs: 5 * 60 * 60 * 1000, maxMissingChecksPerRun: 60 })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 120_000, discoveryTimeBudgetMs: 15_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true, skipFetchedWithinMs: 5 * 60 * 60 * 1000, maxMissingChecksPerRun: 60, siteStartIndex: expect.any(Number) })
     expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 60_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 }, delistOnTitleChange: true, delistOnUnverified: true, unverifiedDelistHours: 24 })
     expect(mockSyncInventoryListings.mock.invocationCallOrder[0]).toBeLessThan(
       mockCheckSupplierListings.mock.invocationCallOrder[0],
@@ -196,6 +197,13 @@ describe('GET /api/cron/inventory-auto', () => {
       status: 'completed',
       items_total: 12,
       items_matched: 8,
+    }))
+    // 本番で確認した不具合(2026-10-31): その running の行を誰も片付けないので、
+    // 実行時間の上限で関数が落とされた回は「実行中」のまま永久に残り、3日で
+    // 8件たまっていた。実行のはじめに古い running を失敗として閉じる。
+    expect(mockRunUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      error_message: expect.stringContaining('実行時間の上限に達して途中で終了した'),
     }))
   })
 
@@ -238,7 +246,7 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 2 })
     expect(json.results[0].auth).toEqual({ error: 'refresh failed' })
     expect(mockSyncInventoryListings).toHaveBeenCalledTimes(1)
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 80_000, discoveryTimeBudgetMs: 15_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true, skipFetchedWithinMs: 5 * 60 * 60 * 1000, maxMissingChecksPerRun: 60 })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 120_000, discoveryTimeBudgetMs: 15_000, getItemConcurrency: 8, maxItemsPerRun: 800, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true, skipFetchedWithinMs: 5 * 60 * 60 * 1000, maxMissingChecksPerRun: 60, siteStartIndex: expect.any(Number) })
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       user_id: 'user-1',
       status: 'failed',
@@ -417,13 +425,17 @@ describe('GET /api/cron/inventory-auto', () => {
     // 本番で確認した不具合(2026-10-25): 下限を後から効かせていたため
     // 68.6秒 + 40秒 = 108.6秒 を配ってしまい、1人目が時間を使い切って
     // 2人目(akebono-32)が同期されないまま25時間が過ぎた。
-    expect(callFor('token-seller-a')).toMatchObject({ fetchTotalTimeoutMs: 40_000, maxItemsPerRun: 800 })
+    //
+    // 本番で確認した不具合(2026-10-31): 1人40秒では akebono-32(UK/AU)の一覧取得が
+    // 一度も終わらず、9日間ずっと「exceeded 40000ms」だった。予算を120秒に増やして
+    // 1人60秒にする。
+    expect(callFor('token-seller-a')).toMatchObject({ fetchTotalTimeoutMs: 60_000, maxItemsPerRun: 800 })
     // 件数の少ないセラーにも一覧取得(GetMyeBaySelling)が終わる予算を与える。
     // 15秒だとガードに掛かって全件を個別照会(GetItem)していた(2026-10-24の事故)
-    expect(callFor('token-seller-b')).toMatchObject({ fetchTotalTimeoutMs: 40_000, maxItemsPerRun: 50 })
+    expect(callFor('token-seller-b')).toMatchObject({ fetchTotalTimeoutMs: 60_000, maxItemsPerRun: 50 })
     const totalFetchMs = mockSyncInventoryListings.mock.calls
       .reduce((sum, c) => sum + (c[3] as { fetchTotalTimeoutMs: number }).fetchTotalTimeoutMs, 0)
-    expect(totalFetchMs).toBeLessThanOrEqual(80_000)
+    expect(totalFetchMs).toBeLessThanOrEqual(120_000)
     // 従来の単一トークンには一度もフォールバックしない
     expect(mockResolveAccessToken).not.toHaveBeenCalled()
     // カーソルはセラーごとに記録する

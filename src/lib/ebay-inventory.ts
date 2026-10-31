@@ -270,6 +270,10 @@ async function fetchActiveListingRange(
     totalController.abort(new Error(`eBay inventory sync timeout: exceeded ${totalTimeoutMs}ms`))
   }, totalTimeoutMs)
 
+  // 合計時間の上限に達したことを示すエラー。ページ単位の失敗とは区別する。
+  const isTotalTimeout = (error: unknown): boolean =>
+    error instanceof Error && error.message.startsWith('eBay inventory sync timeout')
+
   const getRemainingMs = (): number => {
     const remainingMs = totalTimeoutMs - (Date.now() - startedAt)
     if (remainingMs <= 0) {
@@ -324,26 +328,46 @@ async function fetchActiveListingRange(
     // bounded range concurrently, then restore page order before returning.
     const pageItems: InventoryListingInput[][] = []
     let nextPage = startPage + 1
+    let timedOut = false
     const workerCount = Math.min(concurrency, lastPage - startPage)
 
     await Promise.all(Array.from({ length: workerCount }, async () => {
       while (nextPage <= lastPage) {
         const page = nextPage++
-        const result = await fetchPageWithRetry(page)
-        pageItems[page] = result.items
+        try {
+          const result = await fetchPageWithRetry(page)
+          pageItems[page] = result.items
+        } catch (error) {
+          // 本番で確認した不具合(2026-10-31): 合計時間の上限に達すると、それまでに
+          // 取得できたページまで捨てて例外にしていた。akebono-32 は一覧取得が毎回
+          // 40秒を超えるため、9日間すべての実行が「対象526件のうち1件も取得
+          // できなかった」で終わり、在庫が10/22から更新されていなかった。
+          // 時間切れは取れたところまでで返し、続きは次回に回す。
+          if (!isTotalTimeout(error)) throw error
+          timedOut = true
+          nextPage = lastPage + 1
+          return
+        }
       }
     }))
 
+    // 取れなかったページがあれば、そのページから次回を再開する。並行取得なので
+    // 時間切れの位置より後ろのページが取れていることもあるが、保存は冪等なので
+    // そのまま活かす(捨てると進まない)。
+    let firstMissingPage: number | null = null
     for (let page = startPage + 1; page <= lastPage; page++) {
-      all.push(...(pageItems[page] ?? []))
+      if (pageItems[page]) all.push(...pageItems[page])
+      else if (firstMissingPage === null) firstMissingPage = page
     }
+    const resumeFrom = firstMissingPage ?? (lastPage < totalPages ? lastPage + 1 : null)
 
     return {
       items: all,
-      nextPage: lastPage < totalPages ? lastPage + 1 : null,
+      nextPage: resumeFrom !== null && resumeFrom <= totalPages ? resumeFrom : null,
       totalPages,
-      lastFetchedPage: lastPage,
-      truncated,
+      lastFetchedPage: (firstMissingPage ?? lastPage + 1) - 1,
+      // 時間切れで読み切れていないことを呼び出し側に伝える(完了扱いにしない)
+      truncated: truncated || timedOut,
       ebayTotalPages: firstPage.totalPages,
     }
   } catch (error) {
