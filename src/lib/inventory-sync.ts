@@ -65,6 +65,9 @@ export interface InventorySyncOptions {
   // 複数サイト(UK/AU)のセラーは、残り時間を先頭のサイトから使い切るため
   // 後ろのサイトがいつまでも取得されない。実行ごとに先頭を入れ替える。
   siteStartIndex?: number
+  // 一覧取得(GetMyeBaySelling)が使えないセラーだけに適用する、1回あたりの
+  // 個別照会(GetItem)の上限。eBayの1日の上限(5,000回)に収まる値にする。
+  maxItemLookupsPerRun?: number
 }
 
 export interface InventorySyncBatchResult extends InventorySyncResult {
@@ -599,6 +602,10 @@ export interface KnownInventorySyncBatchResult {
   bulkItems?: number
   bulkComplete?: boolean
   bulkError?: string
+  // 一覧取得を使わなかった理由(使えると判断したのに見送った場合だけ入る)。
+  // 'exceeds_page_cap' = 他ツールの出品でページ上限を超えており、何ページ
+  // 取ってもKakehashiの出品に届かないアカウント。
+  bulkSkipped?: 'exceeds_page_cap'
   nextBatch: number | null
   totalBatches: number
 }
@@ -618,6 +625,10 @@ export interface KnownInventorySyncResult {
   bulkItems?: number
   bulkComplete?: boolean
   bulkError?: string
+  // 一覧取得を使わなかった理由(使えると判断したのに見送った場合だけ入る)。
+  // 'exceeds_page_cap' = 他ツールの出品でページ上限を超えており、何ページ
+  // 取ってもKakehashiの出品に届かないアカウント。
+  bulkSkipped?: 'exceeds_page_cap'
   // 今回照会した件数と、続きから再開するための位置(全件終わったら null)
   processed: number
   nextCursorItemId: string | null
@@ -813,9 +824,11 @@ async function fetchActiveListingMap(
   accessToken: string,
   siteIds: string[],
   options: InventorySyncOptions,
-): Promise<{ map: Map<string, InventoryListingInput>; complete: boolean }> {
+): Promise<{ map: Map<string, InventoryListingInput>; complete: boolean; exceedsPageCap: boolean }> {
   const map = new Map<string, InventoryListingInput>()
   let complete = true
+  // 一覧取得では最後まで走り切れないアカウントかどうか(ページ上限超え)
+  let exceedsPageCap = false
   const allSites: Array<string | null> = siteIds.length > 0 ? [...siteIds] : [null]
   // 本番で確認した不具合(2026-10-31): 残り時間を先頭のサイトから使い切る作りの
   // ため、akebono-32 の2つ目のサイト(AU)は一度も取得されていなかった。
@@ -844,7 +857,18 @@ async function fetchActiveListingMap(
         pageTimeoutMs: remaining ? Math.max(10_000, Math.min(25_000, remaining - 3_000)) : 25_000,
         concurrency: options.getItemConcurrency,
         siteId,
+        // 1ページ目で「上限までに届かない」と分かったら取得をやめる
+        stopIfExceedsPageCap: true,
       })
+      // 他ツールの出品でページ上限を超えているアカウントは、何ページ取っても
+      // Kakehashiの出品に届かない。このセラーは一覧取得を使わず、把握している
+      // 出品を個別照会する(ユーザー指示 2026-11-01: Kakehashiの出品のみ管理する)。
+      if (batch.stoppedAtPageCap) {
+        console.warn(`[inventory-sync] 一覧取得はこのアカウントでは使えません(eBayの総ページ数 ${batch.ebayTotalPages} が上限を超過)。個別照会に切り替えます。`)
+        exceedsPageCap = true
+        complete = false
+        break
+      }
       for (const item of batch.items) if (item.ebayItemId) map.set(item.ebayItemId, item)
       if (batch.truncated || batch.nextPage !== null) complete = false
     } catch (error) {
@@ -854,7 +878,7 @@ async function fetchActiveListingMap(
       console.warn(`[inventory-sync] active list failed for site ${siteId ?? 'US'}:`, error instanceof Error ? error.message : error)
     }
   }
-  return { map, complete }
+  return { map, complete, exceedsPageCap }
 }
 
 // 前回走査した時刻以降に出品開始された出品を全件確認し、Kakehashiの商品に
@@ -1134,11 +1158,15 @@ export async function syncKnownInventoryListingBatch(
   let bulkError: string | undefined
   const fetchStartedAt = Date.now()
   let bulk: { map: Map<string, InventoryListingInput>; complete: boolean } | null = null
+  let bulkSkipped: 'exceeds_page_cap' | undefined
   // 一覧取得を使うかは件数と取得予算で決める(shouldUseBulkRefresh)。
   // 0件のときは発見のため一覧を使う。
   if (batchIndex === 1 && shouldUseBulkRefresh(knownIds.length, options)) {
     try {
-      bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
+      const listed = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
+      // 一覧取得では走り切れないアカウントは、把握している出品の個別照会に回す
+      if (listed.exceedsPageCap) bulkSkipped = 'exceeds_page_cap'
+      else bulk = listed
     } catch (error) {
       if (error instanceof EbayCallLimitError) callLimited = true
       bulkError = error instanceof Error ? error.message : String(error)
@@ -1226,6 +1254,7 @@ export async function syncKnownInventoryListingBatch(
     callLimited,
     bulkItems: bulk?.map.size,
     bulkComplete: bulk?.complete,
+    bulkSkipped,
     bulkError,
     // 一括更新できたときはこのセラーの分は1回で終わり。
     // 上限中も同じセラーを繰り返し照会しても意味がないので次へ進める。
@@ -1246,24 +1275,22 @@ export async function syncKnownInventoryListings(
   const discovery = await discoverNewListings(db, userId, accessToken, options)
   const knownIds = await collectKnownItemIds(db, userId, options)
 
-  // 前回の続きから照会する(ItemIDはソート済み。見つからなければ先頭から)
-  const startIndex = options.cursorItemId
-    ? Math.max(0, knownIds.indexOf(options.cursorItemId) + 1)
-    : 0
-  const maxItems = options.maxItemsPerRun && options.maxItemsPerRun > 0 ? options.maxItemsPerRun : knownIds.length
-  const targetIds = knownIds.slice(startIndex, startIndex + maxItems)
-  const finishedAll = startIndex + targetIds.length >= knownIds.length
-  const nextCursorItemId = finishedAll ? null : targetIds[targetIds.length - 1] ?? null
-
   // まず GetMyeBaySelling でまとめて取得する(1回200件)。失敗したら従来どおり
   // GetItemで1件ずつ照会する。
+  //
+  // 照会対象(targetIds)を決める前に試す。一覧取得が使えないセラーは全件を
+  // 個別照会することになり、1回に回せる件数が変わるため。
   let bulk: { map: Map<string, InventoryListingInput>; complete: boolean } | null = null
+  let bulkSkipped: 'exceeds_page_cap' | undefined
   let callLimited = false
   let bulkError: string | undefined
   const fetchStartedAt = Date.now()
   if (shouldUseBulkRefresh(knownIds.length, options)) {
     try {
-      bulk = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
+      const listed = await fetchActiveListingMap(accessToken, options.sellerSiteIds ?? [], options)
+      // 一覧取得では走り切れないアカウントは、把握している出品の個別照会に回す
+      if (listed.exceedsPageCap) bulkSkipped = 'exceeds_page_cap'
+      else bulk = listed
     } catch (error) {
       if (error instanceof EbayCallLimitError) callLimited = true
       bulkError = error instanceof Error ? error.message : String(error)
@@ -1271,6 +1298,21 @@ export async function syncKnownInventoryListings(
       bulk = null
     }
   }
+
+  // 前回の続きから照会する(ItemIDはソート済み。見つからなければ先頭から)
+  const startIndex = options.cursorItemId
+    ? Math.max(0, knownIds.indexOf(options.cursorItemId) + 1)
+    : 0
+  // maxItemsPerRun は「一覧取得で全件を更新する」前提で出品件数に比例配分した
+  // 値なので、一覧取得を使えないセラーには狭すぎる(akebono-32 は1,023件に対して
+  // 182件/回=一巡に3日)。個別照会だけで回すセラーには専用の枠を使う。
+  const perRunLimit = bulkSkipped
+    ? Math.max(options.maxItemsPerRun ?? 0, options.maxItemLookupsPerRun ?? 0)
+    : (options.maxItemsPerRun ?? 0)
+  const maxItems = perRunLimit > 0 ? perRunLimit : knownIds.length
+  const targetIds = knownIds.slice(startIndex, startIndex + maxItems)
+  const finishedAll = startIndex + targetIds.length >= knownIds.length
+  const nextCursorItemId = finishedAll ? null : targetIds[targetIds.length - 1] ?? null
   // 本番で確認した不具合(2026-09-28): 一括取得が時間切れした後に個別照会を
   // 重ねてルートの打ち切り(45秒)を超えていた。eBayへの取得に使ってよい残り
   // 時間を計算し、足りなければ個別照会は次回に回す。
@@ -1364,6 +1406,7 @@ export async function syncKnownInventoryListings(
     callLimited,
     bulkItems: bulk?.map.size,
     bulkComplete: bulk?.complete,
+    bulkSkipped,
     bulkError,
     processed: callLimited || confirmedNothing ? 0 : targetIds.length,
     nextCursorItemId: confirmedNothing ? (options.cursorItemId ?? null) : nextCursorItemId,
