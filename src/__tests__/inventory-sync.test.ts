@@ -661,7 +661,12 @@ describe('eBayの呼び出し上限', () => {
         for (const m of ['select', 'eq', 'not', 'is', 'in', 'delete', 'lt', 'like']) chain[m] = () => chain
         // 1,000行の上限を避けるため order+range でページ送りする(#db-chunk)
         chain.order = vi.fn(() => chain)
-        chain.range = vi.fn(async (from: number) => ({ data: from === 0 ? [] : [], error: null }))
+        // 照会対象が1件もないと「照会を見送った」ことを確かめられないので、
+        // 既存の出品を1件返す
+        chain.range = vi.fn(async (from: number) => ({
+          data: from === 0 ? [{ ebay_item_id: 'item-1', fetched_at: '2026-10-01T00:00:00Z' }] : [],
+          error: null,
+        }))
         chain.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null })
         return chain
       },

@@ -256,3 +256,81 @@ describe('出品数がページ上限を超えているアカウント', () => {
     expect(result.processed).toBe(182)
   })
 })
+
+// 本番で起きた事故(2026-10-24): 個別照会が1日3,520回に達してeBayの上限(5,000回)を
+// 超え、価格改定1,282件のうち954件が失敗した。同期には事前の残量確認が無く、
+// eBayが上限エラーを返すまで送り続ける作りだった。
+// #328 で一覧取得が使えないセラーを個別照会に回したため、Kakehashiの管理出品
+// 4,493件がすべて1件1回の照会になり、618+500件/回 × 4回 = 4,472回/日 に達する。
+// 送る前に残量で頭を抑える。
+describe('eBayの1日の残り回数', () => {
+  const bulkUnusable = {
+    items: [], nextPage: null, totalPages: 50, lastFetchedPage: 1,
+    truncated: true, ebayTotalPages: 1515, stoppedAtPageCap: true,
+  }
+
+  beforeEach(() => {
+    mockFetchListingsByItemIds.mockReset().mockImplementation(async (_tokens: unknown, ids: string[]) => ({
+      items: ids.map(id => ({ ebayItemId: id })), endedItemIds: [],
+    }))
+  })
+
+  it('残量より多くは照会せず、続きはカーソルに残す', async () => {
+    const { syncKnownInventoryListings } = await import('@/lib/inventory-sync')
+    const old = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const listings = Array.from({ length: 3470 }, (_, i) => ({ ebay_item_id: `item-${String(i).padStart(4, '0')}`, fetched_at: old }))
+    mockFetchActiveListingsBatch.mockResolvedValue(bulkUnusable)
+
+    const result = await syncKnownInventoryListings(makeDb(listings), 'user-1', 'token', {
+      bulkRefresh: true,
+      fetchTotalTimeoutMs: 60_000,
+      maxItemsPerRun: 618,
+      maxItemLookupsPerRun: 500,
+      maxEbayCallsThisRun: 120,
+    })
+
+    expect(result.callBudgetLimited).toBe(true)
+    expect(mockFetchListingsByItemIds.mock.calls[0][1]).toHaveLength(120)
+    expect(result.processed).toBe(120)
+    // 残りは次回へ(飛ばさない)
+    expect(result.nextCursorItemId).toBe('item-0119')
+  })
+
+  it('残量が0なら1件も照会しない', async () => {
+    const { syncKnownInventoryListings } = await import('@/lib/inventory-sync')
+    const old = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const listings = Array.from({ length: 3470 }, (_, i) => ({ ebay_item_id: `item-${String(i).padStart(4, '0')}`, fetched_at: old }))
+    mockFetchActiveListingsBatch.mockResolvedValue(bulkUnusable)
+
+    const result = await syncKnownInventoryListings(makeDb(listings), 'user-1', 'token', {
+      bulkRefresh: true,
+      fetchTotalTimeoutMs: 60_000,
+      maxItemsPerRun: 618,
+      maxItemLookupsPerRun: 500,
+      maxEbayCallsThisRun: 0,
+    })
+
+    // ここが本題。残量0で「上限なし」に倒すと全件送信になって事故が大きくなる
+    expect(mockFetchListingsByItemIds).not.toHaveBeenCalled()
+    expect(result.processed).toBe(0)
+    expect(result.callBudgetLimited).toBe(true)
+  })
+
+  it('残量が足りていれば従来どおりの件数を照会する', async () => {
+    const { syncKnownInventoryListings } = await import('@/lib/inventory-sync')
+    const old = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const listings = Array.from({ length: 3470 }, (_, i) => ({ ebay_item_id: `item-${String(i).padStart(4, '0')}`, fetched_at: old }))
+    mockFetchActiveListingsBatch.mockResolvedValue(bulkUnusable)
+
+    const result = await syncKnownInventoryListings(makeDb(listings), 'user-1', 'token', {
+      bulkRefresh: true,
+      fetchTotalTimeoutMs: 60_000,
+      maxItemsPerRun: 618,
+      maxItemLookupsPerRun: 500,
+      maxEbayCallsThisRun: 4_000,
+    })
+
+    expect(result.callBudgetLimited).toBeUndefined()
+    expect(result.processed).toBe(618)
+  })
+})
