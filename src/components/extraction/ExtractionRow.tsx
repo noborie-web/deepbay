@@ -5,8 +5,7 @@ import { Copy, Pencil, MoreHorizontal } from 'lucide-react'
 import Badge from '@/components/ui/Badge'
 import SellerBadge from '@/components/extraction/SellerBadge'
 import ExclusionSummaryModal from './ExclusionSummaryModal'
-import DuplicateToSellerModal from './DuplicateToSellerModal'
-import ConvertListingCsvModal from './ConvertListingCsvModal'
+import ListForSellerModal from './ListForSellerModal'
 import type { Extraction } from '@/types/database'
 
 interface Props {
@@ -24,8 +23,7 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
   const isManual = !extraction.is_bulk
   const [menuOpen, setMenuOpen] = useState(false)
   const [exclusionSummaryOpen, setExclusionSummaryOpen] = useState(false)
-  const [duplicateOpen, setDuplicateOpen] = useState(false)
-  const [convertOpen, setConvertOpen] = useState(false)
+  const [listForSellerOpen, setListForSellerOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
   // メモ欄インライン編集
@@ -365,16 +363,10 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
                 除外詳細
               </button>
               <button
-                onClick={() => { setDuplicateOpen(true); setMenuOpen(false) }}
+                onClick={() => { setListForSellerOpen(true); setMenuOpen(false) }}
                 className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors"
               >
-                別セラーへ複製
-              </button>
-              <button
-                onClick={() => { setConvertOpen(true); setMenuOpen(false) }}
-                className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors"
-              >
-                完成CSVを変換
+                別セラーへ出品用に変換
               </button>
               <button
                 disabled
@@ -414,22 +406,12 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
         />
       )}
 
-      {convertOpen && (
-        <ConvertListingCsvModal
-          extractionId={extraction.id}
-          extractionName={extraction.name}
-          defaultSite="UK"
-          onClose={() => setConvertOpen(false)}
-        />
-      )}
-
-      {duplicateOpen && (
-        <DuplicateToSellerModal
+      {listForSellerOpen && (
+        <ListForSellerModal
           extractionId={extraction.id}
           extractionName={extraction.name}
           currentSellerAccountId={extraction.seller_account_id ?? null}
-          onClose={() => setDuplicateOpen(false)}
-          onDuplicated={() => { if (typeof window !== 'undefined') window.location.reload() }}
+          onClose={() => setListForSellerOpen(false)}
         />
       )}
     </div>
