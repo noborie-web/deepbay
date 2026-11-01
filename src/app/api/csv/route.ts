@@ -13,27 +13,8 @@ import { EBAY_SITES, normalizeSiteKeys } from '@/lib/ebay-sites'
 import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { fetchJpyRate } from '@/lib/exchange-rate'
 import { getCategoryItemSpecificsNames } from '@/lib/ebay-taxonomy'
+import { parsePoliciesBySite, policiesForSite } from '@/lib/listing-policies'
 import type { Product } from '@/types/database'
-
-interface SitePolicies { shipping: string; payment: string; return: string }
-
-/** サイトごとのポリシー指定。読めない値は無視して、従来の単一指定に落とす */
-function parsePoliciesBySite(value: string | null): Record<string, SitePolicies> {
-  if (!value) return {}
-  try {
-    const parsed = JSON.parse(value) as Record<string, Partial<SitePolicies>>
-    const result: Record<string, SitePolicies> = {}
-    for (const [site, policies] of Object.entries(parsed)) {
-      const shipping = policies?.shipping?.trim()
-      const payment = policies?.payment?.trim()
-      const ret = policies?.return?.trim()
-      if (shipping && payment && ret) result[site.toUpperCase()] = { shipping, payment, return: ret }
-    }
-    return result
-  } catch {
-    return {}
-  }
-}
 
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
@@ -191,15 +172,18 @@ export async function GET(req: NextRequest) {
   const files = siteKeys.map(key => {
     const site = EBAY_SITES[key]
     const jpyPerCurrency = currencyRates.get(site.currency) ?? 0
+    const policies = policiesForSite(policiesBySite, key, {
+      payment: paymentProfile, return: returnProfile, shipping: shippingProfile,
+    })
     const csv = generateListingCsv(typedProducts, {
       categoryId,
       conditionMap,
       defaultConditionId,
       htmlTemplate,
       sellerId: seller.seller_id,
-      paymentProfileName: policiesBySite[key]?.payment ?? paymentProfile,
-      returnProfileName: policiesBySite[key]?.return ?? returnProfile,
-      shippingProfileName: policiesBySite[key]?.shipping ?? shippingProfile,
+      paymentProfileName: policies.payment,
+      returnProfileName: policies.return,
+      shippingProfileName: policies.shipping,
       // USは従来どおり換算しない(出品価格をそのまま使う)
       site: key === 'US' ? undefined : {
         siteId: site.siteId,
