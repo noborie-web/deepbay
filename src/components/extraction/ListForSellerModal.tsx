@@ -9,6 +9,17 @@ interface Seller {
   listing_site_ids: string[] | null
 }
 
+interface PolicyOption {
+  id: string
+  name: string
+}
+
+interface PolicySet {
+  payment: PolicyOption[]
+  return: PolicyOption[]
+  fulfillment: PolicyOption[]
+}
+
 interface Props {
   // 出品元(specifics-inで仕上げたCSVの元になった抽出)
   extractionId: string
@@ -17,11 +28,11 @@ interface Props {
   onClose: () => void
 }
 
-const SITES = [
-  { key: 'UK', label: 'イギリス (UK / GBP)' },
-  { key: 'AU', label: 'オーストラリア (AU / AUD)' },
-  { key: 'US', label: 'アメリカ (US / USD)' },
-]
+const SITE_LABELS: Record<string, string> = {
+  US: 'アメリカ (US / USD)',
+  UK: 'イギリス (UK / GBP)',
+  AU: 'オーストラリア (AU / AUD)',
+}
 
 // ユーザー要望(2026-11-01): miyabi-24(US)と akebono-32(UK)に同じ商品を出す際、
 // specifics-in での白抜き・目視削除・AI生成・コンプライアンスチェックを2回
@@ -35,11 +46,17 @@ export default function ListForSellerModal({
 }: Props) {
   const [sellers, setSellers] = useState<Seller[] | null>(null)
   const [selected, setSelected] = useState('')
-  const [site, setSite] = useState('UK')
+  const [pickedSite, setPickedSite] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [payment, setPayment] = useState('')
   const [returnProfile, setReturnProfile] = useState('')
   const [shipping, setShipping] = useState('')
+  // ユーザー要望(2026-11-01): ビジネスポリシーも自動で取り込んでほしい。
+  // 手入力だと、そのサイトに存在しない名前を書いてもCSVを作れてしまい、
+  // eBayへのアップロードで初めて失敗する。
+  const [policies, setPolicies] = useState<PolicySet | null>(null)
+  const [policyLoading, setPolicyLoading] = useState(false)
+  const [policyError, setPolicyError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<{ converted: number; skipped: number; created: number; reused: number } | null>(null)
@@ -54,17 +71,65 @@ export default function ListForSellerModal({
         // 抽出と同じセラーには出せないので候補から外す
         const list = (data.sellers ?? []).filter(s => s.id !== currentSellerAccountId)
         setSellers(list)
-        if (list.length === 1) {
-          setSelected(list[0].id)
-          const first = (list[0].listing_site_ids ?? [])[0]
-          if (first && SITES.some(s => s.key === first)) setSite(first)
-        }
+        if (list.length === 1) setSelected(list[0].id)
       })
       .catch((e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
     return () => { cancelled = true }
   }, [currentSellerAccountId])
 
-  const ready = Boolean(selected) && Boolean(file)
+  // ビジネスポリシーはそのセラーが出品するサイトぶんしか取れないので、
+  // 選べるサイトもそのセラーの設定に合わせる(無いサイトを選ばせない)。
+  const siteOptions = (sellers?.find(s => s.id === selected)?.listing_site_ids ?? [])
+    .filter(key => SITE_LABELS[key])
+  // 選択中のサイトがそのセラーに無ければ、先頭のサイトとして扱う
+  const site = siteOptions.includes(pickedSite) ? pickedSite : (siteOptions[0] ?? '')
+
+  function changeSite(next: string) {
+    // ポリシー名はサイトごとに別物なので、前のサイトの選択は持ち越さない
+    setPickedSite(next)
+    setPayment('')
+    setReturnProfile('')
+    setShipping('')
+  }
+
+  // 出品先セラーとサイトが決まったら、そのサイトのポリシーを取り込む。
+  // ビジネスポリシーはマーケットプレイスごとに別物なので、サイトで引き直す。
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      if (!selected || !site) { setPolicies(null); return }
+      setPolicyLoading(true)
+      setPolicyError(null)
+      setPolicies(null)
+      try {
+        const res = await fetch(
+          `/api/ebay/policies?sellerAccountId=${encodeURIComponent(selected)}`,
+          { cache: 'no-store' },
+        )
+        const data = await res.json() as { bySite?: Record<string, PolicySet>; error?: string }
+        if (cancelled) return
+        if (data.error) { setPolicyError(data.error); return }
+        const forSite = data.bySite?.[site]
+        if (!forSite) {
+          setPolicyError(`${site} のポリシーを取得できませんでした。eBayの接続とサイト設定を確認してください。`)
+          return
+        }
+        setPolicies(forSite)
+        // 1つしか無い種類は選んでおく(選び間違えようがないため)
+        if (forSite.payment.length === 1) setPayment(forSite.payment[0].name)
+        if (forSite.return.length === 1) setReturnProfile(forSite.return[0].name)
+        if (forSite.fulfillment.length === 1) setShipping(forSite.fulfillment[0].name)
+      } catch (e: unknown) {
+        if (!cancelled) setPolicyError(e instanceof Error ? e.message : String(e))
+      } finally {
+        if (!cancelled) setPolicyLoading(false)
+      }
+    }
+    void load()
+    return () => { cancelled = true }
+  }, [selected, site])
+
+  const ready = Boolean(selected) && Boolean(site) && Boolean(file)
     && payment.trim() !== '' && returnProfile.trim() !== '' && shipping.trim() !== '' && !running
 
   async function run() {
@@ -149,7 +214,7 @@ export default function ListForSellerModal({
                     <input
                       type="radio" name="target-seller" value={seller.id}
                       checked={selected === seller.id}
-                      onChange={() => setSelected(seller.id)}
+                      onChange={() => { setSelected(seller.id); changeSite('') }}
                     />
                     <span className="text-gray-900">{seller.display_name?.trim() || seller.seller_id}</span>
                     <span className="text-xs text-gray-500">
@@ -176,10 +241,13 @@ export default function ListForSellerModal({
           <div>
             <label className="block text-gray-700 mb-1">出品先サイト</label>
             <select
-              value={site} onChange={(e) => setSite(e.target.value)}
-              className="w-full border rounded px-2 py-1.5"
+              value={site} onChange={(e) => changeSite(e.target.value)}
+              disabled={siteOptions.length === 0}
+              className="w-full border rounded px-2 py-1.5 disabled:bg-gray-100"
             >
-              {SITES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+              {siteOptions.length === 0
+                ? <option value="">出品先のセラーを選んでください</option>
+                : siteOptions.map(key => <option key={key} value={key}>{SITE_LABELS[key]}</option>)}
             </select>
             <p className="mt-1 text-xs text-gray-500">
               価格は出品価格から、そのときの為替レートと価格調整で計算し直します。
@@ -189,20 +257,17 @@ export default function ListForSellerModal({
           <div className="space-y-2">
             <p className="text-gray-700">
               ビジネスポリシー
-              <span className="ml-1 text-xs text-gray-500">（そのサイトに存在する名前）</span>
+              <span className="ml-1 text-xs text-gray-500">（eBayから取り込んだ{site}のもの）</span>
             </p>
-            <input
-              value={payment} onChange={(e) => setPayment(e.target.value)}
-              placeholder="支払いポリシー名" className="w-full border rounded px-2 py-1.5"
-            />
-            <input
-              value={returnProfile} onChange={(e) => setReturnProfile(e.target.value)}
-              placeholder="返品ポリシー名" className="w-full border rounded px-2 py-1.5"
-            />
-            <input
-              value={shipping} onChange={(e) => setShipping(e.target.value)}
-              placeholder="配送ポリシー名" className="w-full border rounded px-2 py-1.5"
-            />
+            {policyLoading && <p className="text-gray-500">eBayから取り込んでいます…</p>}
+            {policyError && <p className="text-red-600">{policyError}</p>}
+            {policies && (
+              <>
+                <PolicySelect label="支払い" options={policies.payment} value={payment} onChange={setPayment} />
+                <PolicySelect label="返品" options={policies.return} value={returnProfile} onChange={setReturnProfile} />
+                <PolicySelect label="配送" options={policies.fulfillment} value={shipping} onChange={setShipping} />
+              </>
+            )}
           </div>
 
           {result && (
@@ -234,5 +299,31 @@ export default function ListForSellerModal({
         </div>
       </div>
     </div>
+  )
+}
+
+function PolicySelect({ label, options, value, onChange }: {
+  label: string
+  options: PolicyOption[]
+  value: string
+  onChange: (next: string) => void
+}) {
+  return (
+    <label className="block">
+      <span className="text-xs text-gray-500">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full border rounded px-2 py-1.5"
+      >
+        <option value="">選択してください</option>
+        {options.map(option => (
+          <option key={option.id} value={option.name}>{option.name}</option>
+        ))}
+      </select>
+      {options.length === 0 && (
+        <span className="text-xs text-amber-700">このサイトに{label}ポリシーがありません。</span>
+      )}
+    </label>
   )
 }
