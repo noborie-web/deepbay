@@ -1517,7 +1517,10 @@ export async function syncKnownInventoryListings(
       fetched = await fetchListingsByItemIds(
         { accessToken },
         targetIds,
-        { signal: options.signal, totalTimeoutMs: options.fetchTotalTimeoutMs, concurrency: options.getItemConcurrency },
+        // 本番で確認した不具合(2026-11-01): 予算をまるごと渡していたため、
+        // 一覧取得の判定や発見に使った時間が考慮されず、実際には予算を
+        // 超えて走っていた。残り時間だけを渡す。
+        { signal: options.signal, totalTimeoutMs: remainingFetchMs, concurrency: options.getItemConcurrency },
       )
       confirmedTargets = fetched.items.length + fetched.endedItemIds.length
     } catch (error) {
@@ -1536,6 +1539,14 @@ export async function syncKnownInventoryListings(
   // 状態で、進めた分の出品は次の一巡まで確認されないまま飛ばされ続けていた。
   // 1件も確認できなかった回はカーソルを進めない(同じ範囲を次回やり直す)。
   const confirmedNothing = targetIds.length > 0 && confirmedTargets === 0
+  // 本番で確認した不具合(2026-11-01): 個別照会が時間切れすると例外になり、
+  // 取得できていた分まで捨てて実行ごと失敗していた(miyabi-24、618件/60秒)。
+  // 取れたところまでで返すようにしたので、カーソルも確認できた分だけ進める。
+  // 全部を照会した体で進めると、残りが次の一巡まで確認されない。
+  const confirmedPartly = Boolean(fetched.truncated) && !confirmedNothing
+  const cursorAfterPartial = confirmedPartly
+    ? (targetIds[confirmedTargets - 1] ?? options.cursorItemId ?? null)
+    : nextCursorItemId
 
   return {
     total: knownIds.length,
@@ -1554,7 +1565,7 @@ export async function syncKnownInventoryListings(
     bulkSkipped,
     callBudgetLimited: callLimitedByBudget || undefined,
     bulkError,
-    processed: callLimited || confirmedNothing ? 0 : targetIds.length,
-    nextCursorItemId: confirmedNothing ? (options.cursorItemId ?? null) : nextCursorItemId,
+    processed: callLimited || confirmedNothing ? 0 : (confirmedPartly ? confirmedTargets : targetIds.length),
+    nextCursorItemId: confirmedNothing ? (options.cursorItemId ?? null) : cursorAfterPartial,
   }
 }

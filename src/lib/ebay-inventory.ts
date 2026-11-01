@@ -470,6 +470,14 @@ export interface KnownListingFetchResult {
   // 1個だけの出品が売れた場合、最後の記録は在庫1・売却0なので、必ず
   // 「取り下げ」と誤判定される。終了時点の実際の値を持ち帰る。
   endedListings: EndedListingInfo[]
+  // 合計時間の上限に達し、最後まで照会できなかった。
+  //
+  // 本番で確認した不具合(2026-11-01): miyabi-24 は #328 で一覧取得をやめて
+  // 個別照会に切り替わったが、618件を60秒で引き切れずに時間切れとなり、
+  // 例外が同期全体を落としていた。取得できていた分まで捨てられ、実行記録も
+  // 残らなかった(result_summary が空のまま failed)。
+  // 一覧取得と同じく、取れたところまでで返して続きは次回に回す。
+  truncated?: boolean
 }
 
 export interface EndedListingInfo {
@@ -656,19 +664,36 @@ export async function fetchListingsByItemIds(
     throw new Error(`eBay API timeout: item ${itemId}`)
   }
 
+  // 合計時間の上限に達したことを示すエラー。1件ごとの失敗とは区別する。
+  const isTotalTimeout = (error: unknown): boolean =>
+    error instanceof Error && error.message.startsWith('eBay inventory sync timeout')
+
   try {
     if (options.signal?.aborted) abortForCaller()
     let next = 0
+    let timedOut = false
     // 結果の順序を照会順に揃えるため、indexで受ける
     const results: Array<GetItemParseResult> = []
     await Promise.all(Array.from({ length: Math.min(concurrency, uniqueIds.length) }, async () => {
       while (next < uniqueIds.length) {
         const index = next++
-        results[index] = await fetchWithRetry(uniqueIds[index])
+        try {
+          results[index] = await fetchWithRetry(uniqueIds[index])
+        } catch (error) {
+          // 時間切れは取れたところまでで返す(捨てると1件も進まない)。
+          // 呼び出し上限など他の失敗は、これまでどおり呼び出し側へ返す。
+          if (!isTotalTimeout(error)) throw error
+          timedOut = true
+          next = uniqueIds.length
+          return
+        }
       }
     }))
     uniqueIds.forEach((id, index) => {
       const result = results[index]
+      // 時間切れで照会まで届かなかったItemID。終了扱いにすると、生きている
+      // 出品を在庫一覧から消してしまう。
+      if (result === undefined) return
       if (result === 'not_found') {
         endedItemIds.push(id)
         // 存在しないIDは終了理由が分からない
@@ -679,7 +704,7 @@ export async function fetchListingsByItemIds(
       }
       else if (result) items.push(result)
     })
-    return { items, endedItemIds, endedListings }
+    return { items, endedItemIds, endedListings, truncated: timedOut }
   } catch (error) {
     if (!totalController.signal.aborted) totalController.abort(error)
     throw error

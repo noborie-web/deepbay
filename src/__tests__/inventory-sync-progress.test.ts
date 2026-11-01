@@ -389,3 +389,43 @@ describe('新規出品の走査', () => {
     expect(mockScanSellerList).toHaveBeenCalledTimes(3)
   })
 })
+
+// 本番で確認した不具合(2026-11-01): #328 で一覧取得をやめて個別照会に切り替わった
+// miyabi-24 が、618件を60秒で引き切れずに時間切れとなり、例外が同期全体を落として
+// いた(result_summary が空のまま failed)。取得できていた分まで捨てられていた。
+describe('個別照会が時間切れした同期', () => {
+  it('取得できた分は保存し、カーソルは確認できたところまで進める', async () => {
+    const { syncKnownInventoryListings } = await import('@/lib/inventory-sync')
+    const old = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const listings = Array.from({ length: 600 }, (_, i) => ({ ebay_item_id: `item-${String(i).padStart(4, '0')}`, fetched_at: old }))
+
+    // 一覧取得は使えないアカウント(ページ上限超え)
+    mockFetchActiveListingsBatch.mockResolvedValue({
+      items: [], nextPage: null, totalPages: 50, lastFetchedPage: 1,
+      truncated: true, ebayTotalPages: 1515, stoppedAtPageCap: true,
+    })
+    // 500件のうち3件だけ引けたところで時間切れ
+    mockFetchListingsByItemIds.mockReset().mockImplementation(async (_tokens: unknown, ids: string[]) => ({
+      items: ids.slice(0, 3).map((id, i) => ({
+        ebayItemId: id, customLabel: kakehashiLabel(i + 1),
+        quantity: 1, quantitySold: 0, listingStatus: 'Active',
+      })),
+      endedItemIds: [],
+      truncated: true,
+    }))
+
+    const result = await syncKnownInventoryListings(makeDb(listings), 'user-1', 'token', {
+      bulkRefresh: true,
+      fetchTotalTimeoutMs: 60_000,
+      maxItemsPerRun: 500,
+      maxItemLookupsPerRun: 500,
+    })
+
+    // 例外にならず、取れた分で完了する
+    expect(result.matched).toBeGreaterThan(0)
+    // 確認できた3件ぶんだけ進める。500件すべて照会した体で進めると、
+    // 残り497件が次の一巡まで確認されない。
+    expect(result.processed).toBe(3)
+    expect(result.nextCursorItemId).toBe('item-0002')
+  })
+})
