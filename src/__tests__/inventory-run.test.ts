@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   expireStaleInventorySyncRuns,
+  isPermanentItemError,
   INVENTORY_SYNC_STALE_MESSAGE,
   summarizeInventoryActionRun,
 } from '@/lib/inventory-run'
@@ -70,5 +71,61 @@ describe('expireStaleInventorySyncRuns', () => {
 
     await expect(expireStaleInventorySyncRuns(db, 'user-1'))
       .rejects.toThrow('Failed to expire stale inventory sync runs: database unavailable')
+  })
+})
+
+// 本番で確認した問題(2026-11-01): 価格改定は9回すべて status:'failed' だったが、
+// 実際は毎回95%以上成功しており、失敗は常に同じ5件だけだった(重複出品4件・
+// 削除済みの出品1件)。どれもeBay側を直すまで解消しない。これで実行全体を
+// 失敗にすると、本当の失敗がこの5件に埋もれて気づけない。
+describe('eBay側の事情で解消しない失敗の扱い', () => {
+  const duplicate = 'It looks like this listing is for an item you already have on eBay: Rare LIVRE Light Arm 65'
+  const deleted = 'This item cannot be accessed because the listing has been deleted or you are not the seller.'
+
+  it('全件成功なら理由を残さない', () => {
+    expect(summarizeInventoryActionRun([{ success: true }, { success: true }]))
+      .toEqual({ status: 'completed', errorMessage: null })
+  })
+
+  it('eBay側の事情だけなら稼働扱いにし、理由は残す', () => {
+    const result = summarizeInventoryActionRun([
+      ...Array.from({ length: 17 }, () => ({ success: true })),
+      { success: false, error: duplicate },
+      { success: false, error: duplicate },
+      { success: false, error: duplicate },
+      { success: false, error: duplicate },
+      { success: false, error: deleted },
+    ])
+
+    // ここが本題。修正前は status:'failed' だった
+    expect(result.status).toBe('completed')
+    expect(result.errorMessage).toContain('5/22件はeBay側の事情でスキップ')
+    expect(result.errorMessage).toContain('再試行しても解消しません')
+  })
+
+  it('こちらで対処すべき失敗が混ざっていれば失敗にする', () => {
+    const result = summarizeInventoryActionRun([
+      { success: true },
+      { success: false, error: duplicate },
+      { success: false, error: 'eBay API HTTP error: 500' },
+    ])
+
+    expect(result.status).toBe('failed')
+    expect(result.errorMessage).toContain('1/3件失敗')
+    // eBay側の分も埋もれさせず、件数だけは添える
+    expect(result.errorMessage).toContain('ほかに1件はeBay側の事情でスキップ')
+    expect(result.errorMessage).toContain('eBay API HTTP error: 500')
+  })
+
+  it('理由が無い失敗は、こちらで対処すべき失敗として扱う', () => {
+    expect(summarizeInventoryActionRun([{ success: false }]).status).toBe('failed')
+  })
+
+  it('isPermanentItemError は2つのeBayエラーだけを恒久的と判定する', () => {
+    expect(isPermanentItemError(duplicate)).toBe(true)
+    expect(isPermanentItemError(deleted)).toBe(true)
+    expect(isPermanentItemError('eBay API HTTP error: 500')).toBe(false)
+    expect(isPermanentItemError(undefined)).toBe(false)
+    expect(isPermanentItemError(null)).toBe(false)
   })
 })
