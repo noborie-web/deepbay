@@ -192,3 +192,67 @@ describe('複数サイトのセラー', () => {
     expect((await siteIdsFor(3))[0]).toBe('AU')
   })
 })
+
+// 本番で確認した不具合(2026-11-01): akebono-32 のeBayアカウントには他ツールの
+// 出品が10,000件以上あり、Kakehashiの出品1,023件はページ上限(50ページ)より
+// 後ろにいる。一覧取得は成功する(10,386件)のに照会対象は1件も含まれず、しかも
+// 取得予算を使い切るので個別照会のフォールバックも飛ばされ、processed:0 が
+// 2日以上続いていた(979件が10/30から未確認)。
+// ユーザー指示(2026-11-01): このセラーもKakehashiの出品のみ管理する。
+describe('出品数がページ上限を超えているアカウント', () => {
+  it('一覧取得をやめ、把握している出品を個別照会する', async () => {
+    const { syncKnownInventoryListings } = await import('@/lib/inventory-sync')
+    const old = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const listings = Array.from({ length: 1023 }, (_, i) => ({ ebay_item_id: `item-${String(i).padStart(4, '0')}`, fetched_at: old }))
+
+    // 1ページ目で上限超えと分かり、取得結果なしで返る
+    mockFetchActiveListingsBatch.mockResolvedValue({
+      items: [], nextPage: null, totalPages: 50, lastFetchedPage: 1,
+      truncated: true, ebayTotalPages: 142, stoppedAtPageCap: true,
+    })
+    mockFetchListingsByItemIds.mockImplementation(async (_tokens: unknown, ids: string[]) => ({
+      items: ids.map(id => ({ ebayItemId: id, customLabel: kakehashiLabel(1), quantity: 1, quantitySold: 0, listingStatus: 'Active' })),
+      endedItemIds: [],
+    }))
+
+    const result = await syncKnownInventoryListings(makeDb(listings), 'user-1', 'token', {
+      bulkRefresh: true,
+      fetchTotalTimeoutMs: 60_000,
+      maxItemsPerRun: 182,
+      maxItemLookupsPerRun: 500,
+    })
+
+    // 一覧取得は使わず、見送った理由を残す
+    expect(result.bulkSkipped).toBe('exceeds_page_cap')
+    expect(result.bulkItems).toBeUndefined()
+    // 個別照会に回っている(ここが本題。修正前は processed:0 のままだった)
+    expect(mockFetchListingsByItemIds).toHaveBeenCalledTimes(1)
+    // 一覧取得前提の配分(182件)ではなく、個別照会用の枠(500件)を使う
+    expect(mockFetchListingsByItemIds.mock.calls[0][1]).toHaveLength(500)
+    expect(result.processed).toBe(500)
+    expect(result.nextCursorItemId).toBe('item-0499')
+  })
+
+  it('上限を超えていなければ一覧取得をそのまま使う', async () => {
+    const { syncKnownInventoryListings } = await import('@/lib/inventory-sync')
+    const old = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const listings = Array.from({ length: 400 }, (_, i) => ({ ebay_item_id: `item-${String(i).padStart(4, '0')}`, fetched_at: old }))
+
+    mockFetchActiveListingsBatch.mockResolvedValue({
+      items: [{ ebayItemId: 'item-0000', customLabel: kakehashiLabel(1), quantity: 1, quantitySold: 0, listingStatus: 'Active' }],
+      nextPage: null, totalPages: 1, lastFetchedPage: 1, truncated: false, ebayTotalPages: 1,
+    })
+
+    const result = await syncKnownInventoryListings(makeDb(listings), 'user-1', 'token', {
+      bulkRefresh: true,
+      fetchTotalTimeoutMs: 60_000,
+      maxItemsPerRun: 182,
+      maxItemLookupsPerRun: 500,
+    })
+
+    expect(result.bulkSkipped).toBeUndefined()
+    expect(result.bulkItems).toBe(1)
+    // 一覧取得を使うセラーの照会枠は従来どおり(個別照会の枠に広げない)
+    expect(result.processed).toBe(182)
+  })
+})

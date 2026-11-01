@@ -31,6 +31,10 @@ export const maxDuration = 300
 // 下の「直近に取得済みは書き戻さない」でmiyabi-24の保存時間が大幅に減るので、
 // その分を取得に回す(1人あたり60秒)。
 const SYNC_FETCH_BUDGET_MS = 120_000
+// 一覧取得(GetMyeBaySelling)が使えないセラーが、1回に個別照会(GetItem)して
+// よい件数。eBayの1日の上限は5,000回で、最悪4枠すべてで先頭に回っても
+// 2,000回に収まる。
+const SYNC_MAX_ITEM_LOOKUPS_PER_RUN = 500
 const SYNC_DISCOVERY_BUDGET_MS = 15_000
 const SUPPLIER_CHECK_BUDGET_MS = 60_000
 
@@ -343,6 +347,12 @@ export async function GET(req: NextRequest) {
             discoveryTimeBudgetMs: Math.floor(SYNC_DISCOVERY_BUDGET_MS / share),
             getItemConcurrency: 8,
             maxItemsPerRun: budget.maxItemsPerRun,
+            // 一覧取得が使えないセラー(他ツールの出品でページ上限を超えている
+            // アカウント)だけに効く、個別照会の1回あたりの上限。
+            // akebono-32 は1,023件で、先頭に回るのは4枠のうち2枠なので
+            // 500件/回なら1日で一巡する。eBayの呼び出し実績は1日400〜700回
+            // (GetItemは60回以下)で、上限5,000回に対して余裕がある。
+            maxItemLookupsPerRun: SYNC_MAX_ITEM_LOOKUPS_PER_RUN,
             cursorItemId: account ? account.inventory_sync_cursor_item_id : (settings.sync_cursor_item_id ?? null),
             sellerAccountId: account?.id ?? null,
             sellerSiteIds: account?.listing_site_ids ?? null,
@@ -378,6 +388,9 @@ export async function GET(req: NextRequest) {
             bulk_items: syncResult.bulkItems ?? null,
             bulk_complete: syncResult.bulkComplete ?? null,
             bulk_error: syncResult.bulkError ?? null,
+            // 一覧取得を見送った理由。黙って個別照会に落ちると、なぜ呼び出し
+            // 回数の内訳が変わったのか後から分からなくなる。
+            bulk_skipped: syncResult.bulkSkipped ?? null,
             processed: syncResult.processed, remaining: syncResult.nextCursorItemId ? syncResult.total - syncResult.processed : 0,
           }
           syncResults.push({ ...summary, total: syncResult.total, matched: syncResult.matched, unmanaged: syncResult.unmanaged })

@@ -51,6 +51,10 @@ export interface EbayInventoryFetchOptions {
   // ユーザー要望(2026-09-27): UK/AUの出品もまとめて取得する。
   // GetMyeBaySelling はサイト単位の文脈で返るため、サイトを指定できるようにする。
   siteId?: string | null
+  // 他ツールの出品でアカウントが埋まっていて、ページ上限(MAX_PAGES)までに
+  // Kakehashiの出品へ到達できないセラーがいる。1ページ目で総ページ数が上限を
+  // 超えていると分かった時点で取得をやめ、呼び出し側を個別照会へ回す。
+  stopIfExceedsPageCap?: boolean
 }
 
 export interface EbayInventoryBatchResult {
@@ -61,6 +65,10 @@ export interface EbayInventoryBatchResult {
   // eBay側の総ページ数がMAX_PAGESを超えており、一部の出品が取得できていない
   truncated: boolean
   ebayTotalPages: number
+  // 1ページ目で総ページ数が上限を超えていたため、取得せずに打ち切った。
+  // stopIfExceedsPageCap を指定したときだけ true になる(時間切れの truncated と
+  // 区別するために別の目印にしている)。
+  stoppedAtPageCap?: boolean
 }
 
 /**
@@ -311,6 +319,22 @@ async function fetchActiveListingRange(
     const truncated = firstPage.totalPages > MAX_PAGES
     if (truncated) {
       console.warn(`[ebay-inventory] active listings exceed the fetch cap: eBay reports ${firstPage.totalPages} pages, fetching only ${MAX_PAGES}`)
+    }
+    // 本番で確認した不具合(2026-11-01): akebono-32 のeBayアカウントには他ツールの
+    // 出品が10,000件以上あり、Kakehashiの出品1,023件は50ページ目より後ろにいる。
+    // 一覧取得そのものは成功する(10,386件)のに照会対象は1件も含まれず、しかも
+    // 取得予算を使い切るので個別照会のフォールバックまで飛ばされ、何日も
+    // processed:0 が続いていた。無駄だと1ページ目で分かるので、ここで打ち切る。
+    if (truncated && options.stopIfExceedsPageCap) {
+      return {
+        items: [],
+        nextPage: null,
+        totalPages,
+        lastFetchedPage: startPage,
+        truncated: true,
+        ebayTotalPages: firstPage.totalPages,
+        stoppedAtPageCap: true,
+      }
     }
     const lastPage = Math.min(totalPages, startPage + pageCount - 1)
     if (lastPage <= startPage) {
