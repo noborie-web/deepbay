@@ -656,6 +656,13 @@ export interface DiscoveryResult {
   discovered: number
   // 期間内の出品を読み切れなかった(次回同期で同じ期間から再走査する)
   truncated: boolean
+  // 本番で確認した問題(2026-11-01): truncated が真偽値だけだったため、
+  // 「どれだけ足りなかったのか」が分からなかった。akebono-32 の
+  // discovery_truncated:true を見て新規出品を取りこぼしていると判断したが、
+  // 実際は読み切れた回もあり、打ち切った回はカーソルを進めず次回やり直して
+  // いたので取りこぼしは無かった。何ページ中何ページ読めたかを残す。
+  pagesFetched?: number
+  totalPages?: number
   // 本番で確認した不具合(2026-09-26): akebono-32(UK/AU)の新規出品が取り込まれず、
   // 原因はconsole.warnにしか出ていなかったため画面からもDBからも見えなかった。
   // 失敗した理由を呼び出し側に返し、実行履歴に残せるようにする。
@@ -674,6 +681,9 @@ export interface KnownInventorySyncBatchResult {
   // 新規に発見して取り込んだ件数(最初のバッチのみ)
   discovered: number
   discoveryTruncated: boolean
+  // 走査したページ数と、eBayが返した総ページ数(足りなかった量を測るため)
+  discoveryPagesFetched?: number
+  discoveryTotalPages?: number
   discoveryError?: string
   // 本番で確認した不具合(2026-09-27): 1人目のセラーのGetItemが呼び出し上限で
   // 失敗すると同期全体が止まり、2人目(akebono-32)の新規出品の発見まで
@@ -699,6 +709,9 @@ export interface KnownInventorySyncResult {
   ended: number
   discovered: number
   discoveryTruncated: boolean
+  // 走査したページ数と、eBayが返した総ページ数(足りなかった量を測るため)
+  discoveryPagesFetched?: number
+  discoveryTotalPages?: number
   discoveryError?: string
   // 呼び出し上限に当たって既存出品の照会をスキップした
   callLimited?: boolean
@@ -1010,6 +1023,9 @@ async function discoverNewListings(
     const startedMs = Date.now()
     let discovered = 0
     let truncated = false
+    // 走査できたページ数と、eBayが返した総ページ数(どれだけ足りなかったかを残す)
+    let pagesFetched = 0
+    let totalPages = 0
     let cursor = from
 
     // 本番で確認した不具合(2026-09-27): 走査位置が無いセラー(追加したばかりの
@@ -1041,7 +1057,14 @@ async function discoverNewListings(
           const active = scan.items.filter(item => !item.listingStatus || item.listingStatus === 'Active')
           const stored = await storeInventoryListings(db, userId, active, options)
           discovered += stored.matched
-          if (scan.truncated) { truncated = true; stop = true; break }
+          pagesFetched += scan.pagesFetched
+          totalPages += scan.totalPages
+          if (scan.truncated) {
+            truncated = true
+            stop = true
+            console.warn(`[inventory-sync] discovery truncated (${siteId}): ${scan.pagesFetched}/${scan.totalPages} pages in ${chunkStart.toISOString()}..${chunkEnd.toISOString()}`)
+            break
+          }
         }
         if (!stop && !newestDone) {
           // 直近の区間を読み切れたら、次回はその時点以降だけを見ればよい
@@ -1057,7 +1080,7 @@ async function discoverNewListings(
         if (stop) break
         chunkEnd = chunkStart
       }
-      return { discovered, truncated }
+      return { discovered, truncated, pagesFetched, totalPages }
     }
     while (cursor.getTime() < scanStartedAt.getTime()) {
       const chunkEnd = new Date(Math.min(cursor.getTime() + chunkMs, scanStartedAt.getTime()))
@@ -1080,6 +1103,8 @@ async function discoverNewListings(
         const active = scan.items.filter(item => !item.listingStatus || item.listingStatus === 'Active')
         const stored = await storeInventoryListings(db, userId, active, options)
         discovered += stored.matched
+        pagesFetched += scan.pagesFetched
+        totalPages += scan.totalPages
         if (scan.truncated) {
           scanTruncated = true
           console.warn(`[inventory-sync] discovery truncated (${siteId}): ${scan.pagesFetched}/${scan.totalPages} pages in ${cursor.toISOString()}..${chunkEnd.toISOString()}`)
@@ -1103,7 +1128,7 @@ async function discoverNewListings(
           .eq('user_id', userId)
       if (error) console.warn('[inventory-sync] failed to record discovery time:', error.message)
     }
-    return { discovered, truncated }
+    return { discovered, truncated, pagesFetched, totalPages }
   } catch (error) {
     if (options.signal?.aborted) throw error
     const message = error instanceof Error ? error.message : String(error)
@@ -1353,6 +1378,8 @@ export async function syncKnownInventoryListingBatch(
     ended: fetched.endedItemIds.length + stored.ended,
     discovered: discovery.discovered,
     discoveryTruncated: discovery.truncated,
+    discoveryPagesFetched: discovery.pagesFetched,
+    discoveryTotalPages: discovery.totalPages,
     discoveryError: discovery.error,
     callLimited,
     bulkItems: bulk?.map.size,
@@ -1518,6 +1545,8 @@ export async function syncKnownInventoryListings(
     ended: fetched.endedItemIds.length + stored.ended,
     discovered: discovery.discovered,
     discoveryTruncated: discovery.truncated,
+    discoveryPagesFetched: discovery.pagesFetched,
+    discoveryTotalPages: discovery.totalPages,
     discoveryError: discovery.error,
     callLimited,
     bulkItems: bulk?.map.size,

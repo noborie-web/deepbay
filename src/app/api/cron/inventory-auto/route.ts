@@ -45,7 +45,13 @@ const SYNC_MAX_ITEM_LOOKUPS_PER_RUN = 500
 // なる。上限を見ずに送ると 618+500 件/回 × 4回 = 4,472回/日 に達し、同じ事故に
 // なるため、送る前に残量で頭を抑える。
 const SYNC_EBAY_CALL_RESERVE = 1_000
-const SYNC_DISCOVERY_BUDGET_MS = 15_000
+// 本番で確認した問題(2026-11-01): セラーごと7.5秒(15秒÷2)しかなく、1ページ
+// 読むのに最低5秒必要(SELLER_LIST_MIN_PAGE_MS)なため、実質1ページ(50件)で
+// 打ち切っていた。akebono-32 は UK/AU で分け合うので頻繁に途中で終わり、
+// 毎回 discovery_truncated:true だった(カーソルを進めないので取りこぼしては
+// いないが、CSV出品を始めた途端に見落とす)。
+// #329 で同期の保存処理が約175秒短くなったので、その分を走査に回す。
+const SYNC_DISCOVERY_BUDGET_MS = 60_000
 const SUPPLIER_CHECK_BUDGET_MS = 60_000
 
 // 本番で確認した不具合(2026-10-25): 同期の工程に実時間の上限が無く、1人目の
@@ -396,6 +402,10 @@ export async function GET(req: NextRequest) {
             slot,
             seller_id: account?.seller_id ?? null,
             discovered: syncResult.discovered, ended: syncResult.ended, discovery_truncated: syncResult.discoveryTruncated,
+            // 走査がどれだけ足りなかったかを残す。真偽値だけだと、読み切れた回と
+            // 途中で終わった回の区別はつくが、量が分からず原因を誤認する。
+            discovery_pages: syncResult.discoveryPagesFetched ?? null,
+            discovery_total_pages: syncResult.discoveryTotalPages ?? null,
             discovery_error: syncResult.discoveryError ?? null,
             call_limited: syncResult.callLimited ?? false,
             bulk_items: syncResult.bulkItems ?? null,
