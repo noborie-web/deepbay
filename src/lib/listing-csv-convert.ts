@@ -139,5 +139,10 @@ export function convertListingCsv(
     converted++
   }
 
-  return { csv: out.join('\r\n') + '\r\n', converted, skipped }
+  // 本番で確認した不具合(2026-11-01): 先頭のBOMを落としたまま返していた。
+  // 出品CSVは1列目が Action(CC=Cp1252) で、BOMが無いとeBayはCp1252として
+  // 読もうとする。日本語を含むCSVは1件も処理されずに終わる。
+  // Kakehashiの他のCSV出力(generateListingCsv / generateSpecificsCsv)と同じく
+  // BOMを付けて返す。
+  return { csv: `\uFEFF${out.join('\r\n')}\r\n`, converted, skipped }
 }

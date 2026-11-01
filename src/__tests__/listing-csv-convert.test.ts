@@ -74,6 +74,16 @@ describe('完成CSVを別セラー向けに変換する', () => {
     expect(parseCsvRows(result.csv)).toHaveLength(2)
   })
 
+  // 本番で確認した不具合(2026-11-01): BOMを落としたまま返していた。1列目が
+  // Action(CC=Cp1252) なので、BOMが無いとeBayはCp1252として読もうとし、
+  // 日本語を含むCSVは1件も処理されずに終わる。
+  it('先頭にBOMを付けて返す(eBayがUTF-8と判別できるように)', () => {
+    const result = convertListingCsv(csvOf([ROW_A]), OPTIONS)
+    expect(result.csv.charCodeAt(0)).toBe(0xfeff)
+    // BOMを付けても読み直せる
+    expect(parseCsvRows(result.csv)[0][0]).toBe('Action(CC=Cp1252)')
+  })
+
   it('CustomLabel 列が無いCSVは断る', () => {
     const csv = '"Title","StartPrice"\r\n"a","1"\r\n'
     expect(() => convertListingCsv(csv, OPTIONS)).toThrow(/CustomLabel/)
