@@ -138,8 +138,11 @@ export async function storeInventoryListings(
   // .in(...) で照会するとURLが長すぎて PostgREST が 400 Bad Request を返し、
   // 日次の同期が「Product lookup failed: Bad Request」で失敗していた。
   // 他の書き込みと同じく DB_CHUNK_SIZE 件ずつに分割して照会する。
+  // 本番で確認した不具合(2026-11-01): 100件ずつの照会を逐次で回していたため、
+  // miyabi-24 の同期1回で products のGETが219回・合計65秒かかっていた
+  // (1回約300ms)。チャンクは互いに独立なので並行で投げる。
   if (productIds.length > 0) {
-    for (const chunk of chunked(productIds)) {
+    await Promise.all(chunked(productIds).map(async chunk => {
       const { data: directProducts, error: directProductError } = await db
         .from('products')
         .select('id, source_item_id, ebay_item_id')
@@ -147,10 +150,10 @@ export async function storeInventoryListings(
         .in('id', chunk)
       if (directProductError) throw new Error(`Product lookup failed: ${directProductError.message}`)
       for (const product of directProducts ?? []) productLookup.set(product.id, product.id)
-    }
+    }))
   }
   if (ebayItemIds.length > 0 && uniqueListings.some(listing => listing.customLabel)) {
-    for (const chunk of chunked(ebayItemIds)) {
+    await Promise.all(chunked(ebayItemIds).map(async chunk => {
       const { data: ebayProducts, error: ebayProductError } = await db
         .from('products')
         .select('id, source_item_id, ebay_item_id')
@@ -160,13 +163,13 @@ export async function storeInventoryListings(
       for (const product of ebayProducts ?? []) {
         if (product.ebay_item_id) productLookup.set(`ebay:${product.ebay_item_id}`, product.id)
       }
-    }
+    }))
   }
   const sourceLookupKeyChunks = Array.from(
     { length: Math.ceil(sourceLookupKeys.length / DB_CHUNK_SIZE) },
     (_, index) => sourceLookupKeys.slice(index * DB_CHUNK_SIZE, (index + 1) * DB_CHUNK_SIZE),
   )
-  for (const sourceLookupKeyChunk of sourceLookupKeyChunks) {
+  await Promise.all(sourceLookupKeyChunks.map(async sourceLookupKeyChunk => {
     const { data: matchedProducts, error: productError } = await db
       .from('products')
       .select('id, source_item_id, ebay_item_id')
@@ -180,7 +183,7 @@ export async function storeInventoryListings(
       productIdsForSource.add(product.id)
       sourceProductLookup.set(product.source_item_id, productIdsForSource)
     }
-  }
+  }))
 
   // ユーザー要望: eBayアカウント上には他ツール(公式の既存ツール)で出品・
   // 在庫管理中の商品が約5,000件あり、それらをKakehashiの在庫管理に混在
@@ -271,6 +274,8 @@ export async function storeInventoryListings(
       ebay_item_id: row.ebay_item_id,
       quantity: row.quantity,
       quantity_sold: row.quantity_sold,
+      // listed_at を初めて入れるときは、同期時刻ではなく実際の出品開始時刻を使う
+      start_time: row.start_time,
     })))
 
   // 終了済みとして返ってきた出品が在庫一覧に残っていたら、履歴に記録して外す
@@ -292,6 +297,8 @@ export interface ProductListingStateInput {
   ebay_item_id: string
   quantity: number | null
   quantity_sold?: number | null
+  // eBayが返す実際の出品開始時刻。listed_at を初めて入れるときに使う。
+  start_time?: string | null
 }
 
 // ユーザー要望: 集計カードに取り下げたリストを表示したい。
@@ -316,21 +323,88 @@ export async function applyListingStateToProducts(
   const byProduct = new Map<string, ProductListingStateInput>()
   for (const listing of listings) byProduct.set(listing.product_id, listing)
   const entries = Array.from(byProduct.values())
-  const workerCount = Math.min(5, entries.length)
-  let next = 0
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (next < entries.length) {
-      const entry = entries[next++]
+  if (entries.length === 0) return
+
+  // 本番で確認した不具合(2026-11-01): 商品1件ずつUPDATEを発行し、しかも値が
+  // 変わっていなくても毎回・全件に書いていた。miyabi-24 の同期1回で
+  // products へのPATCHが2,192回(合計577秒・並行5で実時間約110秒)に達し、
+  // 全体予算200秒を超えて2人目(akebono-32)が「残り0秒」で飛ばされていた。
+  // 在庫一覧へのupsertは22回・13秒しかかかっていない。
+  // いまの値を読んで、実際に変わるものだけ書く(定常状態ではほぼ0件)。
+  const current = new Map<string, { listing_status: string | null; ebay_item_id: string | null; listed_at: string | null }>()
+  const idChunks = chunked(entries.map(entry => entry.product_id))
+  await Promise.all(idChunks.map(async chunk => {
+    const { data, error } = await db
+      .from('products')
+      .select('id, listing_status, ebay_item_id, listed_at')
+      .eq('user_id', userId)
+      .in('id', chunk)
+    if (error) throw new Error(`Product listing state lookup failed: ${error.message}`)
+    for (const row of data ?? []) {
+      current.set(row.id as string, {
+        listing_status: (row.listing_status as string | null) ?? null,
+        ebay_item_id: (row.ebay_item_id as string | null) ?? null,
+        listed_at: (row.listed_at as string | null) ?? null,
+      })
+    }
+  }))
+
+  // listing_status だけが変わる商品は、同じ値ごとにまとめて1回のUPDATEにする
+  const statusOnly = new Map<'listed' | 'sold' | 'delisted', string[]>()
+  // ebay_item_id や listed_at も変わる商品は、値が商品ごとに違うので個別に書く
+  const individual: Array<{ id: string; row: Record<string, unknown> }> = []
+
+  for (const entry of entries) {
+    const status = resolveProductListingStatus(entry.quantity, entry.quantity_sold)
+    const before = current.get(entry.product_id)
+    // 読めなかった商品(他ユーザー・削除済み)は触らない
+    if (!before) continue
+    const statusChanged = before.listing_status !== status
+    const itemIdChanged = before.ebay_item_id !== entry.ebay_item_id
+    // 本番で確認した不具合(2026-11-01): listed_at に無条件で now を書いていた
+    // ため、商品の出品日時が「最後に同期した時刻」で潰されていた。紐付いて
+    // いる4,493件のうち4,362件(97%)が実際の出品時刻より後ろにずれ、平均18日
+    // 違っていた。まだ入っていないときだけ、eBayが返す出品開始時刻を入れる。
+    const listedAt = before.listed_at === null ? (entry.start_time ?? now) : null
+    if (!statusChanged && !itemIdChanged && listedAt === null) continue
+    if (statusChanged && !itemIdChanged && listedAt === null) {
+      const ids = statusOnly.get(status) ?? []
+      ids.push(entry.product_id)
+      statusOnly.set(status, ids)
+      continue
+    }
+    individual.push({
+      id: entry.product_id,
+      row: {
+        ebay_item_id: entry.ebay_item_id,
+        listing_status: status,
+        ...(listedAt !== null ? { listed_at: listedAt } : {}),
+        updated_at: now,
+      },
+    })
+  }
+
+  for (const [status, ids] of statusOnly) {
+    for (const chunk of chunked(ids)) {
       const { error } = await db
         .from('products')
-        .update({
-          ebay_item_id: entry.ebay_item_id,
-          listing_status: resolveProductListingStatus(entry.quantity, entry.quantity_sold),
-          listed_at: now,
-          updated_at: now,
-        })
+        .update({ listing_status: status, updated_at: now })
         .eq('user_id', userId)
-        .eq('id', entry.product_id)
+        .in('id', chunk)
+      if (error) throw new Error(`Product listing state update failed: ${error.message}`)
+    }
+  }
+
+  let next = 0
+  const workerCount = Math.min(5, individual.length)
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (next < individual.length) {
+      const entry = individual[next++]
+      const { error } = await db
+        .from('products')
+        .update(entry.row)
+        .eq('user_id', userId)
+        .eq('id', entry.id)
       if (error) throw new Error(`Product listing state update failed: ${error.message}`)
     }
   }))
