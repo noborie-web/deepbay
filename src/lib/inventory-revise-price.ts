@@ -7,8 +7,9 @@ import type { InventoryAuthSettings } from '@/lib/inventory-auth'
 import { decideSiteRevisePrice, loadJpyRates } from '@/lib/inventory-site-pricing'
 import { currencyForSite } from '@/lib/ebay-sites'
 import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
-import { applyRevisedPrices } from '@/lib/inventory-sync'
-import { summarizeInventoryActionRun } from '@/lib/inventory-run'
+import { applyRevisedPrices, dropEndedListings } from '@/lib/inventory-sync'
+import { isDeletedListingError, summarizeInventoryActionRun } from '@/lib/inventory-run'
+import { fetchListingsByItemIds } from '@/lib/ebay-inventory'
 import { EBAY_RESERVED_CALLS, remainingEbayCalls } from '@/lib/ebay-call-counter'
 
 // ---------------------------------------------------------------------------
@@ -45,6 +46,8 @@ export interface RevisePriceSummary {
   unchanged: number
   /** eBayの1日の呼び出し枠が足りず、翌日に回した件数 */
   deferred_daily_limit: number
+  /** eBay上に無いと確認できて在庫一覧から外した件数 */
+  dropped_deleted: number
   items: Array<{
     ebay_item_id: string
     price_before: number | null
@@ -173,6 +176,44 @@ export async function runRevisePriceForUser(
     deferred += batch.deferred
   }
 
+  // 本番で確認した問題(2026-11-01): eBay上に無い出品(900012836561)が在庫一覧に
+  // 残っていたため、価格改定が4回/日すべてこの1件で失敗し続けていた。次回の同期を
+  // 待っても、照会対象に入っていなければ外れない。ここで片付ける。
+  //
+  // エラー文は「削除済み」と「あなたがセラーではない」を兼ねているので、これだけで
+  // 消すと、セラーの割り当てが違うだけの生きた出品を失う。GetItemで存在しないことを
+  // 確かめてから外す(該当は通常0〜数件なので、呼び出し回数の負担にならない)。
+  let droppedDeleted = 0
+  const deletedCandidates = results.filter(r => !r.success && isDeletedListingError(r.error))
+  if (deletedCandidates.length > 0) {
+    const bySeller = new Map<string | null, string[]>()
+    for (const candidate of deletedCandidates) {
+      const accountId = entries.find(e => e.itemId === candidate.itemId)?.sellerAccountId ?? null
+      const ids = bySeller.get(accountId) ?? []
+      ids.push(candidate.itemId)
+      bySeller.set(accountId, ids)
+    }
+    for (const [accountId, itemIds] of bySeller) {
+      const token = tokenResolver.tokenFor(accountId)
+      if (!token) continue
+      try {
+        const checked = await fetchListingsByItemIds({ accessToken: token }, itemIds)
+        if (checked.endedItemIds.length > 0) {
+          await dropEndedListings(db, userId, checked.endedItemIds, accountId, checked.endedListings)
+          droppedDeleted += checked.endedItemIds.length
+        }
+        // 生きている出品は消さない。失敗として残したまま次回も報告する
+        // (セラーの割り当てが違う等、こちらで直すべき問題が隠れている)
+        for (const item of checked.items) {
+          console.warn(`[revise-price] eBayは「削除済み」と返したが出品は存在する(セラーの割り当てを確認): ${item.ebayItemId}`)
+        }
+      } catch (error) {
+        // 片付けに失敗しても価格改定の結果は返す
+        console.warn('[revise-price] 削除済み出品の片付けに失敗:', error instanceof Error ? error.message : error)
+      }
+    }
+  }
+
   // 反映した価格を在庫一覧にも書く(次回同期を待たずに差分が消える)
   try {
     await applyRevisedPrices(db, userId, results.filter(r => r.success).map(r => {
@@ -211,6 +252,8 @@ export async function runRevisePriceForUser(
       skipped_unknown_seller: skippedUnknownSeller,
       unchanged,
       deferred_daily_limit: deferredDailyLimit,
+      // eBay上に無いと確認できて在庫一覧から外した出品の件数
+      dropped_deleted: droppedDeleted,
       items,
     },
     status: run.status,

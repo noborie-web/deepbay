@@ -1183,6 +1183,22 @@ async function recordEndedListingHistory(
   if (upsertError) console.warn('[inventory] ended listing history save failed:', upsertError.message)
 }
 
+/**
+ * eBay上に存在しないと確認できた出品を、在庫一覧から外して履歴に残す。
+ *
+ * 価格改定・取り下げが「出品が削除済み」で失敗し続ける出品を片付けるために
+ * 使う。呼び出し側がGetItemで存在しないことを確かめてから渡すこと。
+ */
+export async function dropEndedListings(
+  db: SupabaseClient,
+  userId: string,
+  itemIds: string[],
+  sellerAccountId?: string | null,
+  endedListings?: EndedListingInfo[],
+): Promise<void> {
+  await removeEndedListings(db, userId, itemIds, sellerAccountId, endedListings)
+}
+
 async function removeEndedListings(
   db: SupabaseClient,
   userId: string,
