@@ -1816,12 +1816,15 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-1">
-                            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${run.status === 'completed' ? 'bg-green-100 text-green-700' : run.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                              {run.status === 'completed' ? '稼働' : run.status === 'failed' ? '失敗' : '実行中'}
+                            {/* 成功しているが理由付きの回は「一部スキップ」として区別する。
+                                eBay側を直すまで解消しない失敗(重複出品・削除済みの出品)で
+                                実行全体を「失敗」にすると、本当の失敗が埋もれて気づけない。 */}
+                            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${run.status === 'completed' ? (run.error_message ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700') : run.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                              {run.status === 'completed' ? (run.error_message ? '一部スキップ' : '稼働') : run.status === 'failed' ? '失敗' : '実行中'}
                             </span>
-                            {run.status === 'failed' && run.error_message && (
+                            {run.error_message && (
                               <button onClick={() => setExpandedError(expandedError === run.id ? null : run.id)}
-                                className="text-xs text-red-500 underline hover:text-red-700">
+                                className={`text-xs underline ${run.status === 'failed' ? 'text-red-500 hover:text-red-700' : 'text-amber-600 hover:text-amber-800'}`}>
                                 {expandedError === run.id ? '閉じる' : '詳細'}
                               </button>
                             )}
@@ -1854,7 +1857,7 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                       </tr>
                       {expandedError === run.id && run.error_message && (
                         <tr className="bg-red-50">
-                          <td colSpan={5} className="px-4 py-2 text-xs text-red-700 font-mono whitespace-pre-wrap">{run.error_message}</td>
+                          <td colSpan={5} className={`px-4 py-2 text-xs font-mono whitespace-pre-wrap ${run.status === 'failed' ? 'text-red-700' : 'text-amber-700'}`}>{run.error_message}</td>
                         </tr>
                       )}
                     </>
