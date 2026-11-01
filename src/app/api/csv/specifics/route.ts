@@ -12,6 +12,7 @@ import { EBAY_SITES, normalizeSiteKeys } from '@/lib/ebay-sites'
 import { fetchJpyRate } from '@/lib/exchange-rate'
 import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { getCategoryItemSpecificsNames } from '@/lib/ebay-taxonomy'
+import { parsePoliciesBySite, policiesForSite } from '@/lib/listing-policies'
 import type { Product } from '@/types/database'
 
 export async function GET(req: NextRequest) {
@@ -30,6 +31,12 @@ export async function GET(req: NextRequest) {
   // 本番で確認した不具合(2026-09-26): 出品先にUK/AUを選んでも、Specifics-IN
   // CSVだけ常にUS・USDで出力されていた。出品CSVと同じくサイトごとに出す。
   const siteKeys = normalizeSiteKeys(searchParams.get('sites'))
+  // ユーザー報告(2026-11-01): UK/AUの2ファイルを出すと、UKのCSVにAUの配送
+  // ポリシー(3area excluded ver.)が入っていた。eBayにアップロードしても
+  // 「ポリシーが適用されない」となる。ビジネスポリシーはマーケットプレイス
+  // ごとに別物なので、出品CSV(/api/csv)と同じくサイトごとの指定を使う。
+  // 2026-10-19 にそちらだけ直し、ここに入れ忘れていた。
+  const policiesBySite = parsePoliciesBySite(searchParams.get('policiesBySite'))
   if (formatVersion !== 'specificsin-45-v1') {
     return NextResponse.json(
       { error: '旧形式のCSV出力は廃止されました。画面を再読み込みして45列CSVを出力してください' },
@@ -127,15 +134,18 @@ export async function GET(req: NextRequest) {
   const files = siteKeys.map(key => {
     const site = EBAY_SITES[key]
     const jpyPerCurrency = currencyRates.get(site.currency) ?? 0
+    const policies = policiesForSite(policiesBySite, key, {
+      payment: paymentProfile, return: returnProfile, shipping: shippingProfile,
+    })
     const csvForSite = generateSpecificsCsv(products as Product[], {
       categoryId,
       conditionMap,
       defaultConditionId,
       htmlTemplate,
       sellerId: seller.seller_id,
-      paymentProfileName: paymentProfile,
-      returnProfileName: returnProfile,
-      shippingProfileName: shippingProfile,
+      paymentProfileName: policies.payment,
+      returnProfileName: policies.return,
+      shippingProfileName: policies.shipping,
       // USは従来どおり換算しない(出品価格をそのまま使う)
       site: key === 'US' ? undefined : {
         siteId: site.siteId,
