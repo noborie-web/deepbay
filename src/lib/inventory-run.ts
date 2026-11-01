@@ -45,6 +45,19 @@ const PERMANENT_ITEM_ERROR_PATTERNS = [
   'listing has been deleted or you are not the seller',
 ]
 
+// eBayが「この出品にはアクセスできません(削除済み、またはあなたがセラーでは
+// ありません)」と返したもの。eBay上に無いのに在庫一覧に残っていると、価格改定も
+// 取り下げも毎回この1件で失敗し続ける。
+//
+// ただしこのエラー文は「削除済み」と「別セラーの出品」を兼ねている。後者は
+// セラーの割り当てが違うだけで出品自体は生きているので、これだけを根拠に
+// 在庫一覧から消してはいけない(GetItemで存在を確かめてから外す)。
+const DELETED_LISTING_ERROR_PATTERN = 'listing has been deleted or you are not the seller'
+
+export function isDeletedListingError(error: string | undefined | null): boolean {
+  return Boolean(error) && String(error).includes(DELETED_LISTING_ERROR_PATTERN)
+}
+
 export function isPermanentItemError(error: string | undefined | null): boolean {
   if (!error) return false
   return PERMANENT_ITEM_ERROR_PATTERNS.some(pattern => error.includes(pattern))
