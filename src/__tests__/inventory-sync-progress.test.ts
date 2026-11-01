@@ -47,7 +47,13 @@ function makeDb(listings: Listing[]) {
         chain.gte = (_column: string, value: string) => { rows = rows.filter(r => r.fetched_at >= value); return chain }
         chain.range = async (from: number) => ({ data: from === 0 ? rows : [], error: null })
         chain.upsert = mockUpsert
-        chain.delete = () => ({ eq: () => ({ is: () => { const n = { not: () => n, then: (r: (v: unknown) => unknown) => Promise.resolve({ error: null }).then(r) }; return n } }) })
+        // 削除系は絞り込みの順番が呼び出し元によって違うので、何度でも繋げる
+        chain.delete = () => {
+          const n: Record<string, unknown> = {}
+          for (const m of ['eq', 'is', 'not', 'in', 'like', 'lt']) n[m] = () => n
+          n.then = (r: (v: unknown) => unknown) => Promise.resolve({ error: null }).then(r)
+          return n
+        }
         return chain
       }
       if (table === 'products') {
@@ -332,5 +338,54 @@ describe('eBayの1日の残り回数', () => {
 
     expect(result.callBudgetLimited).toBeUndefined()
     expect(result.processed).toBe(618)
+  })
+})
+
+// 本番で確認した問題(2026-11-01): discovery_truncated が真偽値だけだったため、
+// akebono-32 の true を見て新規出品を取りこぼしていると判断した。実際には
+// 読み切れた回もあり、打ち切った回はカーソルを進めず次回やり直していたので
+// 取りこぼしは無かった。何ページ中何ページ読めたかを残して測れるようにする。
+describe('新規出品の走査', () => {
+  it('読めたページ数と総ページ数を返す', async () => {
+    const { syncKnownInventoryListings } = await import('@/lib/inventory-sync')
+    mockFetchActiveListingsBatch.mockResolvedValue({
+      items: [], nextPage: null, totalPages: 1, lastFetchedPage: 1, truncated: false, ebayTotalPages: 1,
+    })
+    // UKは全部読めたが、AUは8ページ中2ページで時間切れ
+    mockScanSellerList
+      .mockReset()
+      .mockResolvedValueOnce({ items: [], truncated: false, pagesFetched: 3, totalPages: 3 })
+      .mockResolvedValueOnce({ items: [], truncated: true, pagesFetched: 2, totalPages: 8 })
+
+    const result = await syncKnownInventoryListings(makeDb([]), 'user-1', 'token', {
+      sellerAccountId: 'seller-b',
+      sellerSiteIds: ['UK', 'AU'],
+      discoveryTimeBudgetMs: 30_000,
+    })
+
+    expect(result.discoveryTruncated).toBe(true)
+    // 「11ページ中5ページ」と分かる(真偽値だけでは量が分からない)
+    expect(result.discoveryPagesFetched).toBe(5)
+    expect(result.discoveryTotalPages).toBe(11)
+  })
+
+  it('読み切れた回は truncated を立てない', async () => {
+    const { syncKnownInventoryListings } = await import('@/lib/inventory-sync')
+    mockFetchActiveListingsBatch.mockResolvedValue({
+      items: [], nextPage: null, totalPages: 1, lastFetchedPage: 1, truncated: false, ebayTotalPages: 1,
+    })
+    mockScanSellerList.mockReset().mockResolvedValue({ items: [], truncated: false, pagesFetched: 2, totalPages: 2 })
+
+    const result = await syncKnownInventoryListings(makeDb([]), 'user-1', 'token', {
+      sellerAccountId: 'seller-a',
+      sellerSiteIds: ['US'],
+      discoveryTimeBudgetMs: 30_000,
+    })
+
+    expect(result.discoveryTruncated).toBe(false)
+    // 走査位置が無いので3日分(1日ずつ3区間)を読む。2ページ×3区間=6ページ。
+    expect(result.discoveryPagesFetched).toBe(6)
+    expect(result.discoveryTotalPages).toBe(6)
+    expect(mockScanSellerList).toHaveBeenCalledTimes(3)
   })
 })
