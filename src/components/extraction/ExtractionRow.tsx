@@ -5,6 +5,7 @@ import { Copy, Pencil, MoreHorizontal } from 'lucide-react'
 import Badge from '@/components/ui/Badge'
 import SellerBadge from '@/components/extraction/SellerBadge'
 import ExclusionSummaryModal from './ExclusionSummaryModal'
+import DuplicateToSellerModal from './DuplicateToSellerModal'
 import type { Extraction } from '@/types/database'
 
 interface Props {
@@ -22,6 +23,7 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
   const isManual = !extraction.is_bulk
   const [menuOpen, setMenuOpen] = useState(false)
   const [exclusionSummaryOpen, setExclusionSummaryOpen] = useState(false)
+  const [duplicateOpen, setDuplicateOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
   // メモ欄インライン編集
@@ -361,6 +363,12 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
                 除外詳細
               </button>
               <button
+                onClick={() => { setDuplicateOpen(true); setMenuOpen(false) }}
+                className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors"
+              >
+                別セラーへ複製
+              </button>
+              <button
                 disabled
                 className="w-full text-left px-4 py-2.5 text-sm text-gray-400 cursor-not-allowed"
               >
@@ -395,6 +403,16 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
         <ExclusionSummaryModal
           summary={extraction.exclusion_summary}
           onClose={() => setExclusionSummaryOpen(false)}
+        />
+      )}
+
+      {duplicateOpen && (
+        <DuplicateToSellerModal
+          extractionId={extraction.id}
+          extractionName={extraction.name}
+          currentSellerAccountId={extraction.seller_account_id ?? null}
+          onClose={() => setDuplicateOpen(false)}
+          onDuplicated={() => { if (typeof window !== 'undefined') window.location.reload() }}
         />
       )}
     </div>
