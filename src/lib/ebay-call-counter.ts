@@ -61,7 +61,21 @@ export async function flushEbayCallCounts(db: SupabaseClient, userId: string, no
 // ---------------------------------------------------------------------------
 
 /** eBayの標準上限。使い切る手前で止めるため、少し小さく見積もる */
-export const EBAY_DAILY_CALL_LIMIT = Number(process.env.EBAY_DAILY_CALL_LIMIT ?? 5000)
+// 本番データで確認(2026-11-01): 5,000という値に根拠が無かった。
+//   10/19  合計 6,653回  上限エラーなし
+//   10/23  合計 5,266回  上限エラーあり(価格改定のみ)
+//   上限エラーは同期444回中2回だけ(最後は10/20)
+// 6,653回を問題なく処理できた日がある以上、合計5,000回という上限は実在しない。
+//
+// さらに10/24のエラー文は「exceeded usage limit on this call」で、eBayの枠は
+// 呼び出し名ごとに分かれている。10/23も合計ではなく ReviseInventoryStatus 単独の
+// 枠に当たっており(同じ日にGetItemは約3,500回成功)、合計で見るモデル自体が
+// eBayの実態と合っていない。呼び出し名ごとの枠に作り変えるまでの暫定値として、
+// 実績のある6,653回を上回る10,000にする。
+//
+// 実際の上限は developer.ebay.com の Application Growth Check でしか分からない
+// (GetApiAccessRules は廃止・HTTP 410)。判明したら環境変数で設定する。
+export const EBAY_DAILY_CALL_LIMIT = Number(process.env.EBAY_DAILY_CALL_LIMIT ?? 10000)
 /** 同期・取り下げ用に必ず残しておく分 */
 export const EBAY_RESERVED_CALLS = Number(process.env.EBAY_RESERVED_CALLS ?? 1200)
 

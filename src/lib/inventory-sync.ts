@@ -68,6 +68,13 @@ export interface InventorySyncOptions {
   // 一覧取得(GetMyeBaySelling)が使えないセラーだけに適用する、1回あたりの
   // 個別照会(GetItem)の上限。eBayの1日の上限(5,000回)に収まる値にする。
   maxItemLookupsPerRun?: number
+  // この実行で eBay に送ってよい残り回数(1日の上限からの残量)。
+  //
+  // 本番で起きた事故(2026-10-24): 個別照会が1日3,520回に達して上限を超え、
+  // 価格改定1,282件のうち954件が失敗した。同期には事前の残量確認が無く、
+  // eBayが上限エラーを返すまで送り続ける作りだったため。
+  // 価格改定(remainingEbayCalls)と同じように、送る前に頭を抑える。
+  maxEbayCallsThisRun?: number
 }
 
 export interface InventorySyncBatchResult extends InventorySyncResult {
@@ -703,6 +710,8 @@ export interface KnownInventorySyncResult {
   // 'exceeds_page_cap' = 他ツールの出品でページ上限を超えており、何ページ
   // 取ってもKakehashiの出品に届かないアカウント。
   bulkSkipped?: 'exceeds_page_cap'
+  // eBayの1日の残り回数に収めるため、照会件数を減らした
+  callBudgetLimited?: boolean
   // 今回照会した件数と、続きから再開するための位置(全件終わったら null)
   processed: number
   nextCursorItemId: string | null
@@ -1283,7 +1292,11 @@ export async function syncKnownInventoryListingBatch(
       found.push(item)
     }
     const missingLimit = options.maxMissingChecksPerRun ?? DEFAULT_MISSING_CHECKS_PER_RUN
-    const toCheck = canFetchItems ? missing.slice(0, Math.max(0, missingLimit)) : []
+    // 一覧に無かった分の個別確認も GetItem を使うので、残量を超えない
+    const missingBudget = options.maxEbayCallsThisRun !== undefined
+      ? Math.min(missingLimit, options.maxEbayCallsThisRun)
+      : missingLimit
+    const toCheck = canFetchItems ? missing.slice(0, Math.max(0, missingBudget)) : []
     let checked: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [], endedListings: [] }
     if (toCheck.length > 0) {
       try {
@@ -1298,7 +1311,7 @@ export async function syncKnownInventoryListingBatch(
       }
     }
     fetched = { items: [...found, ...checked.items], endedItemIds: checked.endedItemIds, endedListings: checked.endedListings }
-  } else if (!callLimited && canFetchItems) {
+  } else if (!callLimited && canFetchItems && targetIds.length > 0) {
     try {
       fetched = await fetchListingsByItemIds(
         { accessToken },
@@ -1380,10 +1393,19 @@ export async function syncKnownInventoryListings(
   // maxItemsPerRun は「一覧取得で全件を更新する」前提で出品件数に比例配分した
   // 値なので、一覧取得を使えないセラーには狭すぎる(akebono-32 は1,023件に対して
   // 182件/回=一巡に3日)。個別照会だけで回すセラーには専用の枠を使う。
-  const perRunLimit = bulkSkipped
+  const widenedLimit = bulkSkipped
     ? Math.max(options.maxItemsPerRun ?? 0, options.maxItemLookupsPerRun ?? 0)
     : (options.maxItemsPerRun ?? 0)
-  const maxItems = perRunLimit > 0 ? perRunLimit : knownIds.length
+  // 一覧取得が使えないセラーは照会件数がそのままGetItemの回数になる。
+  // eBayの1日の上限を超えると、その日の価格改定・取り下げまで道連れになるので、
+  // 残量を超える分は送らずカーソルに残して次回へ回す(2026-10-24の事故の再発防止)。
+  const callBudget = options.maxEbayCallsThisRun
+  const callLimitedByBudget = bulkSkipped && callBudget !== undefined && callBudget < widenedLimit
+  // 残量が0なら1件も送らない。ここで「上限なし」に倒すと、頭を抑えるつもりが
+  // 全件送信になって事故を大きくする。
+  const maxItems = callLimitedByBudget
+    ? Math.max(0, callBudget as number)
+    : (widenedLimit > 0 ? widenedLimit : knownIds.length)
   const targetIds = knownIds.slice(startIndex, startIndex + maxItems)
   const finishedAll = startIndex + targetIds.length >= knownIds.length
   const nextCursorItemId = finishedAll ? null : targetIds[targetIds.length - 1] ?? null
@@ -1427,7 +1449,11 @@ export async function syncKnownInventoryListings(
     // 一覧に無かった出品は売却・終了の可能性。誤って消さないよう個別に確認する
     // (件数は多くないのが通常。多い場合は上限までにして残りは次回へ)
     const missingLimit = options.maxMissingChecksPerRun ?? DEFAULT_MISSING_CHECKS_PER_RUN
-    const toCheck = canFetchItems ? missing.slice(0, Math.max(0, missingLimit)) : []
+    // 一覧に無かった分の個別確認も GetItem を使うので、残量を超えない
+    const missingBudget = options.maxEbayCallsThisRun !== undefined
+      ? Math.min(missingLimit, options.maxEbayCallsThisRun)
+      : missingLimit
+    const toCheck = canFetchItems ? missing.slice(0, Math.max(0, missingBudget)) : []
     let checked: Awaited<ReturnType<typeof fetchListingsByItemIds>> = { items: [], endedItemIds: [], endedListings: [] }
     if (toCheck.length > 0) {
       try {
@@ -1443,7 +1469,7 @@ export async function syncKnownInventoryListings(
     }
     confirmedTargets += checked.items.length + checked.endedItemIds.length
     fetched = { items: [...found, ...checked.items], endedItemIds: checked.endedItemIds, endedListings: checked.endedListings }
-  } else if (!callLimited && canFetchItems) {
+  } else if (!callLimited && canFetchItems && targetIds.length > 0) {
     try {
       fetched = await fetchListingsByItemIds(
         { accessToken },
@@ -1481,6 +1507,7 @@ export async function syncKnownInventoryListings(
     bulkItems: bulk?.map.size,
     bulkComplete: bulk?.complete,
     bulkSkipped,
+    callBudgetLimited: callLimitedByBudget || undefined,
     bulkError,
     processed: callLimited || confirmedNothing ? 0 : targetIds.length,
     nextCursorItemId: confirmedNothing ? (options.cursorItemId ?? null) : nextCursorItemId,

@@ -1,7 +1,7 @@
 // Vercel Cron Job — Hobbyプラン向けに毎日0時UTC（9時台JST）に1回起動
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { flushEbayCallCounts } from '@/lib/ebay-call-counter'
+import { flushEbayCallCounts, remainingEbayCalls } from '@/lib/ebay-call-counter'
 import { endItem, reviseInventoryStatusBatch, addFixedPriceItem } from '@/lib/ebay-actions'
 import { selectAllRows, selectByIds, selectInChunks } from '@/lib/db-chunk'
 import { onlyVerifiedSoldOut } from '@/lib/inventory-listing-filter'
@@ -35,6 +35,16 @@ const SYNC_FETCH_BUDGET_MS = 120_000
 // よい件数。eBayの1日の上限は5,000回で、最悪4枠すべてで先頭に回っても
 // 2,000回に収まる。
 const SYNC_MAX_ITEM_LOOKUPS_PER_RUN = 500
+// 同期がeBayの1日の枠を使い切らないよう、価格改定・取り下げ・手動操作のために
+// 必ず残しておく分。
+//
+// 本番で起きた事故(2026-10-24): 個別照会が1日3,520回に達して上限(5,000回)を
+// 超え、価格改定1,282件のうち954件が失敗した。
+// #328 で一覧取得が使えないセラーを個別照会に回したことで、Kakehashiの
+// 管理出品4,493件(miyabi-24 3,470 + akebono-32 1,023)がすべて1件1回の照会に
+// なる。上限を見ずに送ると 618+500 件/回 × 4回 = 4,472回/日 に達し、同じ事故に
+// なるため、送る前に残量で頭を抑える。
+const SYNC_EBAY_CALL_RESERVE = 1_000
 const SYNC_DISCOVERY_BUDGET_MS = 15_000
 const SUPPLIER_CHECK_BUDGET_MS = 60_000
 
@@ -353,6 +363,9 @@ export async function GET(req: NextRequest) {
             // 500件/回なら1日で一巡する。eBayの呼び出し実績は1日400〜700回
             // (GetItemは60回以下)で、上限5,000回に対して余裕がある。
             maxItemLookupsPerRun: SYNC_MAX_ITEM_LOOKUPS_PER_RUN,
+            // eBayの1日の残り回数。セラーごとに読み直す(直前のセラーが使った
+            // 分は flushEbayCallCounts で反映済み)。
+            maxEbayCallsThisRun: await remainingEbayCalls(db, userId, { reserved: SYNC_EBAY_CALL_RESERVE }),
             cursorItemId: account ? account.inventory_sync_cursor_item_id : (settings.sync_cursor_item_id ?? null),
             sellerAccountId: account?.id ?? null,
             sellerSiteIds: account?.listing_site_ids ?? null,
@@ -391,6 +404,8 @@ export async function GET(req: NextRequest) {
             // 一覧取得を見送った理由。黙って個別照会に落ちると、なぜ呼び出し
             // 回数の内訳が変わったのか後から分からなくなる。
             bulk_skipped: syncResult.bulkSkipped ?? null,
+            // eBayの1日の残り回数に収めるため照会件数を減らした回
+            call_budget_limited: syncResult.callBudgetLimited ?? false,
             processed: syncResult.processed, remaining: syncResult.nextCursorItemId ? syncResult.total - syncResult.processed : 0,
           }
           syncResults.push({ ...summary, total: syncResult.total, matched: syncResult.matched, unmanaged: syncResult.unmanaged })

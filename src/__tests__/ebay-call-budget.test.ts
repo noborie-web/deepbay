@@ -37,8 +37,10 @@ describe('eBayの1日の呼び出し枠', () => {
     expect(pacificDate(new Date('2026-10-24T00:00:00Z'))).toBe('2026-10-23')
   })
 
-  it('既定の上限はeBayの標準に合わせる', () => {
-    expect(EBAY_DAILY_CALL_LIMIT).toBe(5000)
+  // 本番データ(2026-11-01): 10/19に6,653回を上限エラーなしで処理できている。
+  // 合計5,000回という上限は実在しないので、実績を上回る値にする。
+  it('既定の上限は実績を上回る値にする', () => {
+    expect(EBAY_DAILY_CALL_LIMIT).toBe(10000)
   })
 })
 

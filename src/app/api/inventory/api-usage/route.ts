@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createServiceClient } from '@supabase/supabase-js'
-import { pacificDate } from '@/lib/ebay-call-counter'
+import { EBAY_DAILY_CALL_LIMIT, pacificDate } from '@/lib/ebay-call-counter'
 
 // ユーザー要望(2026-09-30): APIの容量と消費が見えるようにしたい。
 // eBayの GetApiAccessRules は廃止(HTTP 410)されて使えないため、Kakehashiが
@@ -10,9 +10,10 @@ function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 }
 
-// eBayの既定の上限(呼び出しごと/1日)。実際の上限はアプリの審査状況で変わるため、
-// 目安として扱う(環境変数で変更できる)。
-const DEFAULT_DAILY_LIMIT = Number(process.env.EBAY_DAILY_CALL_LIMIT ?? 5000)
+// 上限は ebay-call-counter と同じ値を使う。ここで既定値を書き直していたため、
+// 片方だけ変えると画面の表示と実際の制御がずれる(2026-11-01に5,000→10,000へ
+// 変更した際に発覚)。
+const DEFAULT_DAILY_LIMIT = EBAY_DAILY_CALL_LIMIT
 
 export async function GET() {
   const supabase = await createClient()
