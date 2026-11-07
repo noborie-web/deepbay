@@ -136,8 +136,20 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
     }
   }
 
+  // ユーザー要望(2026-11-07): 別セラー向けに変換した抽出を一覧で見分けたい。
+  //
+  // 変換(ListForSellerModal)で作る抽出は、元の名前に「（出品先セラー）」を
+  // 付けている。それを手がかりに背景色を変える。名前を編集すると色は消えるが、
+  // 抽出に印を持たせる列はまだ無い。
+  const sellerLabel = extraction.seller_account
+    ? (extraction.seller_account.display_name?.trim() || extraction.seller_account.seller_id)
+    : null
+  const isConvertedForSeller = Boolean(sellerLabel && name.endsWith(`（${sellerLabel}）`))
+
   return (
-    <div className="grid grid-cols-[160px_1fr_1fr_180px_140px_1fr] gap-4 items-center px-4 py-3 border-b last:border-0 hover:bg-gray-50 text-sm">
+    <div className={`grid grid-cols-[160px_1fr_1fr_180px_140px_1fr] gap-4 items-center px-4 py-3 border-b last:border-0 text-sm ${
+      isConvertedForSeller ? 'bg-violet-50 hover:bg-violet-100' : 'hover:bg-gray-50'
+    }`}>
       {/* 種別 */}
       <div className="space-y-1">
         <Badge variant="default">
