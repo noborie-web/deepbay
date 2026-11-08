@@ -35,16 +35,13 @@ const SYNC_FETCH_BUDGET_MS = 120_000
 // よい件数。eBayの1日の上限は5,000回で、最悪4枠すべてで先頭に回っても
 // 2,000回に収まる。
 const SYNC_MAX_ITEM_LOOKUPS_PER_RUN = 500
-// 同期がeBayの1日の枠を使い切らないよう、価格改定・取り下げ・手動操作のために
-// 必ず残しておく分。
+// 本番で起きた事故(2026-10-24): 個別照会が1日3,520回に達して上限を超え、
+// 価格改定1,282件のうち954件が失敗した。#328 で一覧取得が使えないセラーを
+// 個別照会に回したことで、Kakehashiの管理出品がすべて1件1回の照会になるため、
+// 送る前に残量で頭を抑える(maxEbayCallsThisRun)。
 //
-// 本番で起きた事故(2026-10-24): 個別照会が1日3,520回に達して上限(5,000回)を
-// 超え、価格改定1,282件のうち954件が失敗した。
-// #328 で一覧取得が使えないセラーを個別照会に回したことで、Kakehashiの
-// 管理出品4,493件(miyabi-24 3,470 + akebono-32 1,023)がすべて1件1回の照会に
-// なる。上限を見ずに送ると 618+500 件/回 × 4回 = 4,472回/日 に達し、同じ事故に
-// なるため、送る前に残量で頭を抑える。
-const SYNC_EBAY_CALL_RESERVE = 1_000
+// 2026-11-08: 枠を呼び出し名ごとに分けた。価格改定(ReviseInventoryStatus)と
+// 同期(GetItem)はeBay側でも別枠なので、互いに食い合わせないようにする。
 // 本番で確認した問題(2026-11-01): セラーごと7.5秒(15秒÷2)しかなく、1ページ
 // 読むのに最低5秒必要(SELLER_LIST_MIN_PAGE_MS)なため、実質1ページ(50件)で
 // 打ち切っていた。akebono-32 は UK/AU で分け合うので頻繁に途中で終わり、
@@ -371,7 +368,9 @@ export async function GET(req: NextRequest) {
             maxItemLookupsPerRun: SYNC_MAX_ITEM_LOOKUPS_PER_RUN,
             // eBayの1日の残り回数。セラーごとに読み直す(直前のセラーが使った
             // 分は flushEbayCallCounts で反映済み)。
-            maxEbayCallsThisRun: await remainingEbayCalls(db, userId, { reserved: SYNC_EBAY_CALL_RESERVE }),
+            // 同期が使うのは GetItem。価格改定(ReviseInventoryStatus)とは
+            // eBay側の枠が別なので、GetItem の残量だけを見る。
+            maxEbayCallsThisRun: await remainingEbayCalls(db, userId, { callName: 'GetItem' }),
             cursorItemId: account ? account.inventory_sync_cursor_item_id : (settings.sync_cursor_item_id ?? null),
             sellerAccountId: account?.id ?? null,
             sellerSiteIds: account?.listing_site_ids ?? null,
