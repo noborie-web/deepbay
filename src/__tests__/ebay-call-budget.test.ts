@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { remainingEbayCalls, usedEbayCallsToday, EBAY_DAILY_CALL_LIMIT, pacificDate } from '@/lib/ebay-call-counter'
+import { remainingEbayCalls, usedEbayCallsToday, ebayCallLimitFor, EBAY_DAILY_CALL_LIMIT, pacificDate } from '@/lib/ebay-call-counter'
 import { readFileSync } from 'fs'
 
 function db(rows: Array<{ count: number }> | null, error?: { message: string }) {
@@ -61,5 +61,57 @@ describe('呼び出し回数を減らす設定', () => {
   it('実行記録は開始時に作る(強制終了されても残るように)', () => {
     const src = readFileSync('src/app/api/cron/revise-price/route.ts', 'utf8')
     expect(src).toContain("status: 'running'")
+  })
+})
+
+// 本番で確認した不具合(2026-11-08): 11/6(太平洋時間)に同期が
+// 「Your application has exceeded usage limit on this call」で失敗した。
+//   11/6  GetItem   671 + ReviseInventoryStatus 2,109 = 2,795回 → 失敗
+//   11/7  GetItem 3,857 + ReviseInventoryStatus   306 = 4,200回 → 正常
+// 合計では説明がつかない。異常だったのは ReviseInventoryStatus だけで
+// (平常128〜399回)、eBayのエラー文も「on this call」。枠は呼び出し名ごと。
+describe('呼び出し名ごとの枠', () => {
+  // 呼び出し名で絞って数えていることを、絞り込みの記録で確かめる
+  function dbWithFilters(rows: Array<{ count: number }>) {
+    const filters: Array<[string, unknown]> = []
+    const chain: Record<string, unknown> = {}
+    chain.select = () => chain
+    chain.eq = (column: string, value: unknown) => { filters.push([column, value]); return chain }
+    chain.limit = () => chain
+    chain.then = (resolve: (v: unknown) => void) => resolve({ data: rows, error: null })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return { db: { from: vi.fn(() => chain) } as any, filters }
+  }
+
+  it('GetItem と ReviseInventoryStatus に別々の上限を持つ', () => {
+    expect(ebayCallLimitFor('GetItem')).toBe(4500)
+    expect(ebayCallLimitFor('ReviseInventoryStatus')).toBe(1000)
+    // 設定の無い呼び出しは全体の既定値に落とす
+    expect(ebayCallLimitFor('GetSellerList')).toBe(EBAY_DAILY_CALL_LIMIT)
+    expect(ebayCallLimitFor()).toBe(EBAY_DAILY_CALL_LIMIT)
+  })
+
+  it('指定した呼び出し名の分だけ数える', async () => {
+    const { db: database, filters } = dbWithFilters([{ count: 300 }])
+    await usedEbayCallsToday(database, 'u1', new Date('2026-11-08T12:00:00Z'), 'ReviseInventoryStatus')
+    expect(filters).toContainEqual(['call_name', 'ReviseInventoryStatus'])
+  })
+
+  it('呼び出し名を指定しなければ全部を数える(従来どおり)', async () => {
+    const { db: database, filters } = dbWithFilters([{ count: 300 }])
+    await usedEbayCallsToday(database, 'u1')
+    expect(filters.some(([column]) => column === 'call_name')).toBe(false)
+  })
+
+  it('残量はその呼び出し名の上限から引く', async () => {
+    // 平常の価格改定(306回)はまだ余裕がある
+    expect(await remainingEbayCalls(db([{ count: 306 }]), 'u1', { callName: 'ReviseInventoryStatus' }))
+      .toBe(694)
+    // ここが本題。11/6の2,109回なら0で止まり、同期を巻き添えにしない
+    expect(await remainingEbayCalls(db([{ count: 2109 }]), 'u1', { callName: 'ReviseInventoryStatus' }))
+      .toBe(0)
+    // 同じ日でも GetItem の枠は別なので、平常どおり使える
+    expect(await remainingEbayCalls(db([{ count: 671 }]), 'u1', { callName: 'GetItem' }))
+      .toBe(3829)
   })
 })

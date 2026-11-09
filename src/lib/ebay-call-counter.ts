@@ -79,20 +79,52 @@ export const EBAY_DAILY_CALL_LIMIT = Number(process.env.EBAY_DAILY_CALL_LIMIT ??
 /** 同期・取り下げ用に必ず残しておく分 */
 export const EBAY_RESERVED_CALLS = Number(process.env.EBAY_RESERVED_CALLS ?? 1200)
 
-/** 太平洋時間の今日、これまでに送った回数 */
+// 呼び出し名ごとの1日の上限。
+//
+// 本番で確認した不具合(2026-11-08): 11/6(太平洋時間)に同期が
+// 「Your application has exceeded usage limit on this call」で失敗した。
+// その日の消費は GetItem 671 + ReviseInventoryStatus 2,109 = 2,795回。
+// 一方 11/7 は GetItem 3,857 + Revise 306 = 4,200回で正常だった。
+// 合計では説明がつかず、異常だったのは ReviseInventoryStatus だけ
+// (平常は128〜399回なので5〜16倍)。eBayのエラー文も「on this call」で、
+// 枠は呼び出し名ごとに分かれている。合計で見るのをやめる。
+//
+// 実際の上限は developer.ebay.com の Application Growth Check でしか
+// 分からない(GetApiAccessRules は廃止・HTTP 410)。判明するまでの値として、
+// 平常の消費を妨げず、11/6のような急増だけを止める水準にする。
+//   GetItem                3,000〜4,052回/日 が正常 → 4,500
+//   ReviseInventoryStatus    128〜399回/日 が正常   → 1,000
+const EBAY_CALL_LIMITS: Record<string, number> = {
+  GetItem: Number(process.env.EBAY_LIMIT_GET_ITEM ?? 4500),
+  ReviseInventoryStatus: Number(process.env.EBAY_LIMIT_REVISE_INVENTORY_STATUS ?? 1000),
+}
+
+/** その呼び出し名の1日の上限。設定が無ければ全体の既定値を使う */
+export function ebayCallLimitFor(callName?: string): number {
+  if (!callName) return EBAY_DAILY_CALL_LIMIT
+  return EBAY_CALL_LIMITS[callName] ?? EBAY_DAILY_CALL_LIMIT
+}
+
+/**
+ * 太平洋時間の今日、これまでに送った回数。
+ * callName を指定すると、その呼び出し名の分だけ数える。
+ */
 export async function usedEbayCallsToday(
   db: SupabaseClient,
   userId: string,
   now = new Date(),
+  callName?: string,
 ): Promise<number> {
   // 1日・1ユーザーの行数は呼び出し名の数だけだが、上限を付けない書き方は
   // そのまま残すと別の場所で真似される(#db-query-safety)
-  const { data, error } = await db
+  // db-audit-ok: 下で .limit(500) を付けて引く(組み立てが別の文)
+  let query = db
     .from('ebay_api_calls')
     .select('count')
     .eq('user_id', userId)
     .eq('called_on', pacificDate(now))
-    .limit(500)
+  if (callName) query = query.eq('call_name', callName)
+  const { data, error } = await query.limit(500)
   // 取得できないときは「使っていない」ではなく「分からない」。
   // 握りつぶして使い放題にすると上限超過に戻るので、上限扱いにして止める。
   if (error) throw new Error(`eBay呼び出し回数を取得できませんでした: ${error.message}`)
@@ -106,10 +138,10 @@ export async function usedEbayCallsToday(
 export async function remainingEbayCalls(
   db: SupabaseClient,
   userId: string,
-  options: { reserved?: number; limit?: number; now?: Date } = {},
+  options: { reserved?: number; limit?: number; now?: Date; callName?: string } = {},
 ): Promise<number> {
-  const limit = options.limit ?? EBAY_DAILY_CALL_LIMIT
+  const limit = options.limit ?? ebayCallLimitFor(options.callName)
   const reserved = options.reserved ?? 0
-  const used = await usedEbayCallsToday(db, userId, options.now)
+  const used = await usedEbayCallsToday(db, userId, options.now, options.callName)
   return Math.max(0, limit - reserved - used)
 }

@@ -10,7 +10,7 @@ import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/in
 import { applyRevisedPrices, dropEndedListings } from '@/lib/inventory-sync'
 import { isDeletedListingError, summarizeInventoryActionRun } from '@/lib/inventory-run'
 import { fetchListingsByItemIds } from '@/lib/ebay-inventory'
-import { EBAY_RESERVED_CALLS, remainingEbayCalls } from '@/lib/ebay-call-counter'
+import { remainingEbayCalls } from '@/lib/ebay-call-counter'
 
 // ---------------------------------------------------------------------------
 // 価格改定。
@@ -155,7 +155,13 @@ export async function runRevisePriceForUser(
 
   // eBayの1日の枠に収まる分だけ送る。使い切ってから失敗すると、その日の
   // 同期・取り下げ(売り切れ検知)まで道連れになる。
-  const budget = options.maxCalls ?? await remainingEbayCalls(db, userId, { reserved: EBAY_RESERVED_CALLS })
+  // 価格改定が使うのは ReviseInventoryStatus。同期(GetItem)とはeBay側の枠が
+  // 別なので、その残量だけを見る。
+  //
+  // 本番で確認した不具合(2026-11-08): 11/6に 2,109回(平常の5〜16倍)まで送って
+  // 枠を使い切り、同期まで巻き添えで失敗していた。
+  const budget = options.maxCalls
+    ?? await remainingEbayCalls(db, userId, { callName: 'ReviseInventoryStatus' })
   let deferredDailyLimit = 0
   let sendable = entries
   if (entries.length > budget) {
