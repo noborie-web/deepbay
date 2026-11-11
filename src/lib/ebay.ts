@@ -149,11 +149,26 @@ export async function exchangeEbayAuthorizationCode(code: string): Promise<Token
   }))
 }
 
+/**
+ * アクセストークンを更新する。
+ *
+ * 本番で確認した不具合(2026-11-11): miyabi-24 のトークン更新が
+ * 「The requested scope is invalid, unknown, malformed, or exceeds the scope
+ * granted to the client」で失敗し、同期・価格改定・取り下げの対象から外れて
+ * いた。しかも対象セラーは一覧から黙って消えるため気づけなかった。
+ *
+ * 原因は、更新時に「いまKakehashiが要求するスコープ一覧」をそのまま送っていた
+ * こと。許可を取った後にスコープを足すと(2026-11-11に sell.inventory.readonly
+ * を追加)、古い許可のトークンは更新できなくなる。
+ *
+ * 更新では scope を送らない。OAuth2では省略すると「元々許可された範囲」で
+ * 返るので、スコープを足しても既存のセラーが壊れない。新しいスコープが要る
+ * 機能は、そのセラーを接続し直すまで使えないだけで済む。
+ */
 export async function refreshEbayAccessToken(refreshToken: string): Promise<string> {
   const payload = await requestToken(new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
-    scope: EBAY_OAUTH_SCOPES.join(' '),
   }))
   return payload.access_token!
 }
