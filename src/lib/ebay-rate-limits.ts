@@ -169,3 +169,42 @@ export function rateLimitFor(limits: EbayRateLimit[], callName: string): EbayRat
   if (matched.length === 0) return null
   return matched.reduce((strictest, limit) => (limit.remaining < strictest.remaining ? limit : strictest))
 }
+
+// ---------------------------------------------------------------------------
+// ユーザー(出品セラー)ごとの枠。
+//
+// 本番で確認した不具合(2026-11-11): アプリ全体の枠(getRateLimits)は
+// Trading APIのどの呼び出しも limit 5,000 / count 0 を返していた。毎日数千回
+// 呼んでいるのに0ということは、Trading APIの枠は「ユーザー単位」で数えられて
+// いるということ。eBayのドキュメントにも user_rate_limit は
+// 「per-user basis で制限される呼び出しの利用状況」とある。
+//
+// アプリ用トークンではなく、そのセラーのトークンで呼ぶ。
+// ---------------------------------------------------------------------------
+
+const USER_RATE_LIMIT_URL = 'https://api.ebay.com/developer/analytics/v1_beta/user_rate_limit/'
+
+/**
+ * 出品セラーごとの呼び出し枠を取る。
+ * そのセラーのアクセストークン(ユーザートークン)が要る。
+ */
+export async function fetchEbayUserRateLimits(accessToken: string): Promise<EbayRateLimit[]> {
+  const response = await fetch(USER_RATE_LIMIT_URL, {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+  if (response.status === 204) return []
+  if (!response.ok) {
+    const body = (await response.text()).slice(0, 300)
+    // スコープ不足のときは、何をすればよいかまで伝える
+    if (response.status === 403 || /insufficient|scope/i.test(body)) {
+      throw new Error(
+        `セラーの呼び出し枠を取得できませんでした (HTTP ${response.status}): ${body}`
+        + ' — このセラーをeBayに接続し直してください(sell.inventory.readonly の許可が必要です)',
+      )
+    }
+    throw new Error(`セラーの呼び出し枠を取得できませんでした (HTTP ${response.status}): ${body}`)
+  }
+  return parseRateLimits(await response.json() as RateLimitsResponseJson)
+}

@@ -5,6 +5,13 @@ export const EBAY_OAUTH_SCOPES = [
   'https://api.ebay.com/oauth/api_scope',
   'https://api.ebay.com/oauth/api_scope/commerce.identity.readonly',
   'https://api.ebay.com/oauth/api_scope/sell.account.readonly',
+  // 本番で確認した不具合(2026-11-11): Trading APIの呼び出し枠は「ユーザー単位」で
+  // 制限されており、アプリ全体の枠(getRateLimits)は count:0 のままだった。
+  // セラーごとの残りを見るには getUserRateLimits が要るが、そちらは
+  // sell.inventory 系などのスコープを要求する。読み取りだけで足りるので
+  // sell.inventory.readonly を足す。
+  // 追加後は、各セラーを eBay に接続し直すまで古いトークンのままになる。
+  'https://api.ebay.com/oauth/api_scope/sell.inventory.readonly',
 ] as const
 
 export interface EbayPolicyOption {
