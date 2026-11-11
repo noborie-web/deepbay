@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fetchEbayRateLimits, rateLimitFor, resetEbayRateLimitCache } from '@/lib/ebay-rate-limits'
+import { fetchEbayRateLimits, fetchEbayUserRateLimits, rateLimitFor, resetEbayRateLimitCache } from '@/lib/ebay-rate-limits'
 
 // 本番で確認した不具合(2026-11-08〜09): 同期が「exceeded usage limit on this
 // call」で失敗していた。11/7は GetItem 3,857回で正常、11/8は 2,238回で拒否。
@@ -132,5 +132,43 @@ describe('eBayの呼び出し枠を取る', () => {
   it('環境変数が無ければその旨を伝える', async () => {
     delete process.env.EBAY_CLIENT_ID
     await expect(fetchEbayRateLimits()).rejects.toThrow(/EBAY_CLIENT_ID/)
+  })
+})
+
+// 本番で確認した不具合(2026-11-11): アプリ全体の枠(getRateLimits)はTrading APIの
+// どの呼び出しも limit 5,000 / count 0 を返していた。毎日数千回呼んでいるのに
+// 0ということは、Trading APIの枠は「ユーザー単位」で数えられているということ。
+describe('セラーごとの呼び出し枠', () => {
+  const originalFetch = globalThis.fetch
+  beforeEach(() => { vi.spyOn(console, 'warn').mockImplementation(() => {}) })
+  afterEach(() => { globalThis.fetch = originalFetch; vi.restoreAllMocks() })
+
+  it('セラーのトークンで取り、アプリ用トークンは使わない', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      expect(headers.get('Authorization')).toBe('Bearer seller-token')
+      return new Response(JSON.stringify({
+        rateLimits: [{
+          apiContext: 'TradingAPI',
+          resources: [{ name: 'GetItem', rates: [{ limit: 5000, remaining: 1200, count: 3800, timeWindow: 86400 }] }],
+        }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    const limits = await fetchEbayUserRateLimits('seller-token')
+    expect(rateLimitFor(limits, 'GetItem')).toMatchObject({ limit: 5000, remaining: 1200, count: 3800 })
+    // トークン取得(client credentials)は呼ばない
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('スコープ不足なら、接続し直す必要があることまで伝える', async () => {
+    globalThis.fetch = vi.fn(async () => new Response('insufficient permissions', { status: 403 })) as unknown as typeof fetch
+    await expect(fetchEbayUserRateLimits('seller-token')).rejects.toThrow(/接続し直して/)
+  })
+
+  it('枠のデータが無い(204)ときは空で返す', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 })) as unknown as typeof fetch
+    expect(await fetchEbayUserRateLimits('seller-token')).toEqual([])
   })
 })
