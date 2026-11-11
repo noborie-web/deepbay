@@ -9,8 +9,16 @@ import type { ScrapedProduct } from '@/lib/scrapers/types'
 //   3. ASIN指定のAmazon抽出は件数
 // どれも取れなければ null を返し、何も入れない
 // (「不明」のような中身の無い名前を付けない)。
+//
+// ユーザー要望(2026-11-11): キーワードとカテゴリの両方で絞った抽出が
+// 「希少」「廃盤」のようにキーワードだけの名前になり、どのカテゴリの抽出か
+// 分からなかった。両方で絞っているときは「希少 VHS・ビデオテープ」のように
+// 続けて入れる。キーワードだけの検索では商品のカテゴリがばらつくので、
+// URLでカテゴリを指定しているときだけ足す。
 
 const KEYWORD_PARAMS = ['p', 'keyword', 'q', 'k', 'field-keywords'] as const
+// カテゴリで絞っていることを示すURLパラメータ(メルカリ・Yahoo!フリマ・ヤフオク)
+const CATEGORY_PARAMS = ['category_id', 'categoryIds', 'auccat', 'category'] as const
 const MAX_NAME_LENGTH = 40
 
 export function buildExtractionName(
@@ -18,9 +26,13 @@ export function buildExtractionName(
   products: Array<{ category?: ScrapedProduct['category']; categoryPath?: string[] }> = [],
 ): string | null {
   const keyword = keywordFromUrl(url)
-  if (keyword) return truncate(keyword)
-
   const category = categoryNameFromProducts(products)
+
+  // キーワードとカテゴリの両方で絞っているなら、両方を名前にする
+  if (keyword && category && hasCategoryFilter(url) && !keyword.includes(category)) {
+    return truncate(`${keyword} ${category}`)
+  }
+  if (keyword) return truncate(keyword)
   if (category) return truncate(category)
 
   // ASIN指定のAmazon抽出(amazon:asin-list:317)には元URLが無い
@@ -28,6 +40,18 @@ export function buildExtractionName(
   if (asinCount) return `Amazon ASIN ${Number(asinCount).toLocaleString()}件`
 
   return null
+}
+
+/** URLでカテゴリを指定しているか */
+function hasCategoryFilter(url: string): boolean {
+  if (!/^https?:\/\//i.test(url)) return false
+  let params: URLSearchParams
+  try {
+    params = new URL(url).searchParams
+  } catch {
+    return false
+  }
+  return CATEGORY_PARAMS.some((key) => (params.get(key) ?? '').trim() !== '')
 }
 
 function keywordFromUrl(url: string): string | null {

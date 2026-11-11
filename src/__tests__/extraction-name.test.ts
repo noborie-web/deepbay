@@ -93,4 +93,45 @@ describe('buildExtractionName', () => {
     expect(buildExtractionName('not a url', [])).toBeNull()
     expect(buildExtractionName('', [])).toBeNull()
   })
+
+  // ユーザー要望(2026-11-11): キーワードとカテゴリの両方で絞った抽出が
+  // 「希少」「廃盤」のようにキーワードだけの名前になり、どのカテゴリの抽出か
+  // 分からなかった。
+  describe('キーワードとカテゴリの両方で絞った抽出', () => {
+    const vhs = [{ category: 'VHS・ビデオテープ' }, { category: 'VHS・ビデオテープ' }]
+
+    it('両方を名前に入れる', () => {
+      const url = 'https://jp.mercari.com/search?keyword=希少&category_id=9900'
+      expect(buildExtractionName(url, vhs)).toBe('希少 VHS・ビデオテープ')
+    })
+
+    it('Yahoo!フリマ・ヤフオクのカテゴリ指定でも同じ', () => {
+      expect(buildExtractionName('https://paypayfleamarket.yahoo.co.jp/search?p=希少&categoryIds=123', vhs))
+        .toBe('希少 VHS・ビデオテープ')
+      expect(buildExtractionName('https://auctions.yahoo.co.jp/search/search?p=希少&auccat=456', vhs))
+        .toBe('希少 VHS・ビデオテープ')
+    })
+
+    it('カテゴリで絞っていなければキーワードだけにする', () => {
+      // キーワードだけの検索は商品のカテゴリがばらつくので足さない
+      expect(buildExtractionName('https://jp.mercari.com/search?keyword=希少', vhs)).toBe('希少')
+    })
+
+    it('キーワードにカテゴリ名が含まれていれば重ねない', () => {
+      const url = 'https://jp.mercari.com/search?keyword=VHS・ビデオテープ 希少&category_id=9900'
+      expect(buildExtractionName(url, vhs)).toBe('VHS・ビデオテープ 希少')
+    })
+
+    it('カテゴリが取れなければキーワードだけにする', () => {
+      const url = 'https://jp.mercari.com/search?keyword=希少&category_id=9900'
+      expect(buildExtractionName(url, [{ category: null }])).toBe('希少')
+    })
+
+    it('長くなりすぎる場合は切り詰める', () => {
+      const url = `https://jp.mercari.com/search?keyword=${'あ'.repeat(30)}&category_id=9900`
+      const name = buildExtractionName(url, vhs)
+      expect(name!.length).toBeLessThanOrEqual(40)
+      expect(name!.endsWith('…')).toBe(true)
+    })
+  })
 })
