@@ -21,6 +21,15 @@ function admin() {
   return createServiceClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
 }
 
+// Kakehashi が実際に送っている呼び出し。枠の調査で見たいのはこれだけ。
+const USED_CALLS = new Set([
+  'GetItem',
+  'ReviseInventoryStatus',
+  'GetMyeBaySelling',
+  'GetSellerList',
+  'ReviseFixedPriceItem',
+])
+
 /** 画面で読みやすいよう、枠の厳しい順に並べる */
 function byRemaining(limits: EbayRateLimit[]): EbayRateLimit[] {
   return [...limits].sort((a, b) => a.remaining - b.remaining)
@@ -37,10 +46,12 @@ export async function GET(req: NextRequest) {
   }
 
   const force = req.nextUrl.searchParams.get('refresh') === '1'
-  // 件数が多いので、既定ではTrading APIだけに絞る(?all=1 で全部)
-  const onlyTrading = req.nextUrl.searchParams.get('all') !== '1'
-  const keep = (limits: EbayRateLimit[]) =>
-    byRemaining(onlyTrading ? limits.filter(l => l.apiContext === 'TradingAPI') : limits)
+  // 全部返すと数百件あって画面では読めない。既定では Kakehashi が実際に使う
+  // 呼び出しだけに絞る(?all=1 で全部)。
+  const showAll = req.nextUrl.searchParams.get('all') === '1'
+  const keep = (limits: EbayRateLimit[]) => byRemaining(
+    showAll ? limits : limits.filter(limit => USED_CALLS.has(limit.name)),
+  )
 
   let application: EbayRateLimit[] = []
   let applicationError: string | null = null
