@@ -73,6 +73,13 @@ export async function GET(req: NextRequest) {
     // 握りつぶすと「セラー0件」と区別が付かない(#db-query-safety)
     if (settingsError) throw new Error(settingsError.message)
     const resolver = await createInventoryTokenResolver(db, user.id, settings ?? {})
+    // 本番で確認した問題(2026-11-11): miyabi-24 が一覧に出てこなかった。
+    // createInventoryTokenResolver の accounts は「トークンを取得できた
+    // セラー」だけで、失敗したセラーは authErrors に入って見えなくなる。
+    // 接続済みに見えるのに枠が取れない理由が分かるよう、ここで出す。
+    for (const failed of resolver.authErrors) {
+      sellers.push({ seller_id: failed.seller_id, error: `eBayのトークンを取得できません: ${failed.error}` })
+    }
     for (const account of resolver.accounts) {
       const token = resolver.tokenFor(account.id)
       if (!token) {
