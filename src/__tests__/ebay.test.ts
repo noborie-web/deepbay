@@ -4,6 +4,7 @@ import {
   decryptEbayRefreshToken,
   encryptEbayRefreshToken,
   fetchEbayPolicies,
+  refreshEbayAccessToken,
 } from '@/lib/ebay'
 
 beforeEach(() => {
@@ -91,5 +92,41 @@ describe('eBay policy sync', () => {
     }])
     expect(policies.payment[0]?.name).toBe('eBay Payments')
     expect(policies.return[0]?.name).toBe('Returns 60 Days')
+  })
+})
+
+// 本番で確認した不具合(2026-11-11): miyabi-24 のトークン更新が
+// 「The requested scope is invalid, unknown, malformed, or exceeds the scope
+// granted to the client」で失敗し、同期・価格改定・取り下げの対象から外れて
+// いた。しかも対象セラーは一覧から黙って消えるため気づけなかった。
+//
+// 原因は、更新時に「いまKakehashiが要求するスコープ一覧」をそのまま送っていた
+// こと。許可を取った後にスコープを足すと、古い許可のトークンは更新できない。
+describe('アクセストークンの更新', () => {
+  it('scope を送らない(スコープを足しても既存のセラーが壊れない)', async () => {
+    let sentBody = ''
+    globalThis.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      sentBody = String(init?.body ?? '')
+      return new Response(JSON.stringify({ access_token: 'new-token' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+
+    expect(await refreshEbayAccessToken('refresh-token')).toBe('new-token')
+
+    const params = new URLSearchParams(sentBody)
+    expect(params.get('grant_type')).toBe('refresh_token')
+    expect(params.get('refresh_token')).toBe('refresh-token')
+    // ここが本題。送ると、許可済みの範囲を超えたときに更新ごと失敗する
+    expect(params.has('scope')).toBe(false)
+  })
+
+  it('更新に失敗したら理由を投げる', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ error: 'invalid_grant', error_description: 'refresh token expired' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    )) as unknown as typeof fetch
+
+    await expect(refreshEbayAccessToken('refresh-token')).rejects.toThrow('refresh token expired')
   })
 })
