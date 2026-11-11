@@ -13,7 +13,14 @@ export const dynamic = 'force-dynamic'
 export async function GET(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // ユーザー報告(2026-11-11): 「unauthorized」とだけ返り、Kakehashiの未ログインか
+  // eBayの拒否かが区別できなかった。どちらなのかが読んで分かる文言にする。
+  if (!user) {
+    return NextResponse.json(
+      { error: 'Kakehashiにログインしていません。ログインしてから開いてください。' },
+      { status: 401 },
+    )
+  }
 
   const force = req.nextUrl.searchParams.get('refresh') === '1'
   try {
@@ -25,7 +32,14 @@ export async function GET(req: NextRequest) {
     })
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : String(error) },
+      {
+        error: error instanceof Error ? error.message : String(error),
+        // 設定漏れが原因のことが多いので、どれが入っているかだけ返す(値は返さない)
+        env: {
+          EBAY_CLIENT_ID: Boolean((process.env.EBAY_CLIENT_ID ?? '').trim()),
+          EBAY_CLIENT_SECRET: Boolean((process.env.EBAY_CLIENT_SECRET ?? '').trim()),
+        },
+      },
       { status: 502 },
     )
   }
