@@ -112,6 +112,23 @@ describe('eBayの呼び出し枠を取る', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  // ユーザー報告(2026-11-11): 「unauthorized」とだけ返り、Kakehashiの未ログインか
+  // eBayの拒否かが区別できなかった。
+  it('トークン取得を拒否されたら、送り先と応答をそのまま伝える', async () => {
+    globalThis.fetch = mockFetch([
+      { status: 401, json: { error: 'invalid_client', error_description: 'client authentication failed' } },
+    ]) as unknown as typeof fetch
+
+    await expect(fetchEbayRateLimits()).rejects.toThrow(
+      /アプリ用トークンを取得できませんでした \(HTTP 401\): client authentication failed/,
+    )
+  })
+
+  it('JSONで返らない拒否でも中身を伝える', async () => {
+    globalThis.fetch = mockFetch([{ status: 403, text: 'Forbidden by gateway' }]) as unknown as typeof fetch
+    await expect(fetchEbayRateLimits()).rejects.toThrow(/HTTP 403.*Forbidden by gateway/)
+  })
+
   it('環境変数が無ければその旨を伝える', async () => {
     delete process.env.EBAY_CLIENT_ID
     await expect(fetchEbayRateLimits()).rejects.toThrow(/EBAY_CLIENT_ID/)

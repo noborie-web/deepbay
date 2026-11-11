@@ -93,9 +93,15 @@ async function applicationToken(): Promise<string> {
     cache: 'no-store',
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })
-  const payload = await response.json() as { access_token?: string; expires_in?: number; error?: string; error_description?: string }
+  const raw = await response.text()
+  let payload: { access_token?: string; expires_in?: number; error?: string; error_description?: string } = {}
+  try { payload = JSON.parse(raw) } catch { /* JSONでない応答もそのまま見せる */ }
   if (!response.ok || !payload.access_token) {
-    throw new Error(payload.error_description || payload.error || `eBay OAuth error: ${response.status}`)
+    // ユーザー報告(2026-11-11): 「unauthorized」とだけ返り、Kakehashiの
+    // 未ログインなのかeBayの拒否なのか区別が付かなかった。どちらで何が
+    // 起きたのかが分かるように、送り先と応答をそのまま含める。
+    const detail = payload.error_description || payload.error || raw.slice(0, 300) || '(応答なし)'
+    throw new Error(`eBayのアプリ用トークンを取得できませんでした (HTTP ${response.status}): ${detail}`)
   }
   // 期限ぎりぎりまで使い回すと失敗するので、1分手前で取り直す
   const expiresInMs = Math.max(60_000, (payload.expires_in ?? 7200) * 1000 - 60_000)
