@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { fetchEbayRateLimits, rateLimitFor } from '@/lib/ebay-rate-limits'
 
 // ---------------------------------------------------------------------------
 // eBay APIの呼び出し回数の記録
@@ -140,8 +141,25 @@ export async function remainingEbayCalls(
   userId: string,
   options: { reserved?: number; limit?: number; now?: Date; callName?: string } = {},
 ): Promise<number> {
-  const limit = options.limit ?? ebayCallLimitFor(options.callName)
   const reserved = options.reserved ?? 0
+
+  // eBayが持っている実際の残りを優先する。
+  //
+  // 本番で確認した不具合(2026-11-08〜09): 11/7は3,857回通り、11/8は2,238回で
+  // 拒否された。Kakehashiが数えていた「太平洋時間の暦日あたりの回数」では
+  // 説明がつかず、上限値も時間の区切りも推測だった。eBay自身が残りと時間窓を
+  // 返すので、それを使えば推測がいらなくなる。
+  if (options.limit === undefined && options.callName) {
+    try {
+      const live = rateLimitFor(await fetchEbayRateLimits(), options.callName)
+      if (live) return Math.max(0, live.remaining - reserved)
+    } catch (error) {
+      // 取れなくても止めない。自前の集計に落ちる(従来どおりの動き)。
+      console.warn('[ebay-call-counter] 呼び出し枠を取得できませんでした:', error instanceof Error ? error.message : error)
+    }
+  }
+
+  const limit = options.limit ?? ebayCallLimitFor(options.callName)
   const used = await usedEbayCallsToday(db, userId, options.now, options.callName)
   return Math.max(0, limit - reserved - used)
 }
