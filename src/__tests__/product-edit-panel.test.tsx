@@ -6,8 +6,11 @@ import '@testing-library/jest-dom'
 
 // ---------- モック ----------
 
+// 保存できたら抽出一覧を取り直す(router.refresh)。呼ばれたことを確かめたいので
+// 共有のスパイにする。
+const routerRefresh = vi.fn()
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: vi.fn(), refresh: routerRefresh }),
   usePathname: () => '/',
 }))
 
@@ -1237,6 +1240,42 @@ describe('ProductEditPanel: 編集タブの保存操作', () => {
     expect(secondChunk.updates).toHaveLength(50)
 
     await waitFor(() => expect(screen.getByRole('button', { name: '💾 編集保存' })).toBeDisabled())
+  })
+
+  // ユーザー要望(2026-11-12): 保存しても抽出一覧に「編集済み」が出なかった。
+  // extractions.edited_at は保存時に記録されているが、一覧はサーバー側で描画
+  // したものを表示し続けるため、手動で読み込み直すまで反映されなかった。
+  it('保存できたら抽出一覧を取り直す(編集済みが出るように)', async () => {
+    routerRefresh.mockClear()
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => [makeProduct('p1')] })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, succeeded: ['p1'], failed: [] }) })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    const titleInput = screen.getByDisplayValue('eBay Title p1')
+    await userEvent.clear(titleInput)
+    await userEvent.type(titleInput, 'New Title')
+    await userEvent.click(screen.getByRole('button', { name: '💾 編集保存' }))
+
+    await waitFor(() => expect(screen.getByText('1件を保存しました')).toBeInTheDocument())
+    expect(routerRefresh).toHaveBeenCalled()
+  })
+
+  it('保存するものが無ければ一覧を取り直さない', async () => {
+    routerRefresh.mockClear()
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => [makeProduct('p1')] })
+
+    const { default: ProductEditPanel } = await import('../components/extraction/ProductEditPanel')
+    render(<ProductEditPanel extractionId="ext-1" onClose={() => {}} />)
+    await waitFor(() => screen.getByDisplayValue('eBay Title p1'))
+
+    await userEvent.click(screen.getByRole('button', { name: '💾 編集保存' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(routerRefresh).not.toHaveBeenCalled()
   })
 })
 

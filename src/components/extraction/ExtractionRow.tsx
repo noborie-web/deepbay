@@ -155,8 +155,9 @@ export default function ExtractionRow({ extraction, enrichPending, onViewResult,
         <Badge variant="default">
           {isManual ? '手動' : '自動'}/一括/通常
         </Badge>
+        {/* 「出力済み」と同じく、いつ保存したかを hover で分かるようにする */}
         {extraction.edited_at && (
-          <div>
+          <div title={`保存: ${new Date(extraction.edited_at).toLocaleString('ja-JP')}`}>
             <Badge variant="success">編集済み</Badge>
           </div>
         )}
