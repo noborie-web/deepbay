@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { Trash2, Link, ChevronUp, ChevronDown } from 'lucide-react'
 import {
   findDuplicateTitleIds,
@@ -71,6 +72,7 @@ const IMAGE_SIZE_MAP: Record<ImageSize, string> = {
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 
 export default function ProductEditPanel({ extractionId, onClose }: Props) {
+  const router = useRouter()
   const [tab, setTab] = useState<Tab>('main')
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
@@ -628,7 +630,14 @@ export default function ProductEditPanel({ extractionId, onClose }: Props) {
         // ユーザー要望: 保存が完了したかどうかが分からなかったため、成功時にも
         // 明示的なメッセージを表示する。
         const totalSaved = excludeSucceededCount + editsSucceededCount
-        if (totalSaved > 0) setSaveSuccessMsg(`${totalSaved}件を保存しました`)
+        if (totalSaved > 0) {
+          setSaveSuccessMsg(`${totalSaved}件を保存しました`)
+          // ユーザー要望(2026-11-12): 保存しても抽出一覧に「編集済み」が出な
+          // かった。保存時に extractions.edited_at は記録されているが、一覧は
+          // サーバー側で描画したものをそのまま表示し続けるため、手動で
+          // 読み込み直すまで反映されなかった。保存できたら一覧を取り直す。
+          router.refresh()
+        }
       }
     } catch (e) {
       setSaveError(`通信エラー: ${e instanceof Error ? e.message : '不明なエラー'}`)
