@@ -107,6 +107,25 @@ function statusesFromUrl(params: URLSearchParams): string[] {
   return Array.from(new Set(requested))
 }
 
+// メルカリの「絞り込み」のうち、カテゴリごとに変わる条件(出品形式・
+// 保証付き整備品など)は、UUIDをキーにしたURLパラメータで表される。
+//   ...&d664efe3-ae5a-4824-b729-e789bf93aba9=B38F1DC9...  (出品形式=通常出品)
+// 検索APIでは searchCondition.attributes に渡す。
+// ユーザー報告(2026-11-15): 「通常出品」で絞り込んだURLなのにオークションが
+// 混ざっていた。このパラメータを捨てていたため、絞り込みが効いていなかった。
+const MERCARI_ATTRIBUTE_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function attributesFromUrl(params: URLSearchParams): { id: string; values: string[] }[] {
+  const byId = new Map<string, string[]>()
+  for (const [key, value] of params.entries()) {
+    if (!MERCARI_ATTRIBUTE_KEY.test(key)) continue
+    const values = value.split(',').map((v) => v.trim()).filter((v) => v !== '')
+    if (values.length === 0) continue
+    byId.set(key, [...(byId.get(key) ?? []), ...values])
+  }
+  return Array.from(byId.entries()).map(([id, values]) => ({ id, values: Array.from(new Set(values)) }))
+}
+
 function decodeHtml(value: string): string {
   return value
     .replace(/&quot;/g, '"')
@@ -218,6 +237,12 @@ function toProduct(item: any, url: string): ScrapedProduct {
 
   const { sellerRatingCount, sellerBadRatingCount, shippingDays } = extractSellerAndShipping(item)
 
+  // 販売形式。検索API(withAuction:true)のみ item.auction を返し、単品詳細API
+  // (items/get)には一切含まれないため、情報が無いときは undefined のままにして
+  // 「固定価格」と断定しない(DB側の既定値 fixed に任せる)。
+  const priceType: 'fixed' | 'auction' | undefined =
+    item?.auction != null ? 'auction' : undefined
+
   // 最終更新日: Unix秒またはISO文字列
   const updatedRaw = item.updated ?? item.updated_at ?? item.updatedAt ?? item.created ?? null
   let sourceUpdatedAt: string | null = null
@@ -249,6 +274,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
     sourceUpdatedAt,
     availability,
     sellerUrl,
+    ...(priceType ? { priceType } : {}),
     // 検索結果一覧のitemはカテゴリ階層・出品者情報などを持たない簡易な
     // オブジェクトだが、単品詳細API(items/get)から呼ばれた場合(単品
     // ページ抽出、またはenrichImagesでの補完)はここに渡されるitemが
@@ -408,6 +434,10 @@ export class MercariScraper {
     const shippingPayerIds = getMultiNumberParam(srcParams, 'shipping_payer_id')
     if (shippingPayerIds.length > 0) searchCondition.shippingPayerId = shippingPayerIds
 
+    // 出品形式(通常出品/オークション)などの動的な絞り込み
+    const attributes = attributesFromUrl(srcParams)
+    if (attributes.length > 0) searchCondition.attributes = attributes
+
     return this.runSearchApi(searchCondition, limit, url, options)
   }
 
@@ -442,6 +472,16 @@ export class MercariScraper {
         searchCondition,
         defaultDatasets: [],
         serviceFrom: 'suruga',
+        // ユーザー報告(2026-11-15): メルカリのオークション商品が抽出に混ざり、
+        // 商品編集の「価格タイプ」では0件と表示されていた。メルカリの検索API
+        // は withAuction を付けないと item.auction を常に null で返す(実データ
+        // で確認: 同じ商品が、付けると auction:{id,bidDeadline,totalBid,
+        // highestBid,initialPrice}、付けないと null)。メルカリWebの検索も
+        // withAuction:true を送っている。
+        withAuction: true,
+        // 出品形式などの動的な絞り込み(searchCondition.attributes)を
+        // 有効にする。メルカリWebの検索も同じ値を送っている。
+        useDynamicAttribute: true,
       }
 
       const res = await fetch(SEARCH_URL, {
