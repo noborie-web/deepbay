@@ -218,6 +218,12 @@ function toProduct(item: any, url: string): ScrapedProduct {
 
   const { sellerRatingCount, sellerBadRatingCount, shippingDays } = extractSellerAndShipping(item)
 
+  // 販売形式。検索API(withAuction:true)のみ item.auction を返し、単品詳細API
+  // (items/get)には一切含まれないため、情報が無いときは undefined のままにして
+  // 「固定価格」と断定しない(DB側の既定値 fixed に任せる)。
+  const priceType: 'fixed' | 'auction' | undefined =
+    item?.auction != null ? 'auction' : undefined
+
   // 最終更新日: Unix秒またはISO文字列
   const updatedRaw = item.updated ?? item.updated_at ?? item.updatedAt ?? item.created ?? null
   let sourceUpdatedAt: string | null = null
@@ -249,6 +255,7 @@ function toProduct(item: any, url: string): ScrapedProduct {
     sourceUpdatedAt,
     availability,
     sellerUrl,
+    ...(priceType ? { priceType } : {}),
     // 検索結果一覧のitemはカテゴリ階層・出品者情報などを持たない簡易な
     // オブジェクトだが、単品詳細API(items/get)から呼ばれた場合(単品
     // ページ抽出、またはenrichImagesでの補完)はここに渡されるitemが
@@ -442,6 +449,13 @@ export class MercariScraper {
         searchCondition,
         defaultDatasets: [],
         serviceFrom: 'suruga',
+        // ユーザー報告(2026-11-15): メルカリのオークション商品が抽出に混ざり、
+        // 商品編集の「価格タイプ」では0件と表示されていた。メルカリの検索API
+        // は withAuction を付けないと item.auction を常に null で返す(実データ
+        // で確認: 同じ商品が、付けると auction:{id,bidDeadline,totalBid,
+        // highestBid,initialPrice}、付けないと null)。メルカリWebの検索も
+        // withAuction:true を送っている。
+        withAuction: true,
       }
 
       const res = await fetch(SEARCH_URL, {

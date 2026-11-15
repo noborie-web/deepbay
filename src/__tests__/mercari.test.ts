@@ -891,3 +891,55 @@ describe('MercariScraper セラーページ抽出', () => {
     }
   })
 })
+
+// ユーザー報告(2026-11-15): メルカリのオークション商品が抽出に混ざるのに、
+// 商品編集の「価格タイプ」では常にオークション0件と表示されていた。
+// 実データで確認: 検索APIは withAuction を付けないと item.auction を
+// 常に null で返す(同じ商品が、付けると auction:{...} になる)。
+describe('メルカリのオークション商品', () => {
+  const auctionItem = {
+    id: 'm59712639807',
+    name: 'オークション商品',
+    price: '39800',
+    thumbnails: ['https://static.mercdn.net/thumb.jpg'],
+    status: 'ITEM_STATUS_ON_SALE',
+    auction: { id: '4009973', bidDeadline: '2026-11-16T11:41:13Z', totalBid: '0', highestBid: '39800', initialPrice: '39800' },
+  }
+
+  it('auctionを持つ商品はオークション形式として記録する', () => {
+    expect(_toProduct(auctionItem, 'https://jp.mercari.com/search').priceType).toBe('auction')
+  })
+
+  it('auctionがnullなら販売形式を断定しない(DBの既定値に任せる)', () => {
+    expect(_toProduct({ ...auctionItem, auction: null }, 'https://jp.mercari.com/search').priceType).toBeUndefined()
+  })
+
+  it('auctionキー自体が無い単品詳細でも販売形式を断定しない', () => {
+    const detail: Record<string, unknown> = { ...auctionItem }
+    delete detail.auction
+    expect(_toProduct(detail, 'https://jp.mercari.com/item/m59712639807').priceType).toBeUndefined()
+  })
+
+  it('検索APIに withAuction:true を送る(送らないとauctionが常にnullになる)', async () => {
+    const originalFetch = globalThis.fetch
+    const bodies: string[] = []
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(input)
+      if (requestUrl.includes('entities:search')) {
+        bodies.push(String(init?.body ?? ''))
+        return new Response(JSON.stringify({ items: [auctionItem] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ data: {} }), { status: 200 })
+    }
+    try {
+      const products = await new MercariScraper().scrape(
+        'https://jp.mercari.com/search?keyword=test',
+        { limit: 1, skipDetailEnrichment: true },
+      )
+      expect(JSON.parse(bodies[0]).withAuction).toBe(true)
+      expect(products[0].priceType).toBe('auction')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
