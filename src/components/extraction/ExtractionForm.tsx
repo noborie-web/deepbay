@@ -83,8 +83,8 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
       {/* 危険単語の例外。一覧を触らずに、この抽出だけ通したい語を指定する */}
       <input
         type="text"
-        placeholder="危険単語の例外（例: Canon, Nikon）"
-        title="危険単語に登録されていても、この抽出では除外しない語をカンマ区切りで指定します。一覧そのものは変わりません。"
+        placeholder="危険単語の例外（例: Canon Nikon）"
+        title="危険単語に登録されていても、この抽出では除外しない語を指定します。区切りは空白でもカンマでも構いません。一覧そのものは変わりません。"
         value={dangerWordExceptions}
         onChange={(e) => setDangerWordExceptions(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}

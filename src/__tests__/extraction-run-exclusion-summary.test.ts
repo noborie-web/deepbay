@@ -213,6 +213,21 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       expect(summary.danger_word_exceptions).toEqual(['canon'])
     })
 
+    // 本番で確認した不具合(2026-11-15): 「canon nikon」とスペース区切りで
+    // 入力したら丸ごと1語として扱われ、例外が効いていなかった。
+    it('スペース区切りでも1語ずつとして扱う', async () => {
+      mocks.scrapeUrl.mockResolvedValue(products)
+      const { db, extractionUpdates } = makeDatabase({ dangerWords: ['canon', 'ジャンク'] })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db, {
+        dangerWordExceptions: 'canon ジャンク',
+      })
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      expect(summary.danger_word_excluded).toBe(0)
+      expect(summary.danger_word_exceptions).toEqual(['canon', 'ジャンク'])
+    })
+
     it('大文字小文字やカンマ区切り、空白のゆらぎを吸収する', async () => {
       mocks.scrapeUrl.mockResolvedValue(products)
       const { db, extractionUpdates } = makeDatabase({ dangerWords: ['canon', 'ジャンク'] })

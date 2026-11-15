@@ -86,9 +86,13 @@ export interface RunScrapeOptions {
 
 /** 危険単語の例外。前後の空白を落とし、小文字で比較できる形にそろえる */
 export function normalizeDangerWordExceptions(value: unknown): string[] {
+  // 本番で確認した不具合(2026-11-15): 「canon nikon」とスペース区切りで
+  // 入力したところ、丸ごと1語として扱われ、どの危険単語にも一致せず
+  // 例外が効いていなかった。区切りは空白・カンマ・読点・改行のいずれでもよい
+  // ことにする(危険単語に空白を含む語は無いため、空白で切って困らない)。
   const raw = Array.isArray(value)
     ? value
-    : typeof value === 'string' ? value.split(/[,、\n]/) : []
+    : typeof value === 'string' ? value.split(/[\s,、]+/) : []
   const words = raw
     .map((word) => String(word).trim().toLowerCase())
     .filter((word) => word !== '')
