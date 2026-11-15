@@ -142,6 +142,52 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     return { db, extractionUpdates, insertedProducts }
   }
 
+  // ユーザー要望(2026-11-15): カメラの抽出で190件中132件(69%)が危険単語で
+  // 落ちたが、どの単語に当たったのかが画面から分からなかった。一覧は4,164語
+  // あり、1文字の語(g / _)のような誤登録と「ジャンク」のような正しい除外が
+  // 混ざっている。推測で単語を消さずに済むよう、当たった単語と件数を残す。
+  describe('危険単語の内訳', () => {
+    it('どの単語で何件落ちたかを多い順に残す', async () => {
+      mocks.scrapeUrl.mockResolvedValue([
+        scrapedProduct({ sourceItemId: 'a', title: 'ジャンク レンズ' }),
+        scrapedProduct({ sourceUrl: 'https://example.com/item/b', sourceItemId: 'b', title: 'ジャンク ボディ' }),
+        scrapedProduct({ sourceUrl: 'https://example.com/item/c', sourceItemId: 'c', title: '部品取り カメラ' }),
+        scrapedProduct({ sourceUrl: 'https://example.com/item/d', sourceItemId: 'd', title: '美品 カメラ' }),
+      ])
+      const { db, extractionUpdates } = makeDatabase({ dangerWords: ['部品取り', 'ジャンク'] })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      expect(summary.danger_word_excluded).toBe(3)
+      // 件数の多い順。登録順ではない
+      expect(summary.danger_word_hits).toEqual(['ジャンク:2', '部品取り:1'])
+    })
+
+    it('1件の商品は最初に当たった1語だけ数える(重複して数えない)', async () => {
+      mocks.scrapeUrl.mockResolvedValue([
+        scrapedProduct({ sourceItemId: 'a', title: 'ジャンク 部品取り レンズ' }),
+      ])
+      const { db, extractionUpdates } = makeDatabase({ dangerWords: ['ジャンク', '部品取り'] })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      expect(summary.danger_word_excluded).toBe(1)
+      expect(summary.danger_word_hits).toEqual(['ジャンク:1'])
+    })
+
+    it('除外が無ければ項目を増やさない', async () => {
+      mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ sourceItemId: 'a', title: '美品 カメラ' })])
+      const { db, extractionUpdates } = makeDatabase({ dangerWords: ['ジャンク'] })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      expect(summary).not.toHaveProperty('danger_word_hits')
+    })
+  })
+
   // ユーザー要望(2026-11-15): カメラの抽出では Canon / Nikon を通したい。
   // 危険単語はユーザーごとの一覧(4,164語)で全抽出に一律適用されるため、
   // カメラでは389件中136件が除外されていた。この2語はVeROの対象ではない。
@@ -210,6 +256,8 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       no_image_excluded: 0,
       no_price_excluded: 0,
       danger_word_excluded: 1,
+      // どの単語で落ちたかを残す(ユーザー要望 2026-11-15)
+      danger_word_hits: ['ジャンク:1'],
       vero_excluded: 0,
       individual_danger_seller_excluded: 0,
       spot_word_excluded: 0,

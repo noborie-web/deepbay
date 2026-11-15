@@ -304,13 +304,27 @@ export async function runScrape(
     const wordList: string[] = (dangerWords ?? [])
       .map((w: { word: string }) => w.word.toLowerCase())
       .filter((word: string) => !dangerWordExceptions.has(word))
+    // ユーザー要望(2026-11-15): カメラの抽出で190件中132件(69%)が危険単語で
+    // 落ちたが、どの単語に当たったのかが画面から分からなかった。一覧は4,164語
+    // あり、1文字の語(g / _)のような誤登録と「ジャンク」のような正しい除外が
+    // 混ざっている。推測で単語を消さずに済むよう、当たった単語と件数を残す。
+    const dangerWordHits = new Map<string, number>()
     const filteredList = (!dangerWordEnabled || wordList.length === 0)
       ? noPriceFilteredList
       : noPriceFilteredList.filter((scraped: { title: string }) => {
           const lower = scraped.title.toLowerCase()
-          return !wordList.some((word) => lower.includes(word))
+          // 最初に当たった1語だけ数える(1件の商品を重複して数えない)
+          const hit = wordList.find((word) => lower.includes(word))
+          if (hit === undefined) return true
+          dangerWordHits.set(hit, (dangerWordHits.get(hit) ?? 0) + 1)
+          return false
         })
     const dangerWordExcluded = noPriceFilteredList.length - filteredList.length
+    // 件数の多い順。全部出すと長いので上位20語まで。
+    const dangerWordTopHits = Array.from(dangerWordHits.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20)
+      .map(([word, count]) => `${word}:${count}`)
 
     // Vero除外: これまで抽出パイプラインには一切含まれておらず、商品編集
     // 画面の「除外」タブでユーザーが手動で実行した場合しか除外されない
@@ -826,6 +840,8 @@ export async function runScrape(
       ...(dangerWordExceptions.size > 0
         ? { danger_word_exceptions: Array.from(dangerWordExceptions) }
         : {}),
+      // どの危険単語で落ちたか(「word:件数」の形、多い順)
+      ...(dangerWordTopHits.length > 0 ? { danger_word_hits: dangerWordTopHits } : {}),
       vero_excluded: veroExcluded,
       individual_danger_seller_excluded: individualDangerSellerExcluded,
       spot_word_excluded: spotWordExcluded,
