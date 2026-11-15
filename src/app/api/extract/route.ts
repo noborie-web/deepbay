@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json()
-  const { url, categoryId, sellerAccountId, bulkEditSettingId, memo, isBulk, dangerWordExceptions } = body
+  const { url, categoryId, sellerAccountId, bulkEditSettingId, memo, isBulk, dangerWordExceptions, dangerWordExcludeDisabled } = body
 
   if (!url || typeof url !== 'string') {
     return NextResponse.json({ error: 'URLが必要です' }, { status: 400 })
@@ -124,6 +124,8 @@ export async function POST(req: NextRequest) {
         // ユーザー要望(2026-11-15): この抽出だけ除外しない危険単語。
         // 「Canon, Nikon」のような入力そのままを渡し、整形は runScrape に任せる。
         dangerWordExceptions,
+        // ユーザー要望(2026-11-15): この抽出だけ危険単語の除外自体を止める
+        dangerWordExcludeDisabled: dangerWordExcludeDisabled === true,
       })
     } finally {
       finished = true

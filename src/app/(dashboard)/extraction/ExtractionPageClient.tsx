@@ -88,6 +88,8 @@ export default function ExtractionPageClient({
     isBulk: boolean
     // この抽出だけ除外しない危険単語(ユーザー要望 2026-11-15)
     dangerWordExceptions: string
+    // この抽出では危険単語の除外自体を行わない(ユーザー要望 2026-11-15)
+    dangerWordExcludeDisabled: boolean
   }) {
     setError('')
     const res = await fetch('/api/extract', {

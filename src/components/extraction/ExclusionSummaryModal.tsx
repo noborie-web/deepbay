@@ -10,7 +10,7 @@ interface Props {
 // ai_time_limited は真偽値、amazon_*_asins は配列なので、件数の一覧には出さない。
 type NumericSummaryKey = Exclude<
   keyof ExtractionExclusionSummary,
-  'ai_time_limited'
+  'ai_time_limited' | 'danger_word_exclude_disabled'
   | 'amazon_no_new_offer_asins' | 'amazon_not_fba_asins'
   | 'amazon_pricing_failed_asins' | 'amazon_time_skipped_asins'
   // 危険単語の例外・内訳も配列なので、件数の一覧ではなく別枠で出す
@@ -99,6 +99,12 @@ export default function ExclusionSummaryModal({ summary, onClose }: Props) {
               実行時間の上限が近づいたため、一部の商品はAI処理(タイトル翻訳・説明文・ブランド)を省略して保存しました。
               商品は下書きとして残っているので、件数を減らして再抽出するか、下書きを個別に編集してください。
             </p>
+          )}
+          {/* ユーザー要望(2026-11-15): 「除外しない」を選んだ抽出だと分かるようにする */}
+          {summary.danger_word_exclude_disabled && (
+            <div className="rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              この抽出では危険単語による除外を行いませんでした（「除外しない」を選択）。
+            </div>
           )}
           {/* ユーザー要望(2026-11-15): 今回だけ除外しなかった危険単語を出す。
               「なぜ通ったのか」が後から分かるようにする。 */}

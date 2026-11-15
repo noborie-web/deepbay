@@ -228,6 +228,33 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       expect(summary.danger_word_exceptions).toEqual(['canon', 'ジャンク'])
     })
 
+    // ユーザー要望(2026-11-15): 例外を1語ずつ挙げるのが現実的でない抽出
+    // (カメラでは190件中132件がブランド名で落ちた)のために、除外そのものを止める
+    it('「除外しない」を選ぶと危険単語で1件も落ちない', async () => {
+      mocks.scrapeUrl.mockResolvedValue(products)
+      const { db, extractionUpdates } = makeDatabase({ dangerWords: ['canon', 'ジャンク'] })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db, {
+        dangerWordExcludeDisabled: true,
+      })
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      expect(summary.danger_word_excluded).toBe(0)
+      expect(summary.danger_word_exclude_disabled).toBe(true)
+      // 除外していないので内訳も出さない
+      expect(summary.danger_word_hits).toBeUndefined()
+    })
+
+    it('「除外しない」を選ばなければ内訳に項目を増やさない', async () => {
+      mocks.scrapeUrl.mockResolvedValue(products)
+      const { db, extractionUpdates } = makeDatabase({ dangerWords: ['canon'] })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      expect('danger_word_exclude_disabled' in summary).toBe(false)
+    })
+
     it('大文字小文字やカンマ区切り、空白のゆらぎを吸収する', async () => {
       mocks.scrapeUrl.mockResolvedValue(products)
       const { db, extractionUpdates } = makeDatabase({ dangerWords: ['canon', 'ジャンク'] })
