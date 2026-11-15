@@ -306,6 +306,22 @@ export async function runScrape(
     )
     const noPriceExcluded = noImageFilteredList.length - noPriceFilteredList.length
 
+    // オークション除外
+    //
+    // ユーザー要望(2026-11-15): メルカリのオークション商品が抽出に混ざって
+    // いた。オークションは即決で仕入れられず、入札で値が上がるため、eBayで
+    // 売れても赤字・仕入れ不能になりうる(2026-10-20に実際に発生: 仕入
+    // ¥39,500に対しeBay売上は約$176)。抽出の時点で落とす。
+    // ヤフオクも「即決価格の無いオークション」はここで落ちる(即決価格が
+    // あるものは priceType が fixed なので残る)。
+    const excludeAuction: boolean = extractionSettings?.exclude_auction ?? true
+    const auctionFilteredList = excludeAuction
+      ? noPriceFilteredList.filter(
+          (scraped: { priceType?: 'fixed' | 'auction' }) => scraped.priceType !== 'auction',
+        )
+      : noPriceFilteredList
+    const auctionExcluded = noPriceFilteredList.length - auctionFilteredList.length
+
     // 危険単語フィルタ
     //
     // ユーザー要望(2026-11-15): この抽出だけ除外しない単語を指定できる。
@@ -321,8 +337,8 @@ export async function runScrape(
     // 混ざっている。推測で単語を消さずに済むよう、当たった単語と件数を残す。
     const dangerWordHits = new Map<string, number>()
     const filteredList = (!dangerWordEnabled || wordList.length === 0)
-      ? noPriceFilteredList
-      : noPriceFilteredList.filter((scraped: { title: string }) => {
+      ? auctionFilteredList
+      : auctionFilteredList.filter((scraped: { title: string }) => {
           const lower = scraped.title.toLowerCase()
           // 最初に当たった1語だけ数える(1件の商品を重複して数えない)
           const hit = wordList.find((word) => lower.includes(word))
@@ -330,7 +346,7 @@ export async function runScrape(
           dangerWordHits.set(hit, (dangerWordHits.get(hit) ?? 0) + 1)
           return false
         })
-    const dangerWordExcluded = noPriceFilteredList.length - filteredList.length
+    const dangerWordExcluded = auctionFilteredList.length - filteredList.length
     // 件数の多い順。全部出すと長いので上位20語まで。
     const dangerWordTopHits = Array.from(dangerWordHits.entries())
       .sort((a, b) => b[1] - a[1])
@@ -845,6 +861,7 @@ export async function runScrape(
       sold_out_excluded: soldOutExcluded,
       no_image_excluded: noImageExcluded,
       no_price_excluded: noPriceExcluded,
+      auction_excluded: auctionExcluded,
       danger_word_excluded: dangerWordExcluded,
       // 今回だけ除外しなかった単語(あとから「なぜ通ったのか」を追えるように)。
       // 指定が無い回は項目ごと出さない(従来の内訳と同じ形のままにする)。

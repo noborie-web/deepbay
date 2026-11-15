@@ -24,6 +24,8 @@ interface ExtractionSettings {
   spot_check_description: boolean
   // ヤフオク検索URLで抽出するとき、同じ条件でYahoo!フリマも検索して合算する
   yahoo_auction_include_flea: boolean
+  // オークション商品(即決で仕入れられないもの)を抽出時に除外する
+  exclude_auction: boolean
   // 説明文のAI生成: off=しない / missing=仕入先から説明文が取れなかった商品だけ / all=全商品
   ai_description_mode: 'off' | 'missing' | 'all'
 }
@@ -52,6 +54,7 @@ const DEFAULT_SETTINGS: ExtractionSettings = {
   spot_check_title: true,
   spot_check_description: true,
   yahoo_auction_include_flea: true,
+  exclude_auction: true,
   ai_description_mode: 'missing',
 }
 
@@ -560,6 +563,7 @@ export default function ExtractionSettingsPage() {
                 ['exclude_title_duplicate', 'タイトル重複: 除外', 'タイトル重複: 除外しない'],
                 ['exclude_translated_duplicate', '翻訳後タイトル重複: 除外', '翻訳後タイトル重複: 除外しない'],
                 ['yahoo_auction_include_flea', 'ヤフオク検索時にYahoo!フリマも取得: する', 'ヤフオク検索時にYahoo!フリマも取得: しない'],
+                ['exclude_auction', 'オークション(即決不可): 除外', 'オークション(即決不可): 除外しない'],
               ] as [keyof ExtractionSettings, string, string][]).map(([key, onLabel, offLabel]) => (
                 <div key={key} className="flex items-center gap-2">
                   <Toggle

@@ -38,6 +38,7 @@ const ROWS: { key: NumericSummaryKey; label: string }[] = [
   { key: 'sold_out_excluded', label: '売り切れ除外' },
   { key: 'no_image_excluded', label: '画像が1枚もない除外' },
   { key: 'no_price_excluded', label: '販売価格が取得できない除外' },
+  { key: 'auction_excluded', label: 'オークション除外' },
   { key: 'danger_word_excluded', label: '危険単語除外' },
   { key: 'vero_excluded', label: 'Vero除外' },
   { key: 'individual_danger_seller_excluded', label: '個別危険Seller除外' },
