@@ -86,6 +86,8 @@ export default function ExtractionPageClient({
     sellerAccountId: string
     bulkEditSettingId: string
     isBulk: boolean
+    // この抽出だけ除外しない危険単語(ユーザー要望 2026-11-15)
+    dangerWordExceptions: string
   }) {
     setError('')
     const res = await fetch('/api/extract', {

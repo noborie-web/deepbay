@@ -13,6 +13,8 @@ type NumericSummaryKey = Exclude<
   'ai_time_limited'
   | 'amazon_no_new_offer_asins' | 'amazon_not_fba_asins'
   | 'amazon_pricing_failed_asins' | 'amazon_time_skipped_asins'
+  // 危険単語の例外も配列なので、件数の一覧ではなく別枠で出す
+  | 'danger_word_exceptions'
 >
 
 // 本番で確認(2026-10-13): ASIN5件で抽出したら2件しか取り込まれず、残り3件が
@@ -97,6 +99,14 @@ export default function ExclusionSummaryModal({ summary, onClose }: Props) {
               実行時間の上限が近づいたため、一部の商品はAI処理(タイトル翻訳・説明文・ブランド)を省略して保存しました。
               商品は下書きとして残っているので、件数を減らして再抽出するか、下書きを個別に編集してください。
             </p>
+          )}
+          {/* ユーザー要望(2026-11-15): 今回だけ除外しなかった危険単語を出す。
+              「なぜ通ったのか」が後から分かるようにする。 */}
+          {(summary.danger_word_exceptions ?? []).length > 0 && (
+            <div className="rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              この抽出では次の危険単語を除外しませんでした:{' '}
+              <span className="font-medium">{(summary.danger_word_exceptions ?? []).join(' / ')}</span>
+            </div>
           )}
           {ROWS.map(({ key, label }) => (
             <div key={key} className="flex items-center justify-between">

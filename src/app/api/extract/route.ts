@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json()
-  const { url, categoryId, sellerAccountId, bulkEditSettingId, memo, isBulk } = body
+  const { url, categoryId, sellerAccountId, bulkEditSettingId, memo, isBulk, dangerWordExceptions } = body
 
   if (!url || typeof url !== 'string') {
     return NextResponse.json({ error: 'URLが必要です' }, { status: 400 })
@@ -121,6 +121,9 @@ export async function POST(req: NextRequest) {
       // させるための期限。setTimeoutの打ち切り(失敗記録)はあくまで保険。
       await runScrape(userId, extractionId, url, bulkEditSettingId || null, bg, {
         deadlineAt: Date.now() + EXTRACTION_DEADLINE_MS,
+        // ユーザー要望(2026-11-15): この抽出だけ除外しない危険単語。
+        // 「Canon, Nikon」のような入力そのままを渡し、整形は runScrape に任せる。
+        dangerWordExceptions,
       })
     } finally {
       finished = true

@@ -15,11 +15,16 @@ interface Props {
     sellerAccountId: string
     bulkEditSettingId: string
     isBulk: boolean
+    // この抽出だけ除外しない危険単語(ユーザー要望 2026-11-15)
+    dangerWordExceptions: string
   }) => Promise<boolean | void>
 }
 
 export default function ExtractionForm({ sellers, categories, bulkSettings, onSubmit }: Props) {
   const [url, setUrl] = useState('')
+  // ユーザー要望(2026-11-15): カメラの抽出では Canon / Nikon を通したい。
+  // 危険単語の一覧は全抽出で共有しているので、この抽出だけの例外を受け取る。
+  const [dangerWordExceptions, setDangerWordExceptions] = useState('')
   const [categoryId, setCategoryId] = useState(categories[0]?.id ?? '')
   const [sellerAccountId, setSellerAccountId] = useState(
     sellers.find((s) => s.is_default)?.id ?? sellers[0]?.id ?? ''
@@ -53,7 +58,11 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
     if (!url.trim()) return
     setLoading(true)
     try {
-      const result = await onSubmit({ url: url.trim(), categoryId, sellerAccountId, bulkEditSettingId, isBulk: true })
+      const result = await onSubmit({
+        url: url.trim(), categoryId, sellerAccountId, bulkEditSettingId, isBulk: true,
+        dangerWordExceptions,
+      })
+      // 例外の指定は残す(同じカテゴリを続けて抽出することが多いため)
       if (result !== false) setUrl('')
     } finally {
       setLoading(false)
@@ -69,6 +78,17 @@ export default function ExtractionForm({ sellers, categories, bulkSettings, onSu
         onChange={(e) => setUrl(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
         className="border rounded px-3 py-2 text-sm w-64 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+      />
+
+      {/* 危険単語の例外。一覧を触らずに、この抽出だけ通したい語を指定する */}
+      <input
+        type="text"
+        placeholder="危険単語の例外（例: Canon, Nikon）"
+        title="危険単語に登録されていても、この抽出では除外しない語をカンマ区切りで指定します。一覧そのものは変わりません。"
+        value={dangerWordExceptions}
+        onChange={(e) => setDangerWordExceptions(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
+        className="border rounded px-3 py-2 text-sm w-56 focus:outline-none focus:ring-2 focus:ring-yellow-400"
       />
 
       {/* カテゴリ */}
