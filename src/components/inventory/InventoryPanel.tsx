@@ -1715,9 +1715,13 @@ export default function InventoryPanel({ listings: initialListings, listingCount
                   CSVで出品した{csvListedPending.toLocaleString()}件が、まだ在庫管理に入っていません。
                 </p>
                 <p className="mt-1">
-                  CSV出品ではeBayから商品番号が返らないため、Kakehashiは自動で登録できません。
-                  下の<strong>②「activeファイルを選択して取り込む」</strong>でeBayのActive listingsレポートを取り込むと、在庫管理の対象になります。
+                  CSV出品はeBayが商品番号を返さないため、出品した時点では登録できません。
+                  下の<strong>①「eBay同期を今すぐ実行」</strong>を押すと、出品CSVの管理番号（CustomLabel）でeBayに問い合わせて取り込みます。
+                  件数が多いときは1回で終わらないことがあるので、残っていればもう一度実行してください。
                   取り込むまでは<strong>仕入先の売り切れチェックと自動取り下げが効きません</strong>。
+                </p>
+                <p className="mt-1 text-[11px] text-amber-800">
+                  急ぐ場合は②でeBayのActive listingsレポートを取り込むこともできます（同期を待たずに登録されます）。
                 </p>
                 <p className="mt-1.5 text-[11px] text-amber-800">
                   eBayのアップロード結果でエラーになっていた場合は、取り込んでも在庫管理には入りません。

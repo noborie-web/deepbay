@@ -726,6 +726,20 @@ export async function fetchListingsByItemIds(
 
 export const SELLER_LIST_MAX_RANGE_MS = 119 * 24 * 60 * 60 * 1000
 
+/** SKUはユーザーが決めた文字列なので、XMLに入れる前に最低限のエスケープをする */
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
+// 1回のGetSellerListに載せるSKUの数。多いほど呼び出し回数は減るが、
+// リクエストが大きくなりすぎると弾かれるため控えめにする。
+export const SELLER_LIST_SKU_BATCH = 40
+
 export interface SellerListPageResult {
   items: InventoryListingInput[]
   totalPages: number
@@ -737,7 +751,16 @@ export async function fetchSellerListPage(
   page: number,
   // ユーザー要望(2026-09-26): UK/AUにも出品する。GetSellerListはサイト単位の
   // 文脈で返るため、出品したサイトのSiteIDで呼ばないと発見できない。
-  options: { timeoutMs?: number; signal?: AbortSignal; siteId?: string | null } = {},
+  options: {
+    timeoutMs?: number
+    signal?: AbortSignal
+    siteId?: string | null
+    // ユーザー要望(2026-11-15): CSVで出品した商品を、期間の総当たりではなく
+    // CustomLabel(SKU)で名指しして取り込む。akebono-32 は他ツールの出品が
+    // 30万件あり、期間走査では毎回時間切れで到達できなかった。
+    // GetSellerList は SKUArray でSKUを指定でき、一致した出品だけが返る。
+    skus?: string[]
+  } = {},
 ): Promise<SellerListPageResult> {
   if (!Number.isInteger(page) || page < 1) throw new Error(`Invalid eBay seller list page: ${page}`)
   if (range.to.getTime() - range.from.getTime() > SELLER_LIST_MAX_RANGE_MS) {
@@ -751,6 +774,11 @@ export async function fetchSellerListPage(
   // 127件が在庫管理に入らなかった。商品との紐付けにSKUが必要なため
   // DetailLevel=ReturnAll は維持しつつ、1ページの件数を減らして応答を軽くし、
   // タイムアウトも30秒に伸ばす。
+  // SKU指定時も期間指定は必須(eBayの仕様)。一致する出品だけが返るので、
+  // 他ツールの出品でページが埋まることがない。
+  const skuArray = (options.skus ?? []).length > 0
+    ? `  <SKUArray>\n${(options.skus ?? []).map((sku) => `    <SKU>${escapeXml(sku)}</SKU>`).join('\n')}\n  </SKUArray>\n`
+    : ''
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <GetSellerListRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <StartTimeFrom>${range.from.toISOString()}</StartTimeFrom>
@@ -759,7 +787,7 @@ export async function fetchSellerListPage(
     <EntriesPerPage>${SELLER_LIST_PAGE_SIZE}</EntriesPerPage>
     <PageNumber>${page}</PageNumber>
   </Pagination>
-  <DetailLevel>ReturnAll</DetailLevel>
+${skuArray}  <DetailLevel>ReturnAll</DetailLevel>
 ${outputSelectors}
 </GetSellerListRequest>`
 
@@ -836,4 +864,61 @@ export async function scanSellerListByStartTime(
   }
   const pagesFetched = page - 1
   return { items, truncated: pagesFetched < totalPages, pagesFetched, totalPages }
+}
+
+/**
+ * CustomLabel(SKU)を名指しして出品を取り込む。
+ *
+ * ユーザー要望(2026-11-15): CSV出品した809件が在庫管理に入らず、取り込みに
+ * Active listingsレポートのアップロードが必要だった。原因は期間走査が
+ * akebono-32 の他ツール出品(約30万件)で毎回時間切れになること。
+ * SKUで絞れば一致した出品だけが返るので、件数に関係なく取り込める。
+ *
+ * eBayの仕様上、SKU指定でも期間(最大120日)の指定が必要なため、呼び出し側が
+ * 期間を渡す。見つからなかったSKUは呼び出し側で次の期間を試せるように返す。
+ */
+export async function scanSellerListBySkus(
+  tokens: EbayTokenSet,
+  skus: string[],
+  range: { from: Date; to: Date },
+  options: {
+    timeBudgetMs: number
+    pageTimeoutMs?: number
+    signal?: AbortSignal
+    siteId?: string | null
+    batchSize?: number
+  },
+): Promise<{ items: InventoryListingInput[]; skusQueried: string[]; truncated: boolean; calls: number }> {
+  const startedAt = Date.now()
+  const batchSize = options.batchSize ?? SELLER_LIST_SKU_BATCH
+  const items: InventoryListingInput[] = []
+  const skusQueried: string[] = []
+  let truncated = false
+  let calls = 0
+
+  for (let index = 0; index < skus.length; index += batchSize) {
+    const remaining = options.timeBudgetMs - (Date.now() - startedAt)
+    // 1回分も読めない残り時間なら、失敗させずに打ち切る(次回の同期で続きを読む)
+    if (remaining <= SELLER_LIST_MIN_PAGE_MS) { truncated = true; break }
+    const batch = skus.slice(index, index + batchSize)
+    let page = 1
+    let totalPages = 1
+    for (; page <= totalPages && page <= MAX_PAGES; page++) {
+      const pageRemaining = options.timeBudgetMs - (Date.now() - startedAt)
+      if (pageRemaining <= SELLER_LIST_MIN_PAGE_MS) { truncated = true; break }
+      calls += 1
+      const result = await fetchSellerListPage(tokens, range, page, {
+        timeoutMs: Math.min(options.pageTimeoutMs ?? SELLER_LIST_PAGE_TIMEOUT_MS, pageRemaining),
+        signal: options.signal,
+        siteId: options.siteId,
+        skus: batch,
+      })
+      items.push(...result.items)
+      totalPages = Math.max(1, result.totalPages)
+    }
+    skusQueried.push(...batch)
+    if (truncated) break
+  }
+
+  return { items, skusQueried, truncated, calls }
 }
