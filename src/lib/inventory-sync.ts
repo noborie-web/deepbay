@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { EbayCallLimitError, fetchActiveListingsBatch, fetchAllActiveListings, fetchListingsByItemIds, scanSellerListByStartTime, SELLER_LIST_MAX_RANGE_MS } from './ebay-inventory'
+import { EbayCallLimitError, fetchActiveListingsBatch, fetchAllActiveListings, fetchListingsByItemIds, scanSellerListByStartTime, scanSellerListBySkus, SELLER_LIST_MAX_RANGE_MS } from './ebay-inventory'
 import type { EndedListingInfo } from './ebay-inventory'
 import {
   extractProductIdFromCustomLabel,
@@ -28,6 +28,8 @@ export interface InventorySyncOptions {
   fetchTotalTimeoutMs?: number
   // 新規出品の発見(GetSellerListの期間走査)に許容する時間
   discoveryTimeBudgetMs?: number
+  // CSV出品のSKU照合(GetSellerListのSKU指定)に許容する時間
+  skuDiscoveryTimeBudgetMs?: number
   // GetItem個別照会の並行数(既定4。日次cronでは件数が多いため上げる)
   getItemConcurrency?: number
   // ユーザー要望(出品1,000件超への備え): 1回の実行で照会する件数の上限と、
@@ -669,6 +671,18 @@ export interface DiscoveryResult {
   error?: string
 }
 
+export interface SkuDiscoveryResult {
+  // SKU照合で新たに在庫管理へ入った件数
+  discovered: number
+  // 今回照会したSKUの数
+  skusQueried: number
+  // 未取り込みとして残っているCSV出品の数(照会前)
+  skusPending: number
+  // 時間切れで一部しか照会できなかった(次回の同期で続きを照会する)
+  truncated: boolean
+  error?: string
+}
+
 export interface KnownInventorySyncBatchResult {
   // 照会対象のKakehashi出品の総数
   totalItems: number
@@ -685,6 +699,12 @@ export interface KnownInventorySyncBatchResult {
   discoveryPagesFetched?: number
   discoveryTotalPages?: number
   discoveryError?: string
+  // CSV出品のSKU照合(ユーザー要望 2026-11-15)
+  skuDiscovered?: number
+  skuQueried?: number
+  skuPending?: number
+  skuTruncated?: boolean
+  skuError?: string
   // 本番で確認した不具合(2026-09-27): 1人目のセラーのGetItemが呼び出し上限で
   // 失敗すると同期全体が止まり、2人目(akebono-32)の新規出品の発見まで
   // たどり着けなかった。上限は既存出品の照会だけの問題なので、上限に当たった
@@ -725,6 +745,12 @@ export interface KnownInventorySyncResult {
   bulkSkipped?: 'exceeds_page_cap'
   // eBayの1日の残り回数に収めるため、照会件数を減らした
   callBudgetLimited?: boolean
+  // CSV出品のSKU照合(ユーザー要望 2026-11-15)
+  skuDiscovered?: number
+  skuQueried?: number
+  skuPending?: number
+  skuTruncated?: boolean
+  skuError?: string
   // 今回照会した件数と、続きから再開するための位置(全件終わったら null)
   processed: number
   nextCursorItemId: string | null
@@ -975,6 +1001,127 @@ async function fetchActiveListingMap(
     }
   }
   return { map, complete, exceedsPageCap }
+}
+
+// ---------------------------------------------------------------------------
+// CSV出品の取り込み(GetSellerListのSKU指定)
+//
+// ユーザー要望(2026-11-15): 「CSVのアップロードが面倒です。クリックで同期
+// できませんか？」
+//
+// CSV出品(File Exchange)はeBayがItemIDを返さないため、出品した時点では
+// 在庫管理に登録できない。期間走査(discoverNewListings)で拾ってはいたが、
+// akebono-32 は他ツールの出品が約30万件あり、どの区間も読み切れずに時間切れ
+// となって809件が取り残されていた。
+//
+// GetSellerList は SKUArray でCustomLabelを名指しでき、一致した出品だけが
+// 返る。出品件数に左右されないので、未取り込みの商品だけを確実に取り込める。
+// 期間指定(最大120日)は仕様上必須なので、出品CSVを出した日時から範囲を作る。
+// ---------------------------------------------------------------------------
+
+const DEFAULT_SKU_DISCOVERY_TIME_BUDGET_MS = 40_000
+// 1回の同期で照会するSKUの上限(残りは次回の同期で続きを照会する)
+const SKU_DISCOVERY_MAX_PER_RUN = 400
+// 出品CSVを出した日時より少し前から探す(eBay側の反映のずれを吸収する)
+const SKU_DISCOVERY_MARGIN_MS = 24 * 60 * 60 * 1000
+
+interface PendingCsvProduct {
+  id: string
+  exportedAt: Date
+}
+
+/** 出品CSVに出したのに在庫管理へ入っていない商品(このセラーの分だけ) */
+async function loadPendingCsvProducts(
+  db: SupabaseClient,
+  userId: string,
+  sellerAccountId: string | null,
+): Promise<PendingCsvProduct[]> {
+  // db-audit-ok: 下で .limit(SKU_DISCOVERY_MAX_PER_RUN) を付けて引く(組み立てが別の文)
+  let query = db
+    .from('products')
+    .select('id, listing_csv_exported_at, extractions!inner(seller_account_id)')
+    .eq('user_id', userId)
+    .not('listing_csv_exported_at', 'is', null)
+    .is('ebay_item_id', null)
+    .is('listing_csv_unlisted_confirmed_at', null)
+  if (sellerAccountId) query = query.eq('extractions.seller_account_id', sellerAccountId)
+  const { data, error } = await query
+    .order('listing_csv_exported_at', { ascending: false })
+    .limit(SKU_DISCOVERY_MAX_PER_RUN)
+  if (error) throw new Error(error.message)
+  return (data ?? [])
+    .map((row) => ({
+      id: row.id as string,
+      exportedAt: new Date(row.listing_csv_exported_at as string),
+    }))
+    .filter((row) => Number.isFinite(row.exportedAt.getTime()))
+}
+
+/** 商品IDから出品CSVのCustomLabel(SKU)を作る。listing-export と同じ形式。 */
+export function skuForProductId(productId: string): string {
+  return `kakehashi_${productId.replace(/-/g, '_')}`
+}
+
+/**
+ * 未取り込みのCSV出品を、CustomLabel(SKU)で名指しして取り込む。
+ * 失敗しても同期全体は止めない(他の処理は従来どおり進める)。
+ */
+export async function discoverListingsBySku(
+  db: SupabaseClient,
+  userId: string,
+  accessToken: string,
+  options: InventorySyncOptions,
+): Promise<SkuDiscoveryResult> {
+  try {
+    const sellerAccountId = options.sellerAccountId ?? null
+    const pending = await loadPendingCsvProducts(db, userId, sellerAccountId)
+    if (pending.length === 0) {
+      return { discovered: 0, skusQueried: 0, skusPending: 0, truncated: false }
+    }
+
+    // 期間は「一番古い出品CSVの日時 - 1日」から今まで。120日を超える場合は
+    // 直近120日に絞る(eBayの上限)。
+    const now = new Date()
+    const oldest = pending.reduce(
+      (min, row) => (row.exportedAt.getTime() < min ? row.exportedAt.getTime() : min),
+      pending[0].exportedAt.getTime(),
+    )
+    let from = new Date(oldest - SKU_DISCOVERY_MARGIN_MS)
+    if (now.getTime() - from.getTime() > SELLER_LIST_MAX_RANGE_MS) {
+      from = new Date(now.getTime() - SELLER_LIST_MAX_RANGE_MS)
+    }
+
+    const skus = pending.map((row) => skuForProductId(row.id))
+    const siteIds = options.sellerSiteIds && options.sellerSiteIds.length > 0 ? options.sellerSiteIds : ['US']
+    const budgetMs = options.skuDiscoveryTimeBudgetMs ?? DEFAULT_SKU_DISCOVERY_TIME_BUDGET_MS
+    const startedMs = Date.now()
+
+    let discovered = 0
+    let queried = 0
+    let truncated = false
+    for (const siteId of siteIds) {
+      const remaining = budgetMs - (Date.now() - startedMs)
+      if (remaining <= 1_000) { truncated = true; break }
+      const scan = await scanSellerListBySkus({ accessToken }, skus, { from, to: now }, {
+        timeBudgetMs: remaining,
+        signal: options.signal,
+        siteId,
+      })
+      queried = Math.max(queried, scan.skusQueried.length)
+      // 終了済み(eBayに弾かれた・取り下げた)の出品は在庫管理に入れない
+      const active = scan.items.filter((item) => !item.listingStatus || item.listingStatus === 'Active')
+      const stored = await storeInventoryListings(db, userId, active, options)
+      discovered += stored.matched
+      if (scan.truncated) { truncated = true; break }
+    }
+
+    return { discovered, skusQueried: queried, skusPending: pending.length, truncated }
+  } catch (error) {
+    if (options.signal?.aborted) throw error
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn('[inventory-sync] SKU discovery failed:', message)
+    return { discovered: 0, skusQueried: 0, skusPending: 0, truncated: true, error: message }
+  }
 }
 
 // 前回走査した時刻以降に出品開始された出品を全件確認し、Kakehashiの商品に
@@ -1269,6 +1416,11 @@ export async function syncKnownInventoryListingBatch(
   // 走査が数日分しか進まず、CSVで出品した29件が下書きのまま残った。
   // 各バッチで走査を続け、1回の同期で走査に使える時間を増やす。
   const discovery = await discoverNewListings(db, userId, accessToken, options)
+  // CSV出品した商品は、期間走査とは別にSKUで名指しして取り込む
+  // (他ツールの出品が多いセラーでも件数に左右されずに取り込めるため)
+  const skuDiscovery = batchIndex === 1
+    ? await discoverListingsBySku(db, userId, accessToken, options)
+    : null
 
   const knownIds = await collectKnownItemIds(db, userId, options)
   const totalBatches = Math.max(1, Math.ceil(knownIds.length / batchSize))
@@ -1381,6 +1533,11 @@ export async function syncKnownInventoryListingBatch(
     discoveryPagesFetched: discovery.pagesFetched,
     discoveryTotalPages: discovery.totalPages,
     discoveryError: discovery.error,
+    skuDiscovered: skuDiscovery?.discovered,
+    skuQueried: skuDiscovery?.skusQueried,
+    skuPending: skuDiscovery?.skusPending,
+    skuTruncated: skuDiscovery?.truncated,
+    skuError: skuDiscovery?.error,
     callLimited,
     bulkItems: bulk?.map.size,
     bulkComplete: bulk?.complete,
@@ -1403,6 +1560,8 @@ export async function syncKnownInventoryListings(
   options: InventorySyncOptions = {},
 ): Promise<KnownInventorySyncResult> {
   const discovery = await discoverNewListings(db, userId, accessToken, options)
+  // CSV出品した商品をSKUで名指しして取り込む(日次実行でも同じ扱いにする)
+  const skuDiscovery = await discoverListingsBySku(db, userId, accessToken, options)
   const knownIds = await collectKnownItemIds(db, userId, options)
 
   // まず GetMyeBaySelling でまとめて取得する(1回200件)。失敗したら従来どおり
@@ -1559,6 +1718,11 @@ export async function syncKnownInventoryListings(
     discoveryPagesFetched: discovery.pagesFetched,
     discoveryTotalPages: discovery.totalPages,
     discoveryError: discovery.error,
+    skuDiscovered: skuDiscovery?.discovered,
+    skuQueried: skuDiscovery?.skusQueried,
+    skuPending: skuDiscovery?.skusPending,
+    skuTruncated: skuDiscovery?.truncated,
+    skuError: skuDiscovery?.error,
     callLimited,
     bulkItems: bulk?.map.size,
     bulkComplete: bulk?.complete,

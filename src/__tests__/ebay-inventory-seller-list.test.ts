@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchSellerListPage, scanSellerListByStartTime } from '@/lib/ebay-inventory'
+import { fetchSellerListPage, scanSellerListByStartTime, scanSellerListBySkus } from '@/lib/ebay-inventory'
 
 // ユーザー要望・実データで確認した不具合: CSVでeBayに出品した11件が「新しい順
 // 400件」の走査に含まれず下書きのまま残った。出品開始日時で絞った
@@ -117,5 +117,86 @@ describe('GetSellerListの重さ対策', () => {
     expect(bodies[0]).toContain('<DetailLevel>ReturnAll</DetailLevel>')
     expect(bodies[0]).toContain('<OutputSelector>SKU</OutputSelector>')
     vi.unstubAllGlobals()
+  })
+})
+
+// ユーザー要望(2026-11-15): 「CSVのアップロードが面倒です。クリックで同期
+// できませんか？」CSV出品した809件が、他ツールの出品30万件に埋もれて期間走査
+// では取り込めなかった。GetSellerListのSKU指定なら件数に左右されずに拾える。
+describe('scanSellerListBySkus', () => {
+  const originalFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = originalFetch })
+
+  it('SKUArrayでCustomLabelを名指しして問い合わせる', async () => {
+    const bodies: string[] = []
+    globalThis.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''))
+      return new Response(sellerListXml([{ id: '111', sku: 'kakehashi_a' }], 1, 1), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const result = await scanSellerListBySkus(
+      { accessToken: 't' },
+      ['kakehashi_a', 'kakehashi_b'],
+      { from: new Date('2026-11-01T00:00:00.000Z'), to: new Date('2026-11-15T00:00:00.000Z') },
+      { timeBudgetMs: 30_000 },
+    )
+
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0]).toContain('<SKU>kakehashi_a</SKU>')
+    expect(bodies[0]).toContain('<SKU>kakehashi_b</SKU>')
+    expect(result.items.map(i => i.ebayItemId)).toEqual(['111'])
+    expect(result.skusQueried).toEqual(['kakehashi_a', 'kakehashi_b'])
+    expect(result.truncated).toBe(false)
+  })
+
+  it('SKUが多いときは分割して問い合わせる', async () => {
+    const bodies: string[] = []
+    globalThis.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''))
+      return new Response(sellerListXml([], 1, 1), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const skus = Array.from({ length: 5 }, (_, i) => `kakehashi_${i}`)
+    const result = await scanSellerListBySkus(
+      { accessToken: 't' },
+      skus,
+      { from: new Date('2026-11-01T00:00:00.000Z'), to: new Date('2026-11-15T00:00:00.000Z') },
+      { timeBudgetMs: 30_000, batchSize: 2 },
+    )
+
+    expect(bodies).toHaveLength(3)
+    expect(result.calls).toBe(3)
+    expect(result.skusQueried).toHaveLength(5)
+  })
+
+  it('XMLを壊す文字はエスケープする', async () => {
+    const bodies: string[] = []
+    globalThis.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''))
+      return new Response(sellerListXml([], 1, 1), { status: 200 })
+    }) as unknown as typeof fetch
+
+    await scanSellerListBySkus(
+      { accessToken: 't' },
+      ['a&b<c>'],
+      { from: new Date('2026-11-01T00:00:00.000Z'), to: new Date('2026-11-15T00:00:00.000Z') },
+      { timeBudgetMs: 30_000 },
+    )
+
+    expect(bodies[0]).toContain('<SKU>a&amp;b&lt;c&gt;</SKU>')
+  })
+
+  it('時間切れなら truncated=true で打ち切る(失敗させない)', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(sellerListXml([], 1, 1), { status: 200 })) as unknown as typeof fetch
+
+    const result = await scanSellerListBySkus(
+      { accessToken: 't' },
+      ['kakehashi_a', 'kakehashi_b'],
+      { from: new Date('2026-11-01T00:00:00.000Z'), to: new Date('2026-11-15T00:00:00.000Z') },
+      { timeBudgetMs: 0, batchSize: 1 },
+    )
+
+    expect(result.truncated).toBe(true)
+    expect(result.calls).toBe(0)
   })
 })
