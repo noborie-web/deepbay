@@ -529,19 +529,39 @@ describe('scrapeSearch status', () => {
     return JSON.parse(calls[0]).searchCondition
   }
 
-  it('statusがURLで指定されていない場合、販売中と売り切れの両方を取得する', async () => {
+  // 本番で確認した問題(2026-11-15): 以前は「除外詳細に売り切れ件数を出す」ため、
+  // URLの指定を無視して常に両方取得していた。売り切れが取得上限を食うため、
+  // 出品候補にできる件数が半分近くまで減っていた(389件中196件が売り切れ)。
+  // 検索URLの「販売状況」に従う。
+
+  it('statusがURLに無ければ販売中のみ取得する(メルカリの既定と同じ)', async () => {
     const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike')
-    expect(searchCondition.status).toEqual(['STATUS_ON_SALE', 'STATUS_SOLD_OUT'])
+    expect(searchCondition.status).toEqual(['STATUS_ON_SALE'])
   })
 
-  it('status=on_saleがURLで明示指定されていても、両方取得する(公式ツールに合わせて除外は後段のパイプラインで行う)', async () => {
+  it('status=on_sale なら販売中のみ取得する', async () => {
     const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=on_sale')
+    expect(searchCondition.status).toEqual(['STATUS_ON_SALE'])
+  })
+
+  it('status=sold_out なら売り切れのみ取得する', async () => {
+    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=sold_out')
+    expect(searchCondition.status).toEqual(['STATUS_SOLD_OUT'])
+  })
+
+  it('「すべて」を選んだときは両方取得する', async () => {
+    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=on_sale,sold_out')
     expect(searchCondition.status).toEqual(['STATUS_ON_SALE', 'STATUS_SOLD_OUT'])
   })
 
-  it('status=sold_outがURLで明示指定されていても、両方取得する', async () => {
-    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=sold_out')
+  it('status が複数回指定されていてもまとめる', async () => {
+    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=on_sale&status=sold_out')
     expect(searchCondition.status).toEqual(['STATUS_ON_SALE', 'STATUS_SOLD_OUT'])
+  })
+
+  it('知らない status は無視して販売中のみにする(全件取得に倒さない)', async () => {
+    const searchCondition = await captureSearchBody('https://jp.mercari.com/search?keyword=nike&status=unknown_value')
+    expect(searchCondition.status).toEqual(['STATUS_ON_SALE'])
   })
 })
 

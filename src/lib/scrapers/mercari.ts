@@ -87,6 +87,26 @@ function getMultiNumberParam(params: URLSearchParams, key: string): number[] {
     .filter(Number.isFinite)
 }
 
+// メルカリの検索URLの status と、検索APIのステータス値の対応。
+const MERCARI_STATUS_VALUES: Record<string, string> = {
+  on_sale: 'STATUS_ON_SALE',
+  sold_out: 'STATUS_SOLD_OUT',
+  trading: 'STATUS_TRADING',
+}
+
+/** 検索URLの「販売状況」。未指定はメルカリの既定どおり「販売中のみ」。 */
+function statusesFromUrl(params: URLSearchParams): string[] {
+  const requested = params
+    .getAll('status')
+    .flatMap((value) => value.split(','))
+    .map((value) => value.trim())
+    .filter((value) => value !== '')
+    .map((value) => MERCARI_STATUS_VALUES[value])
+    .filter((value): value is string => Boolean(value))
+  if (requested.length === 0) return ['STATUS_ON_SALE']
+  return Array.from(new Set(requested))
+}
+
 function decodeHtml(value: string): string {
   return value
     .replace(/&quot;/g, '"')
@@ -334,17 +354,21 @@ export class MercariScraper {
     const sortKey = srcParams.get('sort') ?? 'created_time'
     const { sort: sortValue, order: orderValue } = sortMap[sortKey] ?? { sort: 'SORT_CREATED_TIME', order: 'ORDER_DESC' }
 
-    // ユーザー要望: 既存ツール(公式)は「販売中+売り切れ」を両方取得した上で
-    // 売り切れ分を除外詳細に計上している。こちらは従来「販売中のみ」を
-    // 検索APIのリクエスト時点で絞っていたため、売り切れ商品がそもそも
-    // パイプラインに入らず「売り切れ除外」が常に0件になっていた。
-    // 実データで検証したところ、URLは「status=on_sale」(Mercariの検索
-    // 画面で「販売中」フィルタがオンの状態)を含んでいることが多く、
-    // この値の有無で切り替える実装では従来と同じ結果になってしまう
-    // ことが判明した。公式ツールはURLのstatus指定に関わらず常に両方の
-    // ステータスを取得し、後段のパイプラインで除外する設計のため、
-    // それに合わせてURLのstatusパラメータは無視し、常に両方取得する。
-    const statusValues = ['STATUS_ON_SALE', 'STATUS_SOLD_OUT']
+    // 検索URLの「販売状況」をそのまま使う。
+    //
+    // 本番で確認した問題(2026-11-15): 以前は「除外詳細に売り切れ件数を出す」
+    // ために、URLの指定を無視して常に販売中+売り切れを取得していた。しかし
+    // 売り切れ商品が取得上限を食うため、実際に出品候補にできる件数が大きく
+    // 減っていた。
+    //   希少 一眼レフカメラ  389件取得 → 売り切れ196件(50%)を捨てて実質193件
+    //   希少 邦楽            600件取得 → 売り切れ187件(31%)
+    // 表示上の件数のために抽出できる商品を半分にしていたので、URLの指定に
+    // 従う形に戻す。売り切れ件数を見たいときは、メルカリ側で「すべて」を
+    // 選んでから抽出すればよい。
+    //
+    // メルカリは status を指定しないときの既定が「販売中のみ」なので、
+    // 未指定も販売中として扱う(画面の表示と一致する)。
+    const statusValues = statusesFromUrl(srcParams)
 
     // searchCondition を構築
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
