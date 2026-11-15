@@ -142,6 +142,57 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     return { db, extractionUpdates, insertedProducts }
   }
 
+  // ユーザー要望(2026-11-15): カメラの抽出では Canon / Nikon を通したい。
+  // 危険単語はユーザーごとの一覧(4,164語)で全抽出に一律適用されるため、
+  // カメラでは389件中136件が除外されていた。この2語はVeROの対象ではない。
+  // 一覧を触らず、この抽出だけ除外しない単語を指定できるようにする。
+  describe('危険単語の例外', () => {
+    const products = [
+      scrapedProduct({ sourceItemId: 'item-1', title: 'Canon EOS 5D' }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'item-2', title: 'ジャンク品 レンズ' }),
+    ]
+
+    it('指定した単語はこの抽出だけ除外しない', async () => {
+      mocks.scrapeUrl.mockResolvedValue(products)
+      const { db, extractionUpdates } = makeDatabase({ dangerWords: ['canon', 'ジャンク'] })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db, {
+        dangerWordExceptions: 'Canon',
+      })
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      // Canon は通り、ジャンクだけ除外される
+      expect(summary.danger_word_excluded).toBe(1)
+      // 何を通したかを残す
+      expect(summary.danger_word_exceptions).toEqual(['canon'])
+    })
+
+    it('大文字小文字やカンマ区切り、空白のゆらぎを吸収する', async () => {
+      mocks.scrapeUrl.mockResolvedValue(products)
+      const { db, extractionUpdates } = makeDatabase({ dangerWords: ['canon', 'ジャンク'] })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db, {
+        dangerWordExceptions: ' CANON ,  , ジャンク , canon ',
+      })
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      expect(summary.danger_word_excluded).toBe(0)
+      // 重複は1つにまとめる
+      expect(summary.danger_word_exceptions).toEqual(['canon', 'ジャンク'])
+    })
+
+    it('指定が無ければ内訳に項目を増やさない(従来と同じ形のまま)', async () => {
+      mocks.scrapeUrl.mockResolvedValue(products)
+      const { db, extractionUpdates } = makeDatabase({ dangerWords: ['canon'] })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      expect(summary.danger_word_excluded).toBe(1)
+      expect(summary).not.toHaveProperty('danger_word_exceptions')
+    })
+  })
+
   it('危険単語で除外された件数を記録する', async () => {
     mocks.scrapeUrl.mockResolvedValue([
       scrapedProduct({ sourceItemId: 'item-1', title: 'ジャンク品 フィギュア' }),

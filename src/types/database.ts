@@ -88,6 +88,8 @@ export interface ExtractionExclusionSummary {
   no_image_excluded: number
   no_price_excluded: number
   danger_word_excluded: number
+  // この抽出だけ除外しなかった危険単語(ユーザー要望 2026-11-15)
+  danger_word_exceptions?: string[]
   vero_excluded: number
   individual_danger_seller_excluded: number
   spot_word_excluded: number

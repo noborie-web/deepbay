@@ -75,6 +75,24 @@ export interface RunScrapeOptions {
   progressRange?: { from: number; to: number }
   // これまでのチャンクの除外内訳。最後のチャンクでまとめて書き込む
   previousExclusionSummary?: Record<string, unknown>
+
+  // ユーザー要望(2026-11-15): カメラの抽出では Canon / Nikon を通したい。
+  // 危険単語はユーザーごとの一覧(4,164語)で全抽出に一律適用されるため、
+  // カメラでは389件中136件が除外されていた。この2語はVeROの対象ではない。
+  // 一覧そのものを触らず、この抽出だけ除外しない単語を指定できるようにする。
+  // 画面からの「Canon, Nikon」のような入力もそのまま受け取れるようにする
+  dangerWordExceptions?: string[] | string
+}
+
+/** 危険単語の例外。前後の空白を落とし、小文字で比較できる形にそろえる */
+export function normalizeDangerWordExceptions(value: unknown): string[] {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === 'string' ? value.split(/[,、\n]/) : []
+  const words = raw
+    .map((word) => String(word).trim().toLowerCase())
+    .filter((word) => word !== '')
+  return Array.from(new Set(words))
 }
 
 // 重複チェック・商品のinsert・完了記録のために残しておく時間。
@@ -278,7 +296,14 @@ export async function runScrape(
     const noPriceExcluded = noImageFilteredList.length - noPriceFilteredList.length
 
     // 危険単語フィルタ
-    const wordList: string[] = (dangerWords ?? []).map((w: { word: string }) => w.word.toLowerCase())
+    //
+    // ユーザー要望(2026-11-15): この抽出だけ除外しない単語を指定できる。
+    // 危険単語の一覧は全抽出で共有しているので、カメラのときだけ Canon /
+    // Nikon を通す、といった使い分けを一覧を触らずに行う。
+    const dangerWordExceptions = new Set(normalizeDangerWordExceptions(options.dangerWordExceptions))
+    const wordList: string[] = (dangerWords ?? [])
+      .map((w: { word: string }) => w.word.toLowerCase())
+      .filter((word: string) => !dangerWordExceptions.has(word))
     const filteredList = (!dangerWordEnabled || wordList.length === 0)
       ? noPriceFilteredList
       : noPriceFilteredList.filter((scraped: { title: string }) => {
@@ -796,6 +821,11 @@ export async function runScrape(
       no_image_excluded: noImageExcluded,
       no_price_excluded: noPriceExcluded,
       danger_word_excluded: dangerWordExcluded,
+      // 今回だけ除外しなかった単語(あとから「なぜ通ったのか」を追えるように)。
+      // 指定が無い回は項目ごと出さない(従来の内訳と同じ形のままにする)。
+      ...(dangerWordExceptions.size > 0
+        ? { danger_word_exceptions: Array.from(dangerWordExceptions) }
+        : {}),
       vero_excluded: veroExcluded,
       individual_danger_seller_excluded: individualDangerSellerExcluded,
       spot_word_excluded: spotWordExcluded,
