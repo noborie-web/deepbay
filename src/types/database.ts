@@ -90,6 +90,8 @@ export interface ExtractionExclusionSummary {
   danger_word_excluded: number
   // この抽出だけ除外しなかった危険単語(ユーザー要望 2026-11-15)
   danger_word_exceptions?: string[]
+  // どの危険単語で何件落ちたか(「word:件数」の形、多い順・上位20語)
+  danger_word_hits?: string[]
   vero_excluded: number
   individual_danger_seller_excluded: number
   spot_word_excluded: number

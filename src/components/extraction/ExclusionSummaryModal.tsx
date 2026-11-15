@@ -13,8 +13,8 @@ type NumericSummaryKey = Exclude<
   'ai_time_limited'
   | 'amazon_no_new_offer_asins' | 'amazon_not_fba_asins'
   | 'amazon_pricing_failed_asins' | 'amazon_time_skipped_asins'
-  // 危険単語の例外も配列なので、件数の一覧ではなく別枠で出す
-  | 'danger_word_exceptions'
+  // 危険単語の例外・内訳も配列なので、件数の一覧ではなく別枠で出す
+  | 'danger_word_exceptions' | 'danger_word_hits'
 >
 
 // 本番で確認(2026-10-13): ASIN5件で抽出したら2件しか取り込まれず、残り3件が
@@ -106,6 +106,31 @@ export default function ExclusionSummaryModal({ summary, onClose }: Props) {
             <div className="rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
               この抽出では次の危険単語を除外しませんでした:{' '}
               <span className="font-medium">{(summary.danger_word_exceptions ?? []).join(' / ')}</span>
+            </div>
+          )}
+          {/* ユーザー要望(2026-11-15): カメラの抽出で190件中132件が危険単語で
+              落ちたが、どの単語に当たったか分からなかった。一覧は4,164語あり、
+              誤登録(g / _ など1文字)と正しい除外が混ざっている。 */}
+          {(summary.danger_word_hits ?? []).length > 0 && (
+            <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <p className="font-medium">危険単語の内訳（多い順）</p>
+              <ul className="mt-1 space-y-0.5">
+                {(summary.danger_word_hits ?? []).map((hit) => {
+                  // 「word:件数」。単語自体にコロンが入ることがあるので末尾で切る
+                  const at = hit.lastIndexOf(':')
+                  const word = at >= 0 ? hit.slice(0, at) : hit
+                  const count = at >= 0 ? hit.slice(at + 1) : ''
+                  return (
+                    <li key={hit} className="flex items-center justify-between gap-2">
+                      <span className="font-mono break-all">{word}</span>
+                      <span>{count}件</span>
+                    </li>
+                  )
+                })}
+              </ul>
+              <p className="mt-1 text-amber-700">
+                意図しない語があれば、抽出時の「危険単語の例外」に入れるか、一覧から削除してください。
+              </p>
             </div>
           )}
           {ROWS.map(({ key, label }) => (
