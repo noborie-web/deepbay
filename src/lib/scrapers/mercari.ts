@@ -107,6 +107,25 @@ function statusesFromUrl(params: URLSearchParams): string[] {
   return Array.from(new Set(requested))
 }
 
+// メルカリの「絞り込み」のうち、カテゴリごとに変わる条件(出品形式・
+// 保証付き整備品など)は、UUIDをキーにしたURLパラメータで表される。
+//   ...&d664efe3-ae5a-4824-b729-e789bf93aba9=B38F1DC9...  (出品形式=通常出品)
+// 検索APIでは searchCondition.attributes に渡す。
+// ユーザー報告(2026-11-15): 「通常出品」で絞り込んだURLなのにオークションが
+// 混ざっていた。このパラメータを捨てていたため、絞り込みが効いていなかった。
+const MERCARI_ATTRIBUTE_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function attributesFromUrl(params: URLSearchParams): { id: string; values: string[] }[] {
+  const byId = new Map<string, string[]>()
+  for (const [key, value] of params.entries()) {
+    if (!MERCARI_ATTRIBUTE_KEY.test(key)) continue
+    const values = value.split(',').map((v) => v.trim()).filter((v) => v !== '')
+    if (values.length === 0) continue
+    byId.set(key, [...(byId.get(key) ?? []), ...values])
+  }
+  return Array.from(byId.entries()).map(([id, values]) => ({ id, values: Array.from(new Set(values)) }))
+}
+
 function decodeHtml(value: string): string {
   return value
     .replace(/&quot;/g, '"')
@@ -415,6 +434,10 @@ export class MercariScraper {
     const shippingPayerIds = getMultiNumberParam(srcParams, 'shipping_payer_id')
     if (shippingPayerIds.length > 0) searchCondition.shippingPayerId = shippingPayerIds
 
+    // 出品形式(通常出品/オークション)などの動的な絞り込み
+    const attributes = attributesFromUrl(srcParams)
+    if (attributes.length > 0) searchCondition.attributes = attributes
+
     return this.runSearchApi(searchCondition, limit, url, options)
   }
 
@@ -456,6 +479,9 @@ export class MercariScraper {
         // highestBid,initialPrice}、付けないと null)。メルカリWebの検索も
         // withAuction:true を送っている。
         withAuction: true,
+        // 出品形式などの動的な絞り込み(searchCondition.attributes)を
+        // 有効にする。メルカリWebの検索も同じ値を送っている。
+        useDynamicAttribute: true,
       }
 
       const res = await fetch(SEARCH_URL, {

@@ -5,6 +5,7 @@ import {
   _getDPoPContext,
   _getMultiNumberParam,
   _toProduct,
+  attributesFromUrl,
   MercariScraper,
 } from '../lib/scrapers/mercari'
 
@@ -938,6 +939,57 @@ describe('メルカリのオークション商品', () => {
       )
       expect(JSON.parse(bodies[0]).withAuction).toBe(true)
       expect(products[0].priceType).toBe('auction')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
+
+// ユーザー報告(2026-11-15): メルカリ側で「出品形式: 通常出品」に絞り込んだ
+// URLなのに、抽出結果にオークションが混ざっていた。出品形式のような
+// カテゴリごとに変わる絞り込みは、UUIDをキーにしたURLパラメータ
+// (?d664efe3-...=B38F1DC9...)で表され、検索APIでは
+// searchCondition.attributes に渡す。このパラメータを捨てていたため、
+// 絞り込みが一切効いていなかった。
+describe('メルカリの絞り込み(出品形式などの動的な条件)', () => {
+  const NORMAL_LISTING = 'd664efe3-ae5a-4824-b729-e789bf93aba9'
+  const NORMAL_VALUE = 'B38F1DC9286E0B80812D9B19DB14298C1FF1116CA8332D9EE9061026635C9088'
+
+  it('UUID形式のパラメータを attributes として取り出す', () => {
+    const params = new URLSearchParams(`keyword=test&${NORMAL_LISTING}=${NORMAL_VALUE}`)
+    expect(attributesFromUrl(params)).toEqual([{ id: NORMAL_LISTING, values: [NORMAL_VALUE] }])
+  })
+
+  it('カンマ区切りの複数値を分けて渡す', () => {
+    const params = new URLSearchParams(`${NORMAL_LISTING}=A,B`)
+    expect(attributesFromUrl(params)).toEqual([{ id: NORMAL_LISTING, values: ['A', 'B'] }])
+  })
+
+  it('UUID形式でない通常のパラメータは attributes にしない', () => {
+    const params = new URLSearchParams('keyword=test&price_min=5000&status=on_sale')
+    expect(attributesFromUrl(params)).toEqual([])
+  })
+
+  it('検索APIに attributes と useDynamicAttribute を渡す', async () => {
+    const originalFetch = globalThis.fetch
+    const bodies: string[] = []
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(input)
+      if (requestUrl.includes('entities:search')) {
+        bodies.push(String(init?.body ?? ''))
+        return new Response(JSON.stringify({ items: [{ id: 'm1', name: 'T', price: '100' }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ data: {} }), { status: 200 })
+    }
+    try {
+      await new MercariScraper().scrape(
+        `https://jp.mercari.com/search?keyword=test&${NORMAL_LISTING}=${NORMAL_VALUE}`,
+        { limit: 1, skipDetailEnrichment: true },
+      )
+      const body = JSON.parse(bodies[0])
+      expect(body.searchCondition.attributes).toEqual([{ id: NORMAL_LISTING, values: [NORMAL_VALUE] }])
+      expect(body.useDynamicAttribute).toBe(true)
     } finally {
       globalThis.fetch = originalFetch
     }
