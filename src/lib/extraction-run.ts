@@ -82,13 +82,22 @@ export interface RunScrapeOptions {
   // 一覧そのものを触らず、この抽出だけ除外しない単語を指定できるようにする。
   // 画面からの「Canon, Nikon」のような入力もそのまま受け取れるようにする
   dangerWordExceptions?: string[] | string
+
+  // ユーザー要望(2026-11-15): 例外を1語ずつ挙げるのが現実的でない抽出
+  // (カメラでは190件中132件がブランド名で落ちた)のために、この抽出だけ
+  // 危険単語の除外そのものを止める。一覧も一括編集設定も変更しない。
+  dangerWordExcludeDisabled?: boolean
 }
 
 /** 危険単語の例外。前後の空白を落とし、小文字で比較できる形にそろえる */
 export function normalizeDangerWordExceptions(value: unknown): string[] {
+  // 本番で確認した不具合(2026-11-15): 「canon nikon」とスペース区切りで
+  // 入力したところ、丸ごと1語として扱われ、どの危険単語にも一致せず
+  // 例外が効いていなかった。区切りは空白・カンマ・読点・改行のいずれでもよい
+  // ことにする(危険単語に空白を含む語は無いため、空白で切って困らない)。
   const raw = Array.isArray(value)
     ? value
-    : typeof value === 'string' ? value.split(/[,、\n]/) : []
+    : typeof value === 'string' ? value.split(/[\s,、]+/) : []
   const words = raw
     .map((word) => String(word).trim().toLowerCase())
     .filter((word) => word !== '')
@@ -232,7 +241,9 @@ export async function runScrape(
     // の挙動を変えないため)。
     const veroEnabled: boolean = bulkEditSetting?.vero_exclude_enabled ?? true
     const dangerSellerEnabled: boolean = bulkEditSetting?.danger_seller_exclude_enabled ?? true
-    const dangerWordEnabled: boolean = bulkEditSetting?.danger_word_exclude_enabled ?? true
+    // 「除外しない」を選んだ抽出では、一括編集設定が有効でも危険単語を使わない
+    const dangerWordEnabled: boolean =
+      (bulkEditSetting?.danger_word_exclude_enabled ?? true) && options.dangerWordExcludeDisabled !== true
 
     // HTMLテンプレートは抽出時ではなく出力時(CSV/API出品/説明文の差し替え)に
     // 適用する(listingDescription + renderDescriptionTemplate)。抽出時に適用
@@ -837,6 +848,9 @@ export async function runScrape(
       danger_word_excluded: dangerWordExcluded,
       // 今回だけ除外しなかった単語(あとから「なぜ通ったのか」を追えるように)。
       // 指定が無い回は項目ごと出さない(従来の内訳と同じ形のままにする)。
+      ...(options.dangerWordExcludeDisabled === true
+        ? { danger_word_exclude_disabled: true }
+        : {}),
       ...(dangerWordExceptions.size > 0
         ? { danger_word_exceptions: Array.from(dangerWordExceptions) }
         : {}),
