@@ -63,6 +63,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     bulkEditSetting?: Record<string, any> | null
     bulkDangerSellerUrls?: string[]
+    excludeAuction?: boolean
   } = {}) {
     const extractionUpdates: Array<Record<string, unknown>> = []
     const insertedProducts: Array<Record<string, unknown>> = []
@@ -96,6 +97,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
             updated_months_ago: options.updatedMonthsAgo ?? null,
             price_min: options.priceMin ?? null,
             price_max: options.priceMax ?? null,
+            exclude_auction: options.excludeAuction ?? true,
           },
           error: null,
         }
@@ -185,6 +187,48 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
 
       const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
       expect(summary).not.toHaveProperty('danger_word_hits')
+    })
+  })
+
+  // ユーザー要望(2026-11-15): オークション商品は即決で仕入れられず、入札で
+  // 値が上がるため、抽出の時点で落とす(2026-10-20に実損が出ている)。
+  describe('オークション除外', () => {
+    const products = [
+      scrapedProduct({ sourceItemId: 'fixed-1', title: '固定価格の商品' }),
+      scrapedProduct({ sourceUrl: 'https://example.com/item/2', sourceItemId: 'auction-1', title: 'オークションの商品', priceType: 'auction' }),
+    ]
+
+    it('既定でオークション商品を除外する', async () => {
+      mocks.scrapeUrl.mockResolvedValue(products)
+      const { db, extractionUpdates, insertedProducts } = makeDatabase({})
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      expect(summary.auction_excluded).toBe(1)
+      expect(insertedProducts.map((p) => p.source_item_id)).toEqual(['fixed-1'])
+    })
+
+    it('設定で無効にすればオークションも残す', async () => {
+      mocks.scrapeUrl.mockResolvedValue(products)
+      const { db, extractionUpdates, insertedProducts } = makeDatabase({ excludeAuction: false })
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      expect(summary.auction_excluded).toBe(0)
+      expect(insertedProducts.map((p) => p.source_item_id).sort()).toEqual(['auction-1', 'fixed-1'])
+    })
+
+    it('priceTypeが無い仕入先(判定できないサイト)は除外しない', async () => {
+      mocks.scrapeUrl.mockResolvedValue([scrapedProduct({ sourceItemId: 'unknown-1' })])
+      const { db, extractionUpdates, insertedProducts } = makeDatabase({})
+
+      await runScrape('user-1', 'extraction-1', 'https://example.com/search', null, db)
+
+      const summary = extractionUpdates.find((u) => u.status === 'completed')?.exclusion_summary as Record<string, unknown>
+      expect(summary.auction_excluded).toBe(0)
+      expect(insertedProducts).toHaveLength(1)
     })
   })
 
@@ -297,6 +341,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       sold_out_excluded: 0,
       no_image_excluded: 0,
       no_price_excluded: 0,
+      auction_excluded: 0,
       danger_word_excluded: 1,
       // どの単語で落ちたかを残す(ユーザー要望 2026-11-15)
       danger_word_hits: ['ジャンク:1'],
@@ -344,6 +389,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       sold_out_excluded: 1,
       no_image_excluded: 1,
       no_price_excluded: 1,
+      auction_excluded: 0,
       danger_word_excluded: 0,
       vero_excluded: 0,
       individual_danger_seller_excluded: 0,
@@ -399,6 +445,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       sold_out_excluded: 0,
       no_image_excluded: 0,
       no_price_excluded: 0,
+      auction_excluded: 0,
       danger_word_excluded: 0,
       vero_excluded: 1,
       individual_danger_seller_excluded: 0,
@@ -463,6 +510,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       sold_out_excluded: 0,
       no_image_excluded: 0,
       no_price_excluded: 0,
+      auction_excluded: 0,
       danger_word_excluded: 0,
       vero_excluded: 0,
       individual_danger_seller_excluded: 1,
@@ -683,6 +731,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       sold_out_excluded: 0,
       no_image_excluded: 0,
       no_price_excluded: 0,
+      auction_excluded: 0,
       danger_word_excluded: 0,
       vero_excluded: 0,
       individual_danger_seller_excluded: 0,
@@ -719,6 +768,7 @@ describe('runScrape: 除外詳細(exclusion_summary)の記録', () => {
       sold_out_excluded: 0,
       no_image_excluded: 0,
       no_price_excluded: 0,
+      auction_excluded: 0,
       danger_word_excluded: 0,
       vero_excluded: 0,
       individual_danger_seller_excluded: 0,

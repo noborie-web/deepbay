@@ -87,6 +87,8 @@ export interface ExtractionExclusionSummary {
   sold_out_excluded: number
   no_image_excluded: number
   no_price_excluded: number
+  // オークション除外(即決で仕入れられないため。ユーザー要望 2026-11-15)
+  auction_excluded?: number
   danger_word_excluded: number
   // この抽出では危険単語の除外自体を行わなかった(ユーザー要望 2026-11-15)
   danger_word_exclude_disabled?: boolean
