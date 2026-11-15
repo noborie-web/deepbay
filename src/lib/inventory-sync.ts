@@ -1030,31 +1030,66 @@ interface PendingCsvProduct {
   exportedAt: Date
 }
 
-/** 出品CSVに出したのに在庫管理へ入っていない商品(このセラーの分だけ) */
+/**
+ * 出品CSVに出したのに在庫管理へ入っていない商品。
+ *
+ * 本番で確認した不具合(2026-11-15): セラーを extractions!inner で絞っていた
+ * ため、抽出リストを削除した商品(extraction_id が null)が1件も対象にならず、
+ * 取り込みたかった809件が丸ごと漏れていた(未取り込み849件のうち809件が
+ * これに該当)。どのセラーで出品したか分からない商品は、どのセラーの同期でも
+ * 照会する。SKUが一致する出品を持たないセラーでは何も返らないだけなので、
+ * 取り違える心配はない。
+ */
 async function loadPendingCsvProducts(
   db: SupabaseClient,
   userId: string,
   sellerAccountId: string | null,
 ): Promise<PendingCsvProduct[]> {
-  // db-audit-ok: 下で .limit(SKU_DISCOVERY_MAX_PER_RUN) を付けて引く(組み立てが別の文)
-  let query = db
+  const toRows = (data: unknown[] | null): PendingCsvProduct[] =>
+    (data ?? [])
+      .map((row) => {
+        const record = row as { id: string; listing_csv_exported_at: string }
+        return { id: record.id, exportedAt: new Date(record.listing_csv_exported_at) }
+      })
+      .filter((row) => Number.isFinite(row.exportedAt.getTime()))
+
+  // 抽出リストが残っていない商品(セラー不明)。どのセラーでも照会する。
+  // db-audit-ok: .limit(SKU_DISCOVERY_MAX_PER_RUN) を付けて引く
+  const { data: orphans, error: orphanError } = await db
+    .from('products')
+    .select('id, listing_csv_exported_at')
+    .eq('user_id', userId)
+    .not('listing_csv_exported_at', 'is', null)
+    .is('ebay_item_id', null)
+    .is('listing_csv_unlisted_confirmed_at', null)
+    .is('extraction_id', null)
+    .order('listing_csv_exported_at', { ascending: false })
+    .limit(SKU_DISCOVERY_MAX_PER_RUN)
+  if (orphanError) throw new Error(orphanError.message)
+
+  // このセラーの抽出リストから出品した商品
+  // db-audit-ok: .limit(SKU_DISCOVERY_MAX_PER_RUN) を付けて引く
+  let ownedQuery = db
     .from('products')
     .select('id, listing_csv_exported_at, extractions!inner(seller_account_id)')
     .eq('user_id', userId)
     .not('listing_csv_exported_at', 'is', null)
     .is('ebay_item_id', null)
     .is('listing_csv_unlisted_confirmed_at', null)
-  if (sellerAccountId) query = query.eq('extractions.seller_account_id', sellerAccountId)
-  const { data, error } = await query
+  if (sellerAccountId) ownedQuery = ownedQuery.eq('extractions.seller_account_id', sellerAccountId)
+  const { data: owned, error: ownedError } = await ownedQuery
     .order('listing_csv_exported_at', { ascending: false })
     .limit(SKU_DISCOVERY_MAX_PER_RUN)
-  if (error) throw new Error(error.message)
-  return (data ?? [])
-    .map((row) => ({
-      id: row.id as string,
-      exportedAt: new Date(row.listing_csv_exported_at as string),
-    }))
-    .filter((row) => Number.isFinite(row.exportedAt.getTime()))
+  if (ownedError) throw new Error(ownedError.message)
+
+  // 新しい順に、重複を除いて上限まで
+  const merged = new Map<string, PendingCsvProduct>()
+  for (const row of [...toRows(owned), ...toRows(orphans)]) {
+    if (!merged.has(row.id)) merged.set(row.id, row)
+  }
+  return Array.from(merged.values())
+    .sort((a, b) => b.exportedAt.getTime() - a.exportedAt.getTime())
+    .slice(0, SKU_DISCOVERY_MAX_PER_RUN)
 }
 
 /** 商品IDから出品CSVのCustomLabel(SKU)を作る。listing-export と同じ形式。 */
