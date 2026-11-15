@@ -216,6 +216,13 @@ export async function POST(request: Request) {
       discovered: syncResult.discovered,
       discovery_truncated: syncResult.discoveryTruncated,
       discovery_error: syncResult.discoveryError ?? null,
+      // CSV出品のSKU照合(ユーザー要望 2026-11-15)。本番で確認した問題: 結果を
+      // 履歴に残していなかったため、動いたのかどうかも分からなかった。
+      sku_discovered: syncResult.skuDiscovered ?? null,
+      sku_queried: syncResult.skuQueried ?? null,
+      sku_pending: syncResult.skuPending ?? null,
+      sku_truncated: syncResult.skuTruncated ?? null,
+      sku_error: syncResult.skuError ?? null,
       call_limited: syncResult.callLimited ?? false,
       // 出品一覧(GetMyeBaySelling)の取得結果
       bulk_items: syncResult.bulkItems ?? null,
