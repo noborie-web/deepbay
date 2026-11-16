@@ -3,8 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { YahooFleaScraper, FLEA_DETAIL_PER_RUN, FLEA_RATE_LIMIT_WINDOW_MS } from '@/lib/scrapers/yahoo_flea'
 import { YahooAuctionScraper } from '@/lib/scrapers/yahoo_auction'
 import { MercariScraper } from '@/lib/scrapers/mercari'
-import { fetchShopProductDetail } from '@/lib/scrapers/mercari_shops'
-import { launchHeadlessBrowser } from '@/lib/scrapers/headless-browser'
+import { fetchShopProductDetails } from '@/lib/scrapers/mercari_shops'
 import { fetchWithRetry, mapThrottled, RateLimitedError } from '@/lib/scrapers/throttled-fetch'
 import { generateDescriptionsSafely, normalizeAiDescriptionMode, translateDescriptionsWithFailures } from '@/lib/translate'
 import { ScraperError, type ScrapedProduct } from '@/lib/scrapers/types'
@@ -48,25 +47,19 @@ const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 // さらに補完cronは「いちばん古い抽出を1つだけ」進めるので、この19件を含む抽出が
 // 毎回選ばれ、ほかの192件の補完まで止めていた。
 // Shopsのページは価格・説明文・画像がクライアントサイドレンダリングで、
-// HTMLには og:image の1枚しか載らない。ヘッドレスブラウザが要る。
-const MERCARI_SHOPS_URL = /\/shops\/product\/([a-zA-Z0-9]+)/
-// 実測(2026-10-25): 起動に約2秒、1件あたり約2.4秒。cronの実行時間上限(60秒)と
-// 時間予算(42秒)に収まる件数に抑える。残りは次の回に回る。
-const MERCARI_SHOPS_PER_RUN = 8
-// 1件あたりの上限。実測2.4秒なので、これに当たるのは開かないページだけ。
-const MERCARI_SHOPS_ITEM_MS = 10_000
-// 時間予算(42秒)のうちShopsに回す上限。残りは通常の取得に渡す。
+// HTMLには og:image の1枚しか載らない。
 //
-// 本番で確認(2026-10-25): 予算24秒だと1回に1件しか進まなかった。
-// ブラウザの起動が重く、打ち切りの条件から起動に15.6〜21.6秒かかっている。
-// (予算24秒・残り6秒未満で打ち切り・1件2.4秒から逆算。Vercelでは
-// @sparticuz/chromium の軽量バイナリを展開するため、ローカルの約2秒より遅い)
-// 起動は1回の実行につき1度きりの固定費なので、1件で終えるといちばん損をする。
-// 起動のぶんを払ったらまとめて進める。Shopsが尽きれば予算は通常の取得に戻る。
-const MERCARI_SHOPS_BUDGET_MS = 36_000
-// 次の1件に入るかどうかの判断に使う見積もり。ここに1件あたりの上限(10秒)を
-// 使うと実測2.4秒の処理がほとんど進まないため、実測に余裕を足した値にする。
-const MERCARI_SHOPS_ITEM_ESTIMATE_MS = 4_000
+// 本番で確認した不具合(2026-11-15): そのためヘッドレスブラウザで開いて
+// いたが、Vercel上ではほぼ必ず "browser.newPage: Target page, context or
+// browser has been closed" で落ちており、5回失敗して諦めた商品が67件
+// たまっていた(説明文が空のまま出品されたものを含む)。
+// Shopsの商品APIから取れるようになったのでブラウザは使わない。
+const MERCARI_SHOPS_URL = /\/shops\/product\/([a-zA-Z0-9]+)/
+// APIなので1件あたり0.数秒。1回の処理件数は通常のサイトと同じ上限にする。
+const MERCARI_SHOPS_PER_RUN = BATCH
+const MERCARI_SHOPS_ITEM_MS = 15_000
+// 時間予算(42秒)のうちShopsに回す上限。残りは通常の取得に渡す。
+const MERCARI_SHOPS_BUDGET_MS = 20_000
 
 interface PendingProduct {
   id: string
@@ -208,35 +201,28 @@ export async function runEnrichDetailsBatch(
   const shopsDeadline = startedAt + MERCARI_SHOPS_BUDGET_MS
   if (shopsTargets.length > 0) {
     const batch = shopsTargets.slice(0, MERCARI_SHOPS_PER_RUN)
-    let browser: Awaited<ReturnType<typeof launchHeadlessBrowser>> | undefined
-    try {
-      browser = await launchHeadlessBrowser()
-      for (const target of batch) {
-        if (shopsDeadline - Date.now() < MERCARI_SHOPS_ITEM_ESTIMATE_MS) break
-        const itemId = target.source_url.match(MERCARI_SHOPS_URL)?.[1]
-        if (!itemId) { failed += 1; failedIds.push({ id: target.id, error: 'Shopsの商品IDをURLから読み取れない' }); continue }
-        try {
-          const detail = await fetchShopProductDetail(browser, itemId, { userAgent: USER_AGENT, timeoutMs: MERCARI_SHOPS_ITEM_MS })
-          // 取れていないのに「補完済み」にしない(通常の経路と同じ扱い)
-          if (!detail || (!detail.description?.trim() && detail.images.length === 0)) {
-            console.error('[enrich-details] empty detail for', target.id, 'mercari_shops')
-            failed += 1
-            failedIds.push({ id: target.id, error: '説明文も画像も取れなかった(ページが開けていない可能性)' })
-            continue
-          }
-          enriched.push({ product: target, detail })
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          console.error('[enrich-details] failed for', target.id, message)
-          failed += 1
-          failedIds.push({ id: target.id, error: message })
-        }
-      }
-    } catch (err) {
-      // ブラウザを起動できない環境では、黙って「補完済み」にせず次回に回す
-      console.error('[enrich-details] headless browser unavailable:', err instanceof Error ? err.message : err)
-    } finally {
-      await browser?.close().catch(() => {})
+    const byItemId = new Map<string, PendingProduct>()
+    for (const target of batch) {
+      const itemId = target.source_url.match(MERCARI_SHOPS_URL)?.[1]
+      if (!itemId) { failed += 1; failedIds.push({ id: target.id, error: 'Shopsの商品IDをURLから読み取れない' }); continue }
+      byItemId.set(itemId, target)
+    }
+    const details = await fetchShopProductDetails([...byItemId.keys()], {
+      timeoutMs: MERCARI_SHOPS_ITEM_MS,
+      shouldStop: () => Date.now() > shopsDeadline,
+      onFailure: (itemId, error) => {
+        const target = byItemId.get(itemId)
+        if (!target) return
+        console.error('[enrich-details] failed for', target.id, error)
+        failed += 1
+        failedIds.push({ id: target.id, error })
+      },
+    })
+    for (const [itemId, target] of byItemId) {
+      const detail = details.get(itemId)
+      if (detail) enriched.push({ product: target, detail })
+      // 取得できなかったぶんは onFailure で記録済み。時間切れで未処理の
+      // ものは失敗にも成功にもせず、次回に回す。
     }
   }
 

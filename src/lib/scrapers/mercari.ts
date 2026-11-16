@@ -1,51 +1,15 @@
 import { ScraperError } from './types'
 import type { ScrapedProduct, ScraperOptions } from './types'
-import { launchHeadlessBrowser } from './headless-browser'
-import { fetchShopProductDetail } from './mercari_shops'
+import { fetchShopProductDetails } from './mercari_shops'
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-  'Accept': 'application/json, text/plain, */*',
-  'Accept-Language': 'ja-JP,ja;q=0.9',
-  'Origin': 'https://jp.mercari.com',
-  'Referer': 'https://jp.mercari.com/',
-  'X-Platform': 'web',
-}
+import {
+  MERCARI_API_HEADERS as HEADERS,
+  generateDPoP,
+  getDPoPContext,
+  type DPoPContext,
+} from './mercari-dpop'
 
-// ---- DPoP utility ----
-
-function base64url(data: Uint8Array): string {
-  let binary = ''
-  for (const byte of data) binary += String.fromCharCode(byte)
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
-}
-
-function base64urlStr(str: string): string {
-  return base64url(new TextEncoder().encode(str))
-}
-
-interface DPoPContext {
-  keyPair: CryptoKeyPair
-  publicJwk: JsonWebKey
-  uuid: string
-}
-
-let _dpopCtx: DPoPContext | null = null
-
-async function getDPoPContext(): Promise<DPoPContext> {
-  if (!_dpopCtx) {
-    const keyPair = await crypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      true,
-      ['sign'],
-    )
-    const full = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
-    const publicJwk: JsonWebKey = { crv: full.crv, kty: full.kty, x: full.x, y: full.y }
-    _dpopCtx = { keyPair, publicJwk, uuid: crypto.randomUUID() }
-  }
-  return _dpopCtx
-}
-
+// テスト用の再エクスポート(DPoPの実体は mercari-dpop.ts に移した)
 export async function _generateDPoP(htu: string, htm: string, ctx: DPoPContext): Promise<string> {
   return generateDPoP(htu, htm, ctx)
 }
@@ -57,24 +21,6 @@ export function _toProduct(item: any, url: string) { return toProduct(item, url)
 export function _getMultiNumberParam(params: URLSearchParams, key: string) { return getMultiNumberParam(params, key) }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function _extractImages(item: any) { return extractImages(item) }
-
-async function generateDPoP(htu: string, htm: string, ctx: DPoPContext): Promise<string> {
-  const header = { typ: 'dpop+jwt', alg: 'ES256', jwk: ctx.publicJwk }
-  const payload = {
-    iat: Math.floor(Date.now() / 1000),
-    jti: crypto.randomUUID().replace(/-/g, ''),
-    htu,
-    htm,
-    uuid: ctx.uuid,
-  }
-  const signingInput = `${base64urlStr(JSON.stringify(header))}.${base64urlStr(JSON.stringify(payload))}`
-  const sig = await crypto.subtle.sign(
-    { name: 'ECDSA', hash: { name: 'SHA-256' } },
-    ctx.keyPair.privateKey,
-    new TextEncoder().encode(signingInput),
-  )
-  return `${signingInput}.${base64url(new Uint8Array(sig))}`
-}
 
 // ----------------------
 
@@ -614,29 +560,29 @@ export class MercariScraper {
     const shopProducts = products.filter((p) => isShopItem(p.rawData))
     const normalProducts = products.filter((p) => !isShopItem(p.rawData))
 
+    // Shops商品の詳細はAPIから取る(以前は1件ごとにヘッドレスブラウザを
+    // 起動していたため非常に遅く、本番ではブラウザがほぼ必ず落ちていた)。
     const shopResults = new Map<string, ScrapedProduct>()
-    for (const product of shopProducts) {
-      if (!product.sourceItemId) continue
-      // Shops商品は1件ごとにヘッドレスブラウザを起動するため特に遅い。
-      // 時間切れが近ければ残りは検索結果の情報のまま使う。
-      if (options.shouldStop?.()) break
-      const browser = await launchHeadlessBrowser()
-      try {
-        const detail = await fetchShopProductDetail(browser, product.sourceItemId)
-        if (detail) {
-          shopResults.set(product.sourceItemId, {
-            ...product,
-            sourceUrl: detail.sourceUrl,
-            description: detail.description || product.description,
-            category: detail.category ?? product.category,
-            condition: detail.condition ?? product.condition,
-            images: detail.images.length > 0 ? detail.images : product.images,
-          })
-        }
-      } catch (err) {
-        console.error('[mercari shops enrich] failed for', product.sourceItemId, err)
-      } finally {
-        await browser.close().catch(() => {})
+    const shopIds = shopProducts
+      .map((p) => p.sourceItemId)
+      .filter((id): id is string => Boolean(id))
+    if (shopIds.length > 0) {
+      const details = await fetchShopProductDetails(shopIds, {
+        shouldStop: options.shouldStop,
+        onFailure: (itemId, error) => console.error('[mercari shops enrich] failed for', itemId, error),
+      })
+      for (const product of shopProducts) {
+        const detail = product.sourceItemId ? details.get(product.sourceItemId) : undefined
+        if (!detail || !product.sourceItemId) continue
+        shopResults.set(product.sourceItemId, {
+          ...product,
+          sourceUrl: detail.sourceUrl,
+          description: detail.description || product.description,
+          category: detail.category ?? product.category,
+          condition: detail.condition ?? product.condition,
+          images: detail.images.length > 0 ? detail.images : product.images,
+          priceType: detail.priceType ?? product.priceType,
+        })
       }
       options.onPage?.(shopResults.size, products.length)
     }
