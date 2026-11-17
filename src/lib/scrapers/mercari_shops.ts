@@ -3,6 +3,7 @@ import type { Browser } from 'playwright-core'
 import type { IScraper, ScrapedProduct, ScraperOptions } from './types'
 import { ScraperError } from './types'
 import { launchHeadlessBrowser } from './headless-browser'
+import { mercariApiFetch } from './mercari-dpop'
 
 const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const SEARCH_URL_PATTERN = /jp\.mercari\.com\/search\?.*\bitem_types=beyond\b/
@@ -12,14 +13,6 @@ const SEARCH_URL_PATTERN = /jp\.mercari\.com\/search\?.*\bitem_types=beyond\b/
 // なり、Vercelの実行時間上限(5分)を超えるおそれがあるため、要求された
 // limitとは無関係にこの絶対上限を設ける。
 const MAX_SEARCH_ITEMS = 150
-// 検索結果一覧は簡易情報(タイトル・価格・サムネイルのみ)しか持たず、
-// 商品説明・カテゴリー・状態は単品ページにアクセスしないと取得できない
-// (ユーザー報告: メルカリShopsの一括抽出でdescription/カテゴリーが
-// 空欄になる不具合)。単品ページの訪問は検索ページ以上にコストが高い
-// (1件ごとにPlaywrightのページ遷移+レンダリング待ちが必要)ため、
-// Vercelの実行時間上限を踏まえてエンリッチメント対象件数にも
-// 別途上限を設ける。
-const MAX_ENRICH_ITEMS = 40
 
 /**
  * メルカリShopsの商品ページは価格・状態・カテゴリがクライアントサイド
@@ -140,6 +133,174 @@ function parseShopProductHtml($: cheerio.CheerioAPI, url: string, siteKey: strin
     availability,
   }
 }
+
+// ---------------------------------------------------------------------------
+// Shops商品の詳細取得(API)
+//
+// 本番で確認した不具合(2026-11-15): Shops商品の詳細はヘッドレスブラウザで
+// しか取れないものとして実装していたが、Vercel上ではブラウザがほぼ必ず
+// "browser.newPage: Target page, context or browser has been closed" で
+// 落ちており、説明文が空のまま残った商品が76件たまっていた。
+//
+// 実データで確認(2026-11-15): Shopsの商品ページが読んでいるのは
+//   GET https://api.mercari.jp/v1/marketplaces/shops/products/{id}?view=FULL
+// で、通常のメルカリ検索と同じDPoP署名だけで200を返す。説明文・カテゴリ・
+// 商品の状態・大サイズ画像・在庫・評価数まで含まれるため、ブラウザは不要。
+// (商品ページのHTMLには説明文が無く、og:descriptionはSEO用の定型文なので
+//  単純なfetch+cheerioでは代用できない)
+// ---------------------------------------------------------------------------
+
+const SHOPS_PRODUCT_API = 'https://api.mercari.jp/v1/marketplaces/shops/products'
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export function _productFromShopsApi(json: any): ScrapedProduct {
+  const detail = json?.productDetail ?? {}
+  const itemId: string | null = typeof json?.name === 'string' ? json.name : null
+  const tags: string[] = Array.isArray(json?.productTags) ? json.productTags : []
+
+  // categories は「深い階層→ルート」の順で返る(実データで確認)。
+  const categories: any[] = Array.isArray(detail.categories) ? detail.categories : []
+  const categoryNames = categories
+    .map((c) => (typeof c?.displayName === 'string' ? c.displayName : ''))
+    .filter(Boolean)
+
+  const photos: string[] = Array.isArray(detail.photos)
+    ? detail.photos.filter((p: unknown): p is string => typeof p === 'string')
+    : []
+
+  const price = json?.price != null ? parseInt(String(json.price), 10) : NaN
+  const reviewCount = detail.shop?.shopStats?.reviewCount
+  const ratingCount = reviewCount != null ? parseInt(String(reviewCount), 10) : NaN
+
+  return {
+    sourceUrl: `https://jp.mercari.com/shops/product/${itemId ?? ''}`,
+    sourceSite: 'mercari_shops',
+    sourceItemId: itemId,
+    title: typeof json?.displayName === 'string' ? json.displayName : '',
+    price: Number.isFinite(price) ? price : null,
+    description: typeof detail.description === 'string' ? detail.description : '',
+    images: photos,
+    condition: typeof detail.condition?.displayName === 'string' ? detail.condition.displayName : null,
+    category: categoryNames[0] ?? null,
+    categoryPath: categoryNames.length > 0 ? [...categoryNames].reverse() : undefined,
+    // 通常のメルカリと同じく、オークション形式の商品は抽出時に除外する
+    // (2026-11-15に入れた除外を、Shops商品でも効かせる)
+    ...(detail.auction != null ? { priceType: 'auction' as const } : {}),
+    sellerRatingCount: Number.isFinite(ratingCount) ? ratingCount : null,
+    shippingDays: typeof detail.shippingDuration?.minDays === 'number' ? detail.shippingDuration.minDays : null,
+    sourceUpdatedAt: typeof json?.updateTime === 'string' ? json.updateTime : null,
+    availability: tags.includes('sold_out') || tags.includes('out_of_stock') ? 'sold_out' : 'available',
+    rawData: json ?? null,
+  }
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+/**
+ * Shops商品の詳細をAPIから取得する。ブラウザを使わないので速く、
+ * サーバーレス環境でも落ちない。
+ */
+export async function fetchShopProductDetailByApi(
+  itemId: string,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<ScrapedProduct> {
+  const { timeoutMs = 15000, signal } = options
+  const url = `${SHOPS_PRODUCT_API}/${encodeURIComponent(itemId)}?view=FULL&imageType=JPEG`
+  const timeout = AbortSignal.timeout(timeoutMs)
+  const res = await mercariApiFetch(url, {
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  })
+  if (!res.ok) {
+    throw new ScraperError(`Shops API error: ${res.status}`, 'mercari_shops', url, res.status)
+  }
+  const json = await res.json()
+  const product = _productFromShopsApi(json)
+  // 説明文も画像も無い応答は、仕様変更で中身を拾えていない可能性が高い。
+  // 黙って「空の成功」を返すと補完済みとして固定されてしまうため失敗にする。
+  if (!product.description.trim() && product.images.length === 0) {
+    throw new ScraperError('Shops APIの応答に説明文も画像も無い', 'mercari_shops', url)
+  }
+  return product
+}
+
+/**
+ * 複数のShops商品の詳細をまとめて取得する。
+ * APIで取れなかったぶんだけ、最後の手段としてヘッドレスブラウザで試す
+ * (ブラウザは1件ごとに起動し直さず、数件ごとに使い回す)。
+ */
+export async function fetchShopProductDetails(
+  itemIds: string[],
+  options: {
+    concurrency?: number
+    timeoutMs?: number
+    shouldStop?: () => boolean
+    browserFallback?: boolean
+    onFailure?: (itemId: string, error: string) => void
+  } = {},
+): Promise<Map<string, ScrapedProduct>> {
+  // ブラウザでの再試行は既定で使わない。Vercel上ではChromiumがほぼ必ず
+  // 落ちるうえ、起動だけで十数秒かかって他の処理の時間予算を食うため、
+  // すでにブラウザを使えている経路(Shops専用の検索抽出)からだけ有効にする。
+  const { concurrency = 4, timeoutMs = 15000, shouldStop, browserFallback = false, onFailure } = options
+  const results = new Map<string, ScrapedProduct>()
+  const failures: Array<{ itemId: string; error: string }> = []
+
+  const queue = [...new Set(itemIds)]
+  let next = 0
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, async () => {
+    while (next < queue.length) {
+      if (shouldStop?.()) return
+      const itemId = queue[next++]
+      try {
+        results.set(itemId, await fetchShopProductDetailByApi(itemId, { timeoutMs }))
+      } catch (err) {
+        failures.push({ itemId, error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+  }))
+
+  if (failures.length > 0 && browserFallback && !shouldStop?.()) {
+    // 1件ごとにブラウザを起動すると起動コスト(サーバーレスでは十数秒)が
+    // 支配的になるため使い回す。ただし同じブラウザを使い続けると数件で
+    // "disconnected" になる実績があるので、一定件数ごとに起動し直す。
+    let browser: Browser | undefined
+    let usedByBrowser = 0
+    try {
+      for (const failure of failures.slice(0, BROWSER_FALLBACK_MAX)) {
+        if (shouldStop?.()) break
+        if (!browser || usedByBrowser >= BROWSER_RELAUNCH_EVERY) {
+          await browser?.close().catch(() => {})
+          browser = await launchHeadlessBrowser()
+          usedByBrowser = 0
+        }
+        usedByBrowser += 1
+        try {
+          const detail = await fetchShopProductDetail(browser, failure.itemId, { timeoutMs })
+          if (detail && (detail.description.trim() || detail.images.length > 0)) {
+            results.set(failure.itemId, detail)
+            failure.error = ''
+          }
+        } catch (err) {
+          failure.error = err instanceof Error ? err.message : String(err)
+          // ブラウザごと落ちている可能性があるので次は起動し直す
+          usedByBrowser = BROWSER_RELAUNCH_EVERY
+        }
+      }
+    } catch (err) {
+      console.error('[mercari shops] browser fallback unavailable:', err instanceof Error ? err.message : err)
+    } finally {
+      await browser?.close().catch(() => {})
+    }
+  }
+
+  for (const failure of failures) {
+    if (failure.error) onFailure?.(failure.itemId, failure.error)
+  }
+  return results
+}
+
+// ブラウザでの再試行はAPIが使えないときの保険なので、件数は絞る
+const BROWSER_FALLBACK_MAX = 8
+const BROWSER_RELAUNCH_EVERY = 5
 
 // mercari.ts側(通常のメルカリ検索にShops商品が混在するケース)から
 // 単品ページの詳細(description/category/condition)を補完するために使う。
@@ -263,34 +424,27 @@ export class MercariShopsScraper implements IScraper {
     return this.enrichSearchResults(limited, { userAgent, timeoutMs })
   }
 
-  // 検索結果一覧はタイトル・価格・サムネイルのみのため、各商品ページに
-  // アクセスして商品説明・カテゴリー・状態・全画像を補完する。件数が
-  // 多いとPlaywrightのページ遷移コストでVercelの実行時間上限を超える
-  // おそれがあるため、補完対象はMAX_ENRICH_ITEMS件までに絞る
-  // (それ以降の商品はタイトル・価格のみの一覧情報のまま返す)。
+  // 検索結果一覧はタイトル・価格・サムネイルのみのため、商品ごとに
+  // 商品説明・カテゴリー・状態・全画像を補完する。
+  //
+  // 以前はここでも商品ページをヘッドレスブラウザで開いていたため非常に
+  // 重く、補完対象を先頭の数十件に絞っていた(それ以降の商品は説明文が
+  // 空のまま登録されていた)。APIから取れるようになったので全件補完する。
   private async enrichSearchResults(
     products: ScrapedProduct[],
     options: { userAgent: string; timeoutMs: number },
   ): Promise<ScrapedProduct[]> {
-    const targets = products.slice(0, MAX_ENRICH_ITEMS)
-    if (targets.length === 0) return products
+    const itemIds = products
+      .map((p) => p.sourceItemId)
+      .filter((id): id is string => Boolean(id))
+    if (itemIds.length === 0) return products
 
-    let browser: Browser | undefined
-    const detailByItemId = new Map<string, ScrapedProduct>()
-    try {
-      browser = await launchHeadlessBrowser()
-      for (const product of targets) {
-        if (!product.sourceItemId) continue
-        try {
-          const detail = await fetchShopProductDetail(browser, product.sourceItemId, options)
-          if (detail) detailByItemId.set(product.sourceItemId, detail)
-        } catch {
-          // 1件の失敗で全体を止めない。取得できた分だけ補完する。
-        }
-      }
-    } finally {
-      await browser?.close().catch(() => {})
-    }
+    // この経路は検索結果の取得にすでにブラウザを使えているので、
+    // APIで取れなかったぶんはブラウザで取り直す
+    const detailByItemId = await fetchShopProductDetails(itemIds, {
+      timeoutMs: options.timeoutMs,
+      browserFallback: true,
+    })
 
     return products.map((product) => {
       const detail = product.sourceItemId ? detailByItemId.get(product.sourceItemId) : undefined

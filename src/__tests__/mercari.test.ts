@@ -646,32 +646,37 @@ describe('toProduct() メルカリShops商品のsourceUrl', () => {
   })
 })
 
-describe('enrichImages() メルカリShops商品のフォールバック', () => {
-  it('items/getが失敗するメルカリShops商品はヘッドレスブラウザ経由の詳細取得で説明・カテゴリー・状態を補完する', async () => {
-    vi.resetModules()
-    vi.doMock('../lib/scrapers/headless-browser', () => ({
-      launchHeadlessBrowser: vi.fn(async () => ({ close: vi.fn(async () => {}) })),
-    }))
-    vi.doMock('../lib/scrapers/mercari_shops', () => ({
-      fetchShopProductDetail: vi.fn(async (_browser: unknown, itemId: string) => ({
-        sourceUrl: `https://jp.mercari.com/shops/product/${itemId}`,
-        sourceSite: 'mercari_shops',
-        sourceItemId: itemId,
-        title: 'Shops商品',
-        price: 3000,
-        description: 'Shops商品の説明文',
-        images: ['https://example.com/shop1.jpg'],
-        condition: '新品、未使用',
-        category: '邦楽',
-        sellerRatingCount: null,
-        shippingDays: null,
-        sourceUpdatedAt: null,
-        availability: 'available' as const,
-      })),
-    }))
+describe('enrichImages() メルカリShops商品の補完', () => {
+  // 本番で確認した不具合(2026-11-15): 検索結果に混ざるShops商品の詳細を
+  // ヘッドレスブラウザで1件ずつ取っていたが、Vercel上ではほぼ必ず
+  // "browser.newPage: Target page, context or browser has been closed" で
+  // 落ちており、説明文が空のまま登録された商品が76件たまっていた。
+  // Shopsの商品API(DPoP署名のみで引ける)から取る。
 
-    const origFetch = globalThis.fetch
-    globalThis.fetch = async (input: RequestInfo | URL) => {
+  function shopsApiResponse(itemId: string) {
+    return {
+      name: itemId,
+      displayName: 'Shops商品',
+      price: '3000',
+      productTags: [],
+      updateTime: '2026-11-10T00:00:00Z',
+      productDetail: {
+        description: `${itemId}の説明文`,
+        photos: ['https://assets.mercari-shops-static.com/-/large/plain/shop1.jpg@jpg'],
+        condition: { displayName: '新品、未使用' },
+        categories: [
+          { categoryId: '1', displayName: '邦楽' },
+          { categoryId: '2', displayName: 'CD' },
+        ],
+        shop: { name: 'shopA', shopStats: { reviewCount: '4903' } },
+        shippingDuration: { minDays: 2 },
+        auction: null,
+      },
+    }
+  }
+
+  function mockFetch(onShopsApi?: (itemId: string) => Response) {
+    return async (input: RequestInfo | URL) => {
       const urlStr = typeof input === 'string' ? input : input.toString()
       if (urlStr.includes('entities:search')) {
         return new Response(JSON.stringify({
@@ -679,154 +684,57 @@ describe('enrichImages() メルカリShops商品のフォールバック', () =>
           meta: {},
         }), { status: 200 })
       }
+      if (urlStr.includes('/marketplaces/shops/products/')) {
+        const itemId = urlStr.split('/products/')[1].split('?')[0]
+        return onShopsApi ? onShopsApi(itemId) : new Response(JSON.stringify(shopsApiResponse(itemId)), { status: 200 })
+      }
       // items/get(通常商品の単品詳細)はメルカリShops商品には400を返す実挙動を再現
       return new Response('', { status: 400 })
     }
+  }
+
+  it('Shops商品の説明・カテゴリー・状態・画像をShopsのAPIから補完する', async () => {
+    vi.resetModules()
+    const launchHeadlessBrowser = vi.fn()
+    vi.doMock('../lib/scrapers/headless-browser', () => ({ launchHeadlessBrowser }))
+
+    const origFetch = globalThis.fetch
+    globalThis.fetch = mockFetch() as typeof fetch
 
     try {
       const { MercariScraper } = await import('../lib/scrapers/mercari')
-      const scraper = new MercariScraper()
-      const results = await scraper.scrape('https://jp.mercari.com/search?keyword=test', { limit: 10 })
+      const results = await new MercariScraper().scrape('https://jp.mercari.com/search?keyword=test', { limit: 10 })
       expect(results).toHaveLength(1)
-      expect(results[0].description).toBe('Shops商品の説明文')
+      expect(results[0].description).toBe('shop1の説明文')
       expect(results[0].category).toBe('邦楽')
       expect(results[0].condition).toBe('新品、未使用')
-      expect(results[0].images).toEqual(['https://example.com/shop1.jpg'])
+      expect(results[0].images).toEqual(['https://assets.mercari-shops-static.com/-/large/plain/shop1.jpg@jpg'])
       expect(results[0].sourceUrl).toBe('https://jp.mercari.com/shops/product/shop1')
+      // ブラウザは起動しない(本番で必ず落ちていた経路)
+      expect(launchHeadlessBrowser).not.toHaveBeenCalled()
     } finally {
       globalThis.fetch = origFetch
       vi.doUnmock('../lib/scrapers/headless-browser')
-      vi.doUnmock('../lib/scrapers/mercari_shops')
       vi.resetModules()
     }
   })
 
-  it('メルカリShops商品ごとに新しいヘッドレスブラウザを起動する(実データで確認した"複数件処理後にブラウザがdisconnectedになる"不具合の回帰テスト)', async () => {
-    // 実際に本番で発生した不具合: ブラウザを使い回す実装(起動1回・
-    // 逐次newPage)にしても、メルカリShopsの単品ページは広告・
-    // トラッキングタグを大量に含む重いSPAで、2〜3件処理した時点で
-    // Chromiumプロセスのメモリ使用量がサーバーレス環境の上限を超えて
-    // crash/disconnectedになり、以降の全件が"browser has been closed"
-    // で失敗していた。ブラウザを使い回さず1件ごとに起動・終了する
-    // ことで、この蓄積を防ぐ。
+  it('Shops APIが失敗しても抽出は止めず、検索結果の情報のまま返す', async () => {
     vi.resetModules()
-    const launchHeadlessBrowser = vi.fn(async () => {
-      // 起動に時間がかかる状況を再現し、並列呼び出し同士が競合しうる
-      // タイミングを作る。
-      await new Promise((resolve) => setTimeout(resolve, 10))
-      return { close: vi.fn(async () => {}) }
-    })
-    vi.doMock('../lib/scrapers/headless-browser', () => ({ launchHeadlessBrowser }))
-    vi.doMock('../lib/scrapers/mercari_shops', () => ({
-      fetchShopProductDetail: vi.fn(async (_browser: unknown, itemId: string) => ({
-        sourceUrl: `https://jp.mercari.com/shops/product/${itemId}`,
-        sourceSite: 'mercari_shops',
-        sourceItemId: itemId,
-        title: 'Shops商品',
-        price: 3000,
-        description: `${itemId}の説明文`,
-        images: ['https://example.com/shop.jpg'],
-        condition: '新品、未使用',
-        category: '邦楽',
-        sellerRatingCount: null,
-        shippingDays: null,
-        sourceUpdatedAt: null,
-        availability: 'available' as const,
-      })),
-    }))
+    vi.doMock('../lib/scrapers/headless-browser', () => ({ launchHeadlessBrowser: vi.fn() }))
 
     const origFetch = globalThis.fetch
-    globalThis.fetch = async (input: RequestInfo | URL) => {
-      const urlStr = typeof input === 'string' ? input : input.toString()
-      if (urlStr.includes('entities:search')) {
-        return new Response(JSON.stringify({
-          items: Array.from({ length: 5 }, (_, i) => ({
-            id: `shop${i}`, name: `Shops商品${i}`, price: 3000, shop: { id: `shopSeller${i}` },
-          })),
-          meta: {},
-        }), { status: 200 })
-      }
-      return new Response('', { status: 400 })
-    }
+    globalThis.fetch = mockFetch(() => new Response('', { status: 500 })) as typeof fetch
 
     try {
       const { MercariScraper } = await import('../lib/scrapers/mercari')
-      const scraper = new MercariScraper()
-      const results = await scraper.scrape('https://jp.mercari.com/search?keyword=test', { limit: 10 })
-      expect(results).toHaveLength(5)
-      results.forEach((r, i) => expect(r.description).toBe(`shop${i}の説明文`))
-      // ブラウザの使い回しによるメモリ蓄積クラッシュを防ぐため、
-      // Shops商品5件に対してブラウザも5回(1件ごとに1回)起動される。
-      expect(launchHeadlessBrowser).toHaveBeenCalledTimes(5)
+      const results = await new MercariScraper().scrape('https://jp.mercari.com/search?keyword=test', { limit: 10 })
+      expect(results).toHaveLength(1)
+      expect(results[0].title).toBe('Shops商品')
+      expect(results[0].price).toBe(3000)
     } finally {
       globalThis.fetch = origFetch
       vi.doUnmock('../lib/scrapers/headless-browser')
-      vi.doUnmock('../lib/scrapers/mercari_shops')
-      vi.resetModules()
-    }
-  })
-
-  it('複数のメルカリShops商品を並列でなく1件ずつ順番に処理する(実データで確認した"browser has been closed"の回帰テスト)', async () => {
-    // 実際に本番で発生した不具合: ブラウザ起動自体は1回に修正されても、
-    // その1個のブラウザに対してShops商品の件数分が同時にnewPage()して
-    // 並列にページを読み込もうとすると、Chromiumプロセスがサーバーレス
-    // 環境のメモリ上限でクラッシュし、結局"browser has been closed"に
-    // なっていた。fetchShopProductDetailの呼び出し同士が重ならない
-    // (前の呼び出しが完了してから次が始まる)ことを検証する。
-    vi.resetModules()
-    let inFlight = 0
-    let maxInFlight = 0
-    vi.doMock('../lib/scrapers/headless-browser', () => ({
-      launchHeadlessBrowser: vi.fn(async () => ({ close: vi.fn(async () => {}) })),
-    }))
-    vi.doMock('../lib/scrapers/mercari_shops', () => ({
-      fetchShopProductDetail: vi.fn(async (_browser: unknown, itemId: string) => {
-        inFlight += 1
-        maxInFlight = Math.max(maxInFlight, inFlight)
-        await new Promise((resolve) => setTimeout(resolve, 5))
-        inFlight -= 1
-        return {
-          sourceUrl: `https://jp.mercari.com/shops/product/${itemId}`,
-          sourceSite: 'mercari_shops',
-          sourceItemId: itemId,
-          title: 'Shops商品',
-          price: 3000,
-          description: `${itemId}の説明文`,
-          images: ['https://example.com/shop.jpg'],
-          condition: '新品、未使用',
-          category: '邦楽',
-          sellerRatingCount: null,
-          shippingDays: null,
-          sourceUpdatedAt: null,
-          availability: 'available' as const,
-        }
-      }),
-    }))
-
-    const origFetch = globalThis.fetch
-    globalThis.fetch = async (input: RequestInfo | URL) => {
-      const urlStr = typeof input === 'string' ? input : input.toString()
-      if (urlStr.includes('entities:search')) {
-        return new Response(JSON.stringify({
-          items: Array.from({ length: 5 }, (_, i) => ({
-            id: `shop${i}`, name: `Shops商品${i}`, price: 3000, shop: { id: `shopSeller${i}` },
-          })),
-          meta: {},
-        }), { status: 200 })
-      }
-      return new Response('', { status: 400 })
-    }
-
-    try {
-      const { MercariScraper } = await import('../lib/scrapers/mercari')
-      const scraper = new MercariScraper()
-      const results = await scraper.scrape('https://jp.mercari.com/search?keyword=test', { limit: 10 })
-      expect(results).toHaveLength(5)
-      expect(maxInFlight).toBe(1)
-    } finally {
-      globalThis.fetch = origFetch
-      vi.doUnmock('../lib/scrapers/headless-browser')
-      vi.doUnmock('../lib/scrapers/mercari_shops')
       vi.resetModules()
     }
   })

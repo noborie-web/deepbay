@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   auctionParse: vi.fn(),
   fleaParse: vi.fn(),
   fetchWithRetry: vi.fn(),
-  fetchShopProductDetail: vi.fn(),
+  fetchShopProductDetails: vi.fn(),
   launchHeadlessBrowser: vi.fn(),
   browserClose: vi.fn(),
   callOrder: [] as string[],
@@ -32,7 +32,7 @@ vi.mock('@/lib/scrapers/yahoo_flea', () => ({
   FLEA_RATE_LIMIT_WINDOW_MS: 1000,
 }))
 vi.mock('@/lib/scrapers/mercari_shops', () => ({
-  fetchShopProductDetail: mocks.fetchShopProductDetail,
+  fetchShopProductDetails: mocks.fetchShopProductDetails,
 }))
 vi.mock('@/lib/scrapers/headless-browser', () => ({
   launchHeadlessBrowser: mocks.launchHeadlessBrowser,
@@ -84,7 +84,7 @@ describe('補完のサイト分岐', () => {
     mocks.fleaParse.mockReset().mockReturnValue(detail())
     mocks.fetchWithRetry.mockReset().mockResolvedValue('<html></html>')
     mocks.callOrder.length = 0
-    mocks.fetchShopProductDetail.mockReset()
+    mocks.fetchShopProductDetails.mockReset().mockResolvedValue(new Map())
     mocks.browserClose.mockReset().mockResolvedValue(undefined)
     mocks.launchHeadlessBrowser.mockReset().mockResolvedValue({ close: mocks.browserClose })
     mocks.rows = [{
@@ -142,45 +142,66 @@ describe('補完のサイト分岐', () => {
     })
 
     it('Shopsの商品はShops専用の取得経路を使う(通常のメルカリに回さない)', async () => {
-      mocks.fetchShopProductDetail.mockResolvedValue(detail({
-        description: 'Shopsの商品説明', images: ['s_1.jpg'], condition: '中古',
-      }))
+      mocks.fetchShopProductDetails.mockResolvedValue(new Map([
+        ['8f2R5vq5zTYKDvicmALP7P', detail({ description: 'Shopsの商品説明', images: ['s_1.jpg'], condition: '中古' })],
+      ]))
 
       const result = await runEnrichDetailsBatch(makeDb(), { id: 'user-1' }, 'extraction-1')
 
-      expect(mocks.fetchShopProductDetail).toHaveBeenCalledTimes(1)
-      expect(mocks.fetchShopProductDetail.mock.calls[0][1]).toBe('8f2R5vq5zTYKDvicmALP7P')
+      expect(mocks.fetchShopProductDetails).toHaveBeenCalledTimes(1)
+      expect(mocks.fetchShopProductDetails.mock.calls[0][0]).toEqual(['8f2R5vq5zTYKDvicmALP7P'])
       // 通常のメルカリの経路に回すと例外になる
       expect(mocks.mercariScrape).not.toHaveBeenCalled()
       expect(result.processed).toBe(1)
       expect(mocks.updates.find(u => 'original_description' in u)?.original_description).toBe('Shopsの商品説明')
     })
 
-    it('ブラウザを使い回す(1件ごとに起動しない)', async () => {
+    it('この回のぶんをまとめて1回で取得する(1件ずつ取りに行かない)', async () => {
       mocks.rows = [1, 2, 3].map(n => ({
         id: `p${n}`, source_url: `https://jp.mercari.com/shops/product/shop${n}`,
         source_site: 'mercari',
         original_description: null, ebay_description: null, original_images: [],
         detail_attempts: 0, detail_retry_after: null,
       }))
-      mocks.fetchShopProductDetail.mockResolvedValue(detail({ description: 'あり', images: ['s_1.jpg'] }))
+      mocks.fetchShopProductDetails.mockResolvedValue(new Map(
+        [1, 2, 3].map(n => [`shop${n}`, detail({ description: 'あり', images: ['s_1.jpg'] })]),
+      ))
+
+      const result = await runEnrichDetailsBatch(makeDb(), { id: 'user-1' }, 'extraction-1')
+
+      expect(mocks.fetchShopProductDetails).toHaveBeenCalledTimes(1)
+      expect(mocks.fetchShopProductDetails.mock.calls[0][0]).toEqual(['shop1', 'shop2', 'shop3'])
+      expect(result.processed).toBe(3)
+    })
+
+    it('ブラウザは使わない(本番でChromiumが必ず落ちていたため)', async () => {
+      // 本番で確認した不具合(2026-11-15): Shopsの補完をヘッドレスブラウザで
+      // 行っていたが、Vercel上ではほぼ必ず "browser.newPage: Target page,
+      // context or browser has been closed" で落ち、5回失敗して諦めた商品が
+      // 67件たまっていた。APIから取るようになったのでブラウザは起動しない。
+      mocks.fetchShopProductDetails.mockResolvedValue(new Map([
+        ['8f2R5vq5zTYKDvicmALP7P', detail({ description: 'Shopsの商品説明', images: ['s_1.jpg'] })],
+      ]))
 
       await runEnrichDetailsBatch(makeDb(), { id: 'user-1' }, 'extraction-1')
 
-      expect(mocks.launchHeadlessBrowser).toHaveBeenCalledTimes(1)
-      expect(mocks.fetchShopProductDetail).toHaveBeenCalledTimes(3)
-      expect(mocks.browserClose).toHaveBeenCalledTimes(1)
+      expect(mocks.launchHeadlessBrowser).not.toHaveBeenCalled()
+      // 既定ではブラウザでの再試行もしない
+      expect(mocks.fetchShopProductDetails.mock.calls[0][1]?.browserFallback).toBeUndefined()
     })
 
-    it('ブラウザを起動できないときは「補完済み」にせず次回に回す', async () => {
-      mocks.launchHeadlessBrowser.mockRejectedValue(new Error('chromium not found'))
+    it('取得できなかった商品は「補完済み」にせず再試行に回す', async () => {
+      mocks.fetchShopProductDetails.mockImplementation(async (ids: string[], options: { onFailure?: (id: string, error: string) => void }) => {
+        for (const id of ids) options.onFailure?.(id, 'Shops API error: 500')
+        return new Map()
+      })
 
       const result = await runEnrichDetailsBatch(makeDb(), { id: 'user-1' }, 'extraction-1')
 
       expect(result.processed).toBe(0)
-      // 失敗回数も増やさない(環境の問題で5回使い切らせない)
+      expect(result.failed).toBe(1)
       expect(mocks.updates.some(u => 'detail_enriched_at' in u)).toBe(false)
-      expect(mocks.updates.some(u => 'detail_attempts' in u)).toBe(false)
+      expect(mocks.updates.find(u => 'detail_retry_after' in u)?.detail_error).toBe('Shops API error: 500')
     })
 
     it('通常のメルカリの取得より先にShopsを処理する', async () => {
@@ -199,9 +220,9 @@ describe('補完のサイト分岐', () => {
           detail_attempts: 0, detail_retry_after: null,
         },
       ]
-      mocks.fetchShopProductDetail.mockImplementation(async () => {
+      mocks.fetchShopProductDetails.mockImplementation(async () => {
         mocks.callOrder.push('shops')
-        return detail({ description: 'Shopsの説明', images: ['s_1.jpg'] })
+        return new Map([['shop1', detail({ description: 'Shopsの説明', images: ['s_1.jpg'] })]])
       })
       mocks.mercariScrape.mockImplementation(async () => {
         mocks.callOrder.push('item')
