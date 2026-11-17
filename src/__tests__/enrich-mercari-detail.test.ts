@@ -204,6 +204,20 @@ describe('補完のサイト分岐', () => {
       expect(mocks.updates.find(u => 'detail_retry_after' in u)?.detail_error).toBe('Shops API error: 500')
     })
 
+    it('出品が消えている(404)商品は再試行せず補完待ちから外す', async () => {
+      mocks.fetchShopProductDetails.mockImplementation(async (ids: string[], options: { onFailure?: (id: string, error: string, gone: boolean) => void }) => {
+        for (const id of ids) options.onFailure?.(id, 'Shops API error: 404', true)
+        return new Map()
+      })
+
+      const result = await runEnrichDetailsBatch(makeDb(), { id: 'user-1' }, 'extraction-1')
+
+      expect(result.failed).toBe(1)
+      // 再試行の予約はせず、補完待ちから外す
+      expect(mocks.updates.some(u => 'detail_retry_after' in u && u.detail_retry_after)).toBe(false)
+      expect(mocks.updates.some(u => 'detail_enriched_at' in u)).toBe(true)
+    })
+
     it('通常のメルカリの取得より先にShopsを処理する', async () => {
       // 本番で確認した不具合(2026-10-25): Shopsの処理を通常のサイト取得の「あと」に
       // 置いていたため、一度も動かなかった。通常のメルカリの取得だけで時間予算

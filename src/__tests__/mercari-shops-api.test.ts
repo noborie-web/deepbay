@@ -86,6 +86,23 @@ describe('fetchShopProductDetails', () => {
     expect(failures).toEqual(['x'])
   })
 
+  it('出品が消えている(404)ことを呼び出し側に伝える', async () => {
+    // 本番で確認(2026-11-17): 11/15に抽出した67件のうち15件は、その後
+    // 出品ごと消えていた(APIも商品ページも404)。再試行しても無駄なので
+    // 補完待ちから外せるように gone を渡す。
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ code: 5, message: 'product not found' }), { status: 404 })) as typeof fetch
+    const seen: Array<{ id: string; gone: boolean }> = []
+    await fetchShopProductDetails(['gone1'], { onFailure: (id, _error, gone) => seen.push({ id, gone }) })
+    expect(seen).toEqual([{ id: 'gone1', gone: true }])
+  })
+
+  it('500などの一時的な失敗は gone にしない(再試行に回す)', async () => {
+    globalThis.fetch = vi.fn(async () => new Response('', { status: 500 })) as typeof fetch
+    const seen: boolean[] = []
+    await fetchShopProductDetails(['x'], { onFailure: (_id, _error, gone) => seen.push(gone) })
+    expect(seen).toEqual([false])
+  })
+
   it('既定ではブラウザでの再試行をしない(本番でChromiumが必ず落ちるため)', async () => {
     globalThis.fetch = vi.fn(async () => new Response('', { status: 500 })) as typeof fetch
     const map = await fetchShopProductDetails(['a', 'b'])
