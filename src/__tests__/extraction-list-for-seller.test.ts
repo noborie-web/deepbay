@@ -23,6 +23,12 @@ vi.mock('@/lib/inventory-pricing', () => ({
 }))
 
 import { POST } from '@/app/api/extractions/[id]/duplicate/route'
+import { convertListingCsv } from '@/lib/listing-csv-convert'
+
+// 本番で確認した不具合(2026-11-18): 仕上げたCSVをこのAPIに送っていたが、
+// 商品説明のHTMLが入るCSVは数MBになり(4.8MBの実例あり)、Vercelの本文上限
+// 4.5MBで弾かれて「Unexpected token 'R'」しか出なかった。CSVはやり取りせず、
+// 差し替えの対応表だけを返す。
 
 const SOURCE = {
   id: 'ext-1', user_id: 'user-1', source_url: 'https://jp.mercari.com/search?keyword=n64',
@@ -100,9 +106,16 @@ function request(body: unknown) {
 }
 
 const params = Promise.resolve({ id: 'ext-1' })
-const BASE = {
-  sellerAccountId: 'seller-akebono', site: 'UK',
-  paymentProfile: 'UK Payments', returnProfile: 'UK Returns', shippingProfile: 'UK Shipping',
+const BASE = { sellerAccountId: 'seller-akebono', site: 'UK' }
+const POLICIES = { payment: 'UK Payments', return: 'UK Returns', shipping: 'UK Shipping' }
+
+/** 画面と同じ手順で、返ってきた対応表を使ってCSVを変換する */
+function convertWith(json: Record<string, unknown>, csv = CSV) {
+  const rows = json.replacements as Array<{ from: string; customLabel: string; startPrice: number }>
+  return convertListingCsv(csv, {
+    siteId: String(json.site_id), currency: String(json.currency), policies: POLICIES,
+    replacements: new Map(rows.map(row => [row.from, { customLabel: row.customLabel, startPrice: row.startPrice }])),
+  })
 }
 
 beforeEach(() => {
@@ -111,15 +124,17 @@ beforeEach(() => {
 })
 
 describe('別セラーへ出品用に変換する', () => {
-  it('商品を複製し、仕上げたCSVを変換して返す', async () => {
+  it('商品を複製し、CSVの差し替えに使う対応表を返す', async () => {
     const { db, calls } = makeDb()
     mocks.createServiceClient.mockReturnValue(db)
 
-    const res = await POST(request({ ...BASE, csv: CSV }), { params })
+    const res = await POST(request(BASE), { params })
     const json = await res.json() as Record<string, unknown>
 
     expect(res.status).toBe(200)
-    expect(json).toMatchObject({ ok: true, converted: 1, created: 1, reused: 0, currency: 'GBP' })
+    expect(json).toMatchObject({ ok: true, created: 1, reused: 0, currency: 'GBP', site_id: 'UK' })
+    // CSVはやり取りしない(本文の上限に掛からないようにするため)
+    expect(json.csv).toBeUndefined()
 
     // 出品の結果は引き継がず、新しいIDを採番させる
     const inserted = (calls.find(c => c.table === 'products' && c.op === 'insert')?.payload as Array<Record<string, unknown>>)[0]
@@ -128,7 +143,7 @@ describe('別セラーへ出品用に変換する', () => {
     expect(inserted.listing_status).toBe('draft')
     expect(inserted.original_title).toBe('N64')
 
-    const csv = String(json.csv)
+    const csv = convertWith(json).csv
     // 差し替える列
     expect(csv).toContain('"kakehashi_new_0"')
     expect(csv).toContain('"GBP"')
@@ -149,16 +164,16 @@ describe('別セラーへ出品用に変換する', () => {
     })
     mocks.createServiceClient.mockReturnValue(db)
 
-    const res = await POST(request({ ...BASE, csv: CSV }), { params })
+    const res = await POST(request(BASE), { params })
     const json = await res.json() as Record<string, unknown>
 
-    expect(json).toMatchObject({ ok: true, converted: 1, created: 0, reused: 1 })
+    expect(json).toMatchObject({ ok: true, created: 0, reused: 1 })
     // 新しい抽出も商品も作らない
     expect(calls.some(c => c.op === 'insert')).toBe(false)
-    expect(String(json.csv)).toContain('"kakehashi_already_1"')
+    expect(convertWith(json).csv).toContain('"kakehashi_already_1"')
   })
 
-  it('CSVを渡さなければ複製だけ行う', async () => {
+  it('サイトを渡さなければ複製だけ行う', async () => {
     const { db } = makeDb()
     mocks.createServiceClient.mockReturnValue(db)
 
@@ -167,15 +182,7 @@ describe('別セラーへ出品用に変換する', () => {
 
     expect(res.status).toBe(200)
     expect(json).toMatchObject({ ok: true, created: 1 })
-    expect(json.csv).toBeUndefined()
-  })
-
-  it('CSVを渡すのにポリシーが無ければ断る', async () => {
-    const { db } = makeDb()
-    mocks.createServiceClient.mockReturnValue(db)
-
-    const res = await POST(request({ sellerAccountId: 'seller-akebono', csv: CSV }), { params })
-    expect(res.status).toBe(400)
+    expect(json.replacements).toBeUndefined()
   })
 
   it('抽出と同じ出品セラーには出せない', async () => {
@@ -191,7 +198,7 @@ describe('別セラーへ出品用に変換する', () => {
     const { db, calls } = makeDb({ insertError: { message: 'duplicate key' } })
     mocks.createServiceClient.mockReturnValue(db)
 
-    const res = await POST(request({ ...BASE, csv: CSV }), { params })
+    const res = await POST(request(BASE), { params })
 
     expect(res.status).toBe(500)
     expect(calls.filter(c => c.op === 'delete').map(c => c.table)).toEqual(['products', 'extractions'])
