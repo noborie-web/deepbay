@@ -6,8 +6,6 @@ import { EBAY_SITES, normalizeSiteKeys } from '@/lib/ebay-sites'
 import { fetchJpyRate } from '@/lib/exchange-rate'
 import { adjustedJpyRate, loadPricingModel, sitePriceAdjustment } from '@/lib/inventory-pricing'
 import { listingPriceForSite, productCustomLabel } from '@/lib/listing-export'
-import { convertListingCsv, parseCsvRows } from '@/lib/listing-csv-convert'
-import { extractProductIdFromCustomLabel } from '@/lib/inventory'
 
 // ユーザーから実際の工程を教わった(2026-11-01)。
 //
@@ -24,13 +22,21 @@ import { extractProductIdFromCustomLabel } from '@/lib/inventory'
 //   1. 複製先セラーの商品を用意する(すでにあるものは作らない)
 //   2. 仕上げたCSVを受け取り、アカウントで変わる列だけ差し替えて返す
 //
-// CSVを渡さなければ 1 だけを行う(複製だけしたいとき)。
+// 本番で確認した不具合(2026-11-18): 仕上げたCSVをこのAPIに送って変換させて
+// いたが、商品説明のHTMLを含むCSVは数MBになる(USED-1118.csv は 4.8MB)。
+// Vercelはリクエスト本文を4.5MBで打ち切るので、画面には本文の
+// "Request Entity Too Large" をJSONとして読もうとした
+// 「Unexpected token 'R'」だけが出ていた。
+//
+// そこでCSVはやり取りしない。このAPIは「元のCustomLabel → 差し替え後の
+// CustomLabelと価格」の対応表だけを返し、CSVの読み書きはブラウザで行う。
+// 対応表は1件あたり100バイト程度なので、CSVが何MBあっても通る。
+//
+// site を渡さなければ 1 だけを行う(複製だけしたいとき)。
 export const maxDuration = 60
 
 // 1回のinsertに渡す件数。ペイロードが大きくなりすぎないようにする。
 const CHUNK_SIZE = 100
-// 完成CSVは商品説明にHTMLが入るので大きい。135件で約1.9MB。
-const MAX_CSV_BYTES = 30 * 1024 * 1024
 
 // 複製時に引き継がない列。出品の結果と、その抽出に固有の記録。
 // (ここに挙げていない列はそのまま引き継ぐ。商品の中身は同じものを出すため)
@@ -93,28 +99,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const body = await req.json().catch(() => ({})) as {
     sellerAccountId?: string
     name?: string
-    csv?: string
     site?: string
-    paymentProfile?: string
-    returnProfile?: string
-    shippingProfile?: string
   }
   const sellerAccountId = body.sellerAccountId?.trim()
   if (!sellerAccountId) {
     return NextResponse.json({ error: '出品先のセラーを選択してください' }, { status: 400 })
   }
 
-  const csv = body.csv ?? ''
-  const wantsCsv = csv.trim().length > 0
-  if (wantsCsv && csv.length > MAX_CSV_BYTES) {
-    return NextResponse.json({ error: 'CSVが大きすぎます' }, { status: 413 })
-  }
-  const payment = body.paymentProfile?.trim() ?? ''
-  const returnProfile = body.returnProfile?.trim() ?? ''
-  const shipping = body.shippingProfile?.trim() ?? ''
-  if (wantsCsv && (!payment || !returnProfile || !shipping)) {
-    return NextResponse.json({ error: '配送・支払・返品ポリシーをすべて入力してください' }, { status: 400 })
-  }
+  // サイトを渡されたときだけ、CSVの差し替えに使う対応表を作る
+  const wantsReplacements = Boolean(body.site?.trim())
   const siteKey = normalizeSiteKeys(body.site)[0]
   const site = EBAY_SITES[siteKey]
 
@@ -219,7 +212,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   }
 
-  if (!wantsCsv) {
+  if (!wantsReplacements) {
     return NextResponse.json({
       ok: true,
       extraction_id: createdExtractionId,
@@ -252,50 +245,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     priceAdjustment: sitePriceAdjustment(pricingModel, site.siteId),
   }
 
-  // CSVのCustomLabel(元の商品)から、複製先の商品へ対応付ける。
-  // 商品説明のHTMLにも kakehashi_ が現れうるので、行の検索ではなく列で読む。
-  const sourceUrlById = new Map(sourceProducts.map(p => [String(p.id), String(p.source_url)]))
-  const rows = parseCsvRows(csv)
-  const labelIndex = (rows[0] ?? []).map(header => header.trim()).indexOf('CustomLabel')
-  if (labelIndex < 0) {
-    return NextResponse.json({ error: 'CSVに CustomLabel 列が見つかりません' }, { status: 422 })
-  }
-  const replacements = new Map<string, { customLabel: string; startPrice: number }>()
-  for (const row of rows.slice(1)) {
-    if (row.length <= labelIndex) continue
-    const label = row[labelIndex].trim()
-    const sourceId = extractProductIdFromCustomLabel(label)
-    if (!sourceId) continue
-    const sourceUrl = sourceUrlById.get(sourceId)
-    if (!sourceUrl) continue
-    const target = existing.get(sourceUrl)
-    if (!target) continue
-    replacements.set(label, {
+  // 元の商品のCustomLabel -> 複製先のCustomLabelと価格。
+  // ブラウザはこの表を使ってCSVの該当列だけを差し替える。
+  const replacements = sourceProducts.flatMap(product => {
+    const target = existing.get(String(product.source_url))
+    if (!target) return []
+    return [{
+      from: productCustomLabel({ id: String(product.id) }),
       customLabel: productCustomLabel({ id: target.id }),
       startPrice: listingPriceForSite(target, priceSite),
-    })
-  }
+    }]
+  })
 
-  try {
-    const result = convertListingCsv(csv, {
-      siteId: site.siteId,
-      currency: site.currency,
-      policies: { payment, return: returnProfile, shipping },
-      replacements,
-    })
-    return NextResponse.json({
-      ok: true,
-      extraction_id: createdExtractionId,
-      seller_id: seller.seller_id,
-      created: missing.length,
-      reused: sourceProducts.length - missing.length,
-      csv: result.csv,
-      converted: result.converted,
-      skipped: result.skipped,
-      site: siteKey,
-      currency: site.currency,
-    })
-  } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 422 })
-  }
+  return NextResponse.json({
+    ok: true,
+    extraction_id: createdExtractionId,
+    seller_id: seller.seller_id,
+    created: missing.length,
+    reused: sourceProducts.length - missing.length,
+    replacements,
+    site: siteKey,
+    site_id: site.siteId,
+    currency: site.currency,
+  })
 }

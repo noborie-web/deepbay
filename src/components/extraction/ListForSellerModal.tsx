@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { convertListingCsv, type ListingCsvReplacement } from '@/lib/listing-csv-convert'
 
 interface Seller {
   id: string
@@ -132,32 +133,45 @@ export default function ListForSellerModal({
   const ready = Boolean(selected) && Boolean(site) && Boolean(file)
     && payment.trim() !== '' && returnProfile.trim() !== '' && shipping.trim() !== '' && !running
 
+  // 本番で確認した不具合(2026-11-18): 仕上げたCSVをサーバーに送って変換させて
+  // いたが、商品説明のHTMLが入るCSVは数MBになる(4.8MBの実例あり)。Vercelは
+  // リクエスト本文を4.5MBで打ち切るため、画面には本文の
+  // "Request Entity Too Large" をJSONとして読もうとした
+  // 「Unexpected token 'R'」しか出ず、原因が分からなかった。
+  //
+  // サーバーには「元のCustomLabel → 差し替え後のCustomLabelと価格」の対応表
+  // だけを作らせ、CSVの読み書きはこの画面で行う。CSVが何MBあっても通る。
   async function run() {
     if (!ready || !file) return
     setRunning(true)
     setError(null)
     setResult(null)
     try {
-      const csv = await file.text()
       const res = await fetch(`/api/extractions/${extractionId}/duplicate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sellerAccountId: selected,
-          csv,
-          site,
-          paymentProfile: payment.trim(),
-          returnProfile: returnProfile.trim(),
-          shippingProfile: shipping.trim(),
-        }),
+        body: JSON.stringify({ sellerAccountId: selected, site }),
       })
-      const data = await res.json() as {
-        ok?: boolean; csv?: string; converted?: number; skipped?: string[]
-        created?: number; reused?: number; error?: string
+      const data = await res.json().catch(() => null) as {
+        ok?: boolean
+        replacements?: Array<{ from: string } & ListingCsvReplacement>
+        site_id?: string; currency?: string; created?: number; reused?: number; error?: string
+      } | null
+      if (!res.ok || !data?.ok || !data.replacements || !data.site_id || !data.currency) {
+        throw new Error(data?.error ?? '変換できませんでした')
       }
-      if (!res.ok || !data.ok || !data.csv) throw new Error(data.error ?? '変換できませんでした')
 
-      const blob = new Blob([data.csv], { type: 'text/csv;charset=utf-8' })
+      const csv = await file.text()
+      const converted = convertListingCsv(csv, {
+        siteId: data.site_id,
+        currency: data.currency,
+        policies: { payment: payment.trim(), return: returnProfile.trim(), shipping: shipping.trim() },
+        replacements: new Map(data.replacements.map(row => [
+          row.from, { customLabel: row.customLabel, startPrice: row.startPrice },
+        ])),
+      })
+
+      const blob = new Blob([converted.csv], { type: 'text/csv;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
@@ -166,8 +180,8 @@ export default function ListForSellerModal({
       URL.revokeObjectURL(url)
 
       setResult({
-        converted: data.converted ?? 0,
-        skipped: (data.skipped ?? []).length,
+        converted: converted.converted,
+        skipped: converted.skipped.length,
         created: data.created ?? 0,
         reused: data.reused ?? 0,
       })
