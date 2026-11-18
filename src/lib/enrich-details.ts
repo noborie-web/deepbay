@@ -210,11 +210,15 @@ export async function runEnrichDetailsBatch(
     const details = await fetchShopProductDetails([...byItemId.keys()], {
       timeoutMs: MERCARI_SHOPS_ITEM_MS,
       shouldStop: () => Date.now() > shopsDeadline,
-      onFailure: (itemId, error) => {
+      onFailure: (itemId, error, gone) => {
         const target = byItemId.get(itemId)
         if (!target) return
-        console.error('[enrich-details] failed for', target.id, error)
         failed += 1
+        // 本番で確認(2026-11-17): 11/15に抽出した67件のうち15件は、その後
+        // 出品ごと消えていた(APIも商品ページも404)。何度試しても成功しない
+        // ので、通常のサイトの404と同じく再試行せず補完待ちから外す。
+        if (gone) { goneIds.push(target.id); return }
+        console.error('[enrich-details] failed for', target.id, error)
         failedIds.push({ id: target.id, error })
       },
     })

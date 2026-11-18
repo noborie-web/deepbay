@@ -234,7 +234,9 @@ export async function fetchShopProductDetails(
     timeoutMs?: number
     shouldStop?: () => boolean
     browserFallback?: boolean
-    onFailure?: (itemId: string, error: string) => void
+    // gone = 出品が消えている(404)。何度試しても成功しないので、
+    // 呼び出し側は再試行に回さず打ち切る。
+    onFailure?: (itemId: string, error: string, gone: boolean) => void
   } = {},
 ): Promise<Map<string, ScrapedProduct>> {
   // ブラウザでの再試行は既定で使わない。Vercel上ではChromiumがほぼ必ず
@@ -242,7 +244,7 @@ export async function fetchShopProductDetails(
   // すでにブラウザを使えている経路(Shops専用の検索抽出)からだけ有効にする。
   const { concurrency = 4, timeoutMs = 15000, shouldStop, browserFallback = false, onFailure } = options
   const results = new Map<string, ScrapedProduct>()
-  const failures: Array<{ itemId: string; error: string }> = []
+  const failures: Array<{ itemId: string; error: string; gone: boolean }> = []
 
   const queue = [...new Set(itemIds)]
   let next = 0
@@ -253,19 +255,23 @@ export async function fetchShopProductDetails(
       try {
         results.set(itemId, await fetchShopProductDetailByApi(itemId, { timeoutMs }))
       } catch (err) {
-        failures.push({ itemId, error: err instanceof Error ? err.message : String(err) })
+        failures.push({
+          itemId,
+          error: err instanceof Error ? err.message : String(err),
+          gone: err instanceof ScraperError && err.status === 404,
+        })
       }
     }
   }))
 
-  if (failures.length > 0 && browserFallback && !shouldStop?.()) {
+  if (failures.some((f) => !f.gone) && browserFallback && !shouldStop?.()) {
     // 1件ごとにブラウザを起動すると起動コスト(サーバーレスでは十数秒)が
     // 支配的になるため使い回す。ただし同じブラウザを使い続けると数件で
     // "disconnected" になる実績があるので、一定件数ごとに起動し直す。
     let browser: Browser | undefined
     let usedByBrowser = 0
     try {
-      for (const failure of failures.slice(0, BROWSER_FALLBACK_MAX)) {
+      for (const failure of failures.filter((f) => !f.gone).slice(0, BROWSER_FALLBACK_MAX)) {
         if (shouldStop?.()) break
         if (!browser || usedByBrowser >= BROWSER_RELAUNCH_EVERY) {
           await browser?.close().catch(() => {})
@@ -293,7 +299,7 @@ export async function fetchShopProductDetails(
   }
 
   for (const failure of failures) {
-    if (failure.error) onFailure?.(failure.itemId, failure.error)
+    if (failure.error) onFailure?.(failure.itemId, failure.error, failure.gone)
   }
   return results
 }
