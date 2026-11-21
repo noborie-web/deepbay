@@ -16,21 +16,26 @@ import { checkSupplierListings, normalizePriceChangeFilter } from '@/lib/invento
 
 // 1回の実行で「①GetItem同期(148件〜)」「②仕入先チェック」「③取り下げ」
 // 「④価格改定」を続けて行うため、Vercelのデフォルト上限では途中で
-// 打ち切られる。auto-extraction と同じ300秒にする。
-export const maxDuration = 300
+// 打ち切られる。
+//
+// 2026-11-21: VercelをProにしたので上限が300秒から800秒になった。300秒では
+// 工程が入り切らず、下に並んでいる不具合(10/01・10/25・11/01)はいずれも
+// 「時間が足りずに後ろの工程が飛ぶ」ことが原因だった。各工程の予算を
+// 広げて、在庫が増えても最後まで届くようにする。
+export const maxDuration = 800
 
 // 価格改定(eBayへのRevise)に使う時間の上限。同期(約60秒)+仕入先チェック
 // (最大120秒)+取り下げの後に残る時間の範囲に収める。
 
 // 本番で確認した不具合(2026-10-01): 在庫が695→895件に増えたことで同期が長引き、
 // 実行時間の上限(300秒)に達して仕入先チェック・価格改定が実行されず、記録も
-// 残らなかった。各工程の合計を上限より十分手前(約210秒)に収める。
+// 残らなかった。各工程の合計を上限より十分手前(800秒に対して約700秒)に収める。
 // 本番で確認した不具合(2026-10-31): 2セラーで80秒を分けると1人あたり40秒。
 // akebono-32(UK/AU)は一覧取得の1ページが遅く、4回/日×9日間すべてで
 // 「exceeded 40000ms」となり在庫が10/22から更新されていなかった。
 // 下の「直近に取得済みは書き戻さない」でmiyabi-24の保存時間が大幅に減るので、
 // その分を取得に回す(1人あたり60秒)。
-const SYNC_FETCH_BUDGET_MS = 120_000
+const SYNC_FETCH_BUDGET_MS = 300_000
 // 一覧取得(GetMyeBaySelling)が使えないセラーが、1回に個別照会(GetItem)して
 // よい件数。eBayの1日の上限は5,000回で、最悪4枠すべてで先頭に回っても
 // 2,000回に収まる。
@@ -48,8 +53,8 @@ const SYNC_MAX_ITEM_LOOKUPS_PER_RUN = 500
 // 毎回 discovery_truncated:true だった(カーソルを進めないので取りこぼしては
 // いないが、CSV出品を始めた途端に見落とす)。
 // #329 で同期の保存処理が約175秒短くなったので、その分を走査に回す。
-const SYNC_DISCOVERY_BUDGET_MS = 60_000
-const SUPPLIER_CHECK_BUDGET_MS = 60_000
+const SYNC_DISCOVERY_BUDGET_MS = 150_000
+const SUPPLIER_CHECK_BUDGET_MS = 150_000
 
 // 本番で確認した不具合(2026-10-25): 同期の工程に実時間の上限が無く、1人目の
 // セラー(miyabi-24)が1回で269〜284秒を使い切っていた。2人目(akebono-32・399件)
@@ -59,7 +64,7 @@ const SUPPLIER_CHECK_BUDGET_MS = 60_000
 //
 // 同期全体に実時間の締め切りを設け、残り時間が足りなければ次のセラーは
 // 開始せずに「時間切れ」として記録する(黙って消えるのをやめる)。
-const SYNC_WALL_CLOCK_BUDGET_MS = 200_000
+const SYNC_WALL_CLOCK_BUDGET_MS = 550_000
 // このくらい残っていないとセラー1件分の同期は実質進まない
 const SYNC_SELLER_MIN_WALL_MS = 35_000
 

@@ -21,9 +21,12 @@ import { ENRICHABLE_SITES, type EnrichableSite } from '@/lib/enrich-sites'
 
 // ユーザー報告(2026-10-19): 補完に時間がかかりすぎる。
 // ヤフオクはYahoo!フリマほど制限が厳しくないので、1回の処理件数を上げる。
-// 時間予算(42秒)の範囲で収まる値にしている(並列4・間隔250ms)。
+//
+// 2026-11-21: VercelをProにして関数の上限が60秒から800秒になったので、
+// 時間予算を42秒から240秒に広げる(1回あたりの処理量が約5倍になる)。
+// 呼び出し元(cron)は15分ごとなので、次の呼び出しとは重ならない。
 const BATCH = 120
-const TIME_BUDGET_MS = 42_000
+const TIME_BUDGET_MS = 240_000
 // 実データで計測(2026-09-21): Yahoo!フリマは1つのIPから約15件で429になり約15分
 // ブロックされる。1回の呼び出しでは FLEA_DETAIL_PER_RUN 件だけ1件ずつ取得し、
 // 429が出たら打ち切って呼び出し側に「15分後に再開」を返す。
@@ -58,8 +61,8 @@ const MERCARI_SHOPS_URL = /\/shops\/product\/([a-zA-Z0-9]+)/
 // APIなので1件あたり0.数秒。1回の処理件数は通常のサイトと同じ上限にする。
 const MERCARI_SHOPS_PER_RUN = BATCH
 const MERCARI_SHOPS_ITEM_MS = 15_000
-// 時間予算(42秒)のうちShopsに回す上限。残りは通常の取得に渡す。
-const MERCARI_SHOPS_BUDGET_MS = 20_000
+// 時間予算(240秒)のうちShopsに回す上限。残りは通常の取得に渡す。
+const MERCARI_SHOPS_BUDGET_MS = 120_000
 
 interface PendingProduct {
   id: string
@@ -195,7 +198,7 @@ export async function runEnrichDetailsBatch(
   //
   // 本番で確認した不具合(2026-10-25): この処理を通常のサイト取得の「あと」に
   // 置いていたため、一度も動かなかった。通常のメルカリの取得だけで時間予算
-  // (42秒)を使い切るので(実行の終了時刻が毎回開始から52秒)、残り時間はいつも
+  // を使い切るので(実行の終了時刻が毎回開始から時間予算+10秒)、残り時間はいつも
   // 0だった。Shopsは件数が少なく放っておくと永久に補完されないため、先に
   // 専用の予算ぶんだけ処理してから、残りを通常の取得に渡す。
   const shopsDeadline = startedAt + MERCARI_SHOPS_BUDGET_MS

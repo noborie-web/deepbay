@@ -7,10 +7,13 @@ import { ENRICHABLE_SITES } from '@/lib/enrich-sites'
 // 補完が進むようにしたい。従来は画面がこのAPIを繰り返し呼ぶ作りだったため、
 // ページを閉じると止まっていた。
 //
-// 1回の呼び出しで、未補完の商品がいちばん古い抽出を1つだけ進める
-// (1回あたり最大30件・約45秒)。仕入先のアクセス制限に合わせた間隔は
-// lib/enrich-details 側で守られる。
-export const maxDuration = 60
+// 1回の呼び出しで、未補完の商品がいちばん古い抽出を1つだけ進める。
+// 仕入先のアクセス制限に合わせた間隔は lib/enrich-details 側で守られる。
+//
+// 2026-11-21: VercelをProにしたので上限が60秒から800秒になった。Supabaseの
+// pg_cronが15分ごとに呼ぶので、次の呼び出しと重ならない300秒にする
+// (処理そのものの予算は lib/enrich-details の TIME_BUDGET_MS)。
+export const maxDuration = 300
 
 // 1回の呼び出しで進める抽出の数。実行時間(60秒)に収めるため1つだけ。
 const EXTRACTIONS_PER_RUN = 1
