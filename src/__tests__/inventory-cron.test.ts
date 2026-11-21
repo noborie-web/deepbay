@@ -187,8 +187,8 @@ describe('GET /api/cron/inventory-auto', () => {
     // active出品が数十ページあるため、cronでは取得タイムアウトを引き上げて渡す。
     // eBayの1日の上限(5,000回)を超えた事故(2026-10-24)を受けて、直近5時間に
     // 取得済みの出品は再照会しない・個別確認は60件までに抑える。
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 120_000, discoveryTimeBudgetMs: 60_000, getItemConcurrency: 8, maxItemsPerRun: 800, maxItemLookupsPerRun: 500, maxEbayCallsThisRun: 4_000, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true, skipFetchedWithinMs: 5 * 60 * 60 * 1000, maxMissingChecksPerRun: 60, siteStartIndex: expect.any(Number) })
-    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 60_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 }, delistOnTitleChange: true, delistOnUnverified: true, unverifiedDelistHours: 24 })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 'access-token', { fetchTotalTimeoutMs: 300_000, discoveryTimeBudgetMs: 150_000, getItemConcurrency: 8, maxItemsPerRun: 800, maxItemLookupsPerRun: 500, maxEbayCallsThisRun: 4_000, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true, skipFetchedWithinMs: 5 * 60 * 60 * 1000, maxMissingChecksPerRun: 60, siteStartIndex: expect.any(Number) })
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 150_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 }, delistOnTitleChange: true, delistOnUnverified: true, unverifiedDelistHours: 24 })
     expect(mockSyncInventoryListings.mock.invocationCallOrder[0]).toBeLessThan(
       mockCheckSupplierListings.mock.invocationCallOrder[0],
     )
@@ -225,7 +225,7 @@ describe('GET /api/cron/inventory-auto', () => {
 
     expect(res.status).toBe(200)
     expect(json.results[0].sync).toEqual({ error: 'sync failed' })
-    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 60_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 }, delistOnTitleChange: true, delistOnUnverified: true, unverifiedDelistHours: 24 })
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 150_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 }, delistOnTitleChange: true, delistOnUnverified: true, unverifiedDelistHours: 24 })
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       run_type: 'sync',
       status: 'failed',
@@ -253,7 +253,7 @@ describe('GET /api/cron/inventory-auto', () => {
     expect(json).toMatchObject({ ok: true, processed: 2 })
     expect(json.results[0].auth).toEqual({ error: 'refresh failed' })
     expect(mockSyncInventoryListings).toHaveBeenCalledTimes(1)
-    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 120_000, discoveryTimeBudgetMs: 60_000, getItemConcurrency: 8, maxItemsPerRun: 800, maxItemLookupsPerRun: 500, maxEbayCallsThisRun: 4_000, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true, skipFetchedWithinMs: 5 * 60 * 60 * 1000, maxMissingChecksPerRun: 60, siteStartIndex: expect.any(Number) })
+    expect(mockSyncInventoryListings).toHaveBeenCalledWith(expect.anything(), 'user-2', 'access-token-2', { fetchTotalTimeoutMs: 300_000, discoveryTimeBudgetMs: 150_000, getItemConcurrency: 8, maxItemsPerRun: 800, maxItemLookupsPerRun: 500, maxEbayCallsThisRun: 4_000, cursorItemId: null, sellerAccountId: null, sellerSiteIds: null, bulkRefresh: true, ownsUnassignedProducts: true, skipFetchedWithinMs: 5 * 60 * 60 * 1000, maxMissingChecksPerRun: 60, siteStartIndex: expect.any(Number) })
     expect(mockRunInsert).toHaveBeenCalledWith(expect.objectContaining({
       user_id: 'user-1',
       status: 'failed',
@@ -280,7 +280,7 @@ describe('GET /api/cron/inventory-auto', () => {
 
     expect(json).toMatchObject({ ok: true, processed: 1 })
     expect(mockResolveAccessToken).not.toHaveBeenCalled()
-    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 60_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 }, delistOnTitleChange: true, delistOnUnverified: true, unverifiedDelistHours: 24 })
+    expect(mockCheckSupplierListings).toHaveBeenCalledWith(expect.anything(), 'user-1', 500, { timeBudgetMs: 150_000, priceChangeFilter: { direction: 'any', thresholdRate: 1 }, delistOnTitleChange: true, delistOnUnverified: true, unverifiedDelistHours: 24 })
   })
 
   it('自動取り下げはKakehashi商品に紐付く出品だけを対象にする(他ツールの出品を取り下げない)', async () => {
@@ -436,13 +436,14 @@ describe('GET /api/cron/inventory-auto', () => {
     // 本番で確認した不具合(2026-10-31): 1人40秒では akebono-32(UK/AU)の一覧取得が
     // 一度も終わらず、9日間ずっと「exceeded 40000ms」だった。予算を120秒に増やして
     // 1人60秒にする。
-    expect(callFor('token-seller-a')).toMatchObject({ fetchTotalTimeoutMs: 60_000, maxItemsPerRun: 800 })
+    // 出品件数(2,388件 : 399件)に比例して配る。少ないほうは下限の60秒。
+    expect(callFor('token-seller-a')).toMatchObject({ fetchTotalTimeoutMs: 240_000, maxItemsPerRun: 800 })
     // 件数の少ないセラーにも一覧取得(GetMyeBaySelling)が終わる予算を与える。
     // 15秒だとガードに掛かって全件を個別照会(GetItem)していた(2026-10-24の事故)
     expect(callFor('token-seller-b')).toMatchObject({ fetchTotalTimeoutMs: 60_000, maxItemsPerRun: 50 })
     const totalFetchMs = mockSyncInventoryListings.mock.calls
       .reduce((sum, c) => sum + (c[3] as { fetchTotalTimeoutMs: number }).fetchTotalTimeoutMs, 0)
-    expect(totalFetchMs).toBeLessThanOrEqual(120_000)
+    expect(totalFetchMs).toBeLessThanOrEqual(300_000)
     // 従来の単一トークンには一度もフォールバックしない
     expect(mockResolveAccessToken).not.toHaveBeenCalled()
     // カーソルはセラーごとに記録する
@@ -485,11 +486,11 @@ describe('GET /api/cron/inventory-auto', () => {
       { id: 'seller-b', seller_id: 'akebono-32', display_name: null, ebay_marketplace_id: 'EBAY_AU', inventory_enabled: true, ebay_connected_at: '2026-09-25T00:00:00Z', inventory_discovery_scanned_until: null, inventory_sync_cursor_item_id: null },
     ]
     mockSellerListingCounts = [2388, 399]
-    // 1人目の同期が実時間の予算(200秒)を使い切った状況を作る
+    // 1人目の同期が実時間の予算(550秒)を使い切った状況を作る
     const realNow = Date.now
     let elapsed = 0
     mockSyncInventoryListings.mockImplementation(async () => {
-      elapsed += 200_000
+      elapsed += 550_000
       return { total: 12, matched: 8, unmanaged: 0, ended: 0, discovered: 0, processed: 12, nextCursorItemId: null }
     })
     vi.spyOn(Date, 'now').mockImplementation(() => realNow() + elapsed)
